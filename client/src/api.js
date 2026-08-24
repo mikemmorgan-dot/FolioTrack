@@ -40,6 +40,15 @@ export function aggregateBy(holdings, field) {
 const TYPE_LABELS = { stock: 'Individual Stocks', etf: 'ETFs', mutualfund: 'Mutual Funds', alt: 'Alternatives' };
 export const typeLabel = (t) => TYPE_LABELS[t] || t;
 
+// Asset-type palette — drives circular icons and the allocation bar.
+export const TYPE_COLORS = {
+  stock: '#5B8DEF',
+  etf: '#2DD4A7',
+  mutualfund: '#E5A84B',
+  alt: '#B98AF0',
+};
+export const typeColor = (t) => TYPE_COLORS[t] || '#8A8F98';
+
 // Blended MER: weight-average of instrument MERs where known.
 export function blendedMer(holdings) {
   let w = 0, sum = 0;
