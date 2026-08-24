@@ -1,35 +1,47 @@
-import { pct, money, BASIS, aggregateBy, typeLabel } from '../../api.js';
+import { pct, money, BASIS, aggregateBy, typeColor, typeLabel } from '../../api.js';
+import EmptyState from '../EmptyState.jsx';
 
 export default function AllocationTab({ model }) {
   const h = model.holdings;
-  if (!h.length) return <div className="empty-state"><p>No holdings to allocate yet.</p></div>;
+  if (!h.length) return <EmptyState text="No holdings to allocate yet." />;
 
   const byType = aggregateBy(h, 'type');
-  // Rough equity/defensive split for the summary line.
-  const defensive = h.filter((x) => x.type === 'mutualfund' ? false : x.sector === 'Fixed Income').reduce((s, x) => s + x.weight, 0);
+  const fixed = h.filter((x) => x.sector === 'Fixed Income').reduce((s, x) => s + x.weight, 0);
 
   return (
-    <div className="allocation">
-      <div className="alloc-summary">
-        <div><span className="stat-label">Growth-oriented</span><span className="mono">{pct(1 - defensive)}</span></div>
-        <div><span className="stat-label">Fixed income</span><span className="mono">{pct(defensive)}</span></div>
+    <>
+      <div className="section-title">Allocation</div>
+      <div className="card pad" style={{ display: 'flex', gap: 28, marginBottom: 12 }}>
+        <div>
+          <div className="muted" style={{ fontSize: 13, fontWeight: 600 }}>Growth-oriented</div>
+          <div className="num" style={{ fontSize: 30, fontWeight: 700 }}>{pct(1 - fixed)}</div>
+        </div>
+        <div>
+          <div className="muted" style={{ fontSize: 13, fontWeight: 600 }}>Fixed income</div>
+          <div className="num" style={{ fontSize: 30, fontWeight: 700 }}>{pct(fixed)}</div>
+        </div>
       </div>
 
-      <table className="data-table">
-        <thead>
-          <tr><th>Asset type</th><th>Allocation</th><th className="r">Weight</th><th className="r">Per {money(BASIS)}</th></tr>
-        </thead>
-        <tbody>
-          {byType.map((t) => (
-            <tr key={t.label}>
-              <td>{typeLabel(t.label)}</td>
-              <td><span className="bar wide"><span className="bar-fill" style={{ width: `${t.weight * 100}%` }} /></span></td>
-              <td className="r mono">{pct(t.weight)}</td>
-              <td className="r mono">{money(t.weight * BASIS)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+      <div className="card">
+        {byType.map((t) => (
+          <div className="bar-row" key={t.label}>
+            <span className="bar-label">{typeLabel(t.label)}</span>
+            <span className="bar-track"><span className="bar-fill" style={{ width: `${t.weight * 100}%`, background: typeColor(t.label) }} /></span>
+            <span className="bar-pct num">{pct(t.weight)}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="section-title">Per {money(BASIS)}</div>
+      <div className="rows grouped">
+        {byType.map((t) => (
+          <div className="row" key={t.label}>
+            <span className="asset-icon" style={{ '--ai-c': typeColor(t.label), fontSize: 11 }}>{pct(t.weight, 0)}</span>
+            <div className="row-main"><div className="row-sym" style={{ fontSize: 15 }}>{typeLabel(t.label)}</div></div>
+            <div className="row-right"><div className="row-val num">{money(t.weight * BASIS)}</div></div>
+          </div>
+        ))}
+      </div>
+    </>
   );
 }

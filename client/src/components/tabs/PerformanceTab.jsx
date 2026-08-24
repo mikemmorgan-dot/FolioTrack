@@ -2,38 +2,40 @@ export default function PerformanceTab({ model }) {
   const versions = [...model.versions].sort((a, b) => b.effectiveDate.localeCompare(a.effectiveDate));
 
   return (
-    <div className="performance">
-      <section className="card">
-        <h3 className="card-title">Model change history</h3>
-        {versions.length === 0 ? (
-          <p className="muted">No versions recorded yet.</p>
-        ) : (
-          <ol className="timeline">
+    <>
+      <div className="section-title">Model changes</div>
+      {versions.length === 0 ? (
+        <div className="card pad"><span className="muted">No versions recorded yet.</span></div>
+      ) : (
+        <div className="card pad">
+          <div className="tl">
             {versions.map((v, i) => (
-              <li key={v.id} className={i === 0 ? 'current' : ''}>
-                <span className="tl-date mono">{v.effectiveDate}</span>
-                <span className="tl-body">
-                  <strong>v{versions.length - i}</strong>
-                  {v.note ? ` — ${v.note}` : ' — model change'}
-                  <span className="muted"> · {v.holdingCount} holdings</span>
-                </span>
-              </li>
+              <div key={v.id} className={`tl-item${i === 0 ? ' current' : ''}`}>
+                <div className="tl-marker"><span className="tl-dot" /><span className="tl-line" /></div>
+                <div className="tl-body">
+                  <div className="tl-top">
+                    <span className="badge">v{versions.length - i}</span>
+                    <span className="tl-date num">{v.effectiveDate}</span>
+                  </div>
+                  <div className="tl-note">{v.note || 'Model change'}</div>
+                  <div className="tl-meta num">{v.holdingCount} holdings</div>
+                </div>
+              </div>
             ))}
-          </ol>
-        )}
-      </section>
+          </div>
+        </div>
+      )}
 
-      <section className="card contract">
-        <h3 className="card-title">Coming next: return &amp; attribution engine</h3>
-        <p className="muted">This view will compute from the data already wired up:</p>
+      <div className="section-title">Coming next</div>
+      <div className="card pad">
+        <p className="muted" style={{ margin: '0 0 6px', fontSize: 14 }}>Return &amp; attribution engine — computed from data already wired:</p>
         <ul className="contract-list">
-          <li><strong>Model return path</strong> — chain each version’s weighted holding returns across its effective window (Yahoo history for listed, entered NAVs for manual).</li>
-          <li><strong>vs blended benchmark</strong> — the per-model benchmark sleeves, tracked over the same windows.</li>
-          <li><strong>Change attribution</strong> — for every model change, the return of the new mix vs holding the prior version: did the change add or subtract?</li>
-          <li><strong>Contribution</strong> — each holding’s weight × return share of total model return.</li>
+          <li><span className="n">1</span><span><b>Model return path</b> — chain each version’s weighted holding returns across its effective window.</span></li>
+          <li><span className="n">2</span><span><b>vs blended benchmark</b> — the per-model sleeves, tracked over the same windows.</span></li>
+          <li><span className="n">3</span><span><b>Change attribution</b> — for each model change, the new mix vs holding the prior version.</span></li>
+          <li><span className="n">4</span><span><b>Contribution</b> — each holding’s weight × return share of total.</span></li>
         </ul>
-        <p className="footnote">Manual NAVs are periodic (not daily), so manual sleeves will report on their available cadence.</p>
-      </section>
-    </div>
+      </div>
+    </>
   );
 }

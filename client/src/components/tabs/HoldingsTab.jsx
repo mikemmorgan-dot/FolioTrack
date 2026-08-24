@@ -1,53 +1,54 @@
-import { pct, money, num, BASIS, typeLabel } from '../../api.js';
+import { useState } from 'react';
+import { pct, money, num, BASIS } from '../../api.js';
+import AssetIcon from '../AssetIcon.jsx';
+import EmptyState from '../EmptyState.jsx';
+import { IconSort } from '../icons.jsx';
+
+const SORTS = {
+  weight: (a, b) => b.weight - a.weight,
+  name: (a, b) => a.symbol.localeCompare(b.symbol),
+};
 
 export default function HoldingsTab({ model }) {
-  const h = [...model.holdings].sort((a, b) => b.weight - a.weight);
-  if (!h.length) return <div className="empty-state"><p>No holdings in this model yet.</p></div>;
+  const [sort, setSort] = useState('weight');
+  if (!model.holdings.length) return <EmptyState text="No holdings in this model yet." />;
+  const h = [...model.holdings].sort(SORTS[sort]);
 
   return (
-    <div className="holdings">
-      <div className="table-note">Values shown per {money(BASIS)} invested in the model.</div>
-      <div className="table-wrap">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Symbol</th><th>Name</th><th>Type</th><th>Source</th>
-              <th className="r">Weight</th><th className="r">Price</th><th className="r">Value</th><th className="r">As of</th>
-            </tr>
-          </thead>
-          <tbody>
-            {h.map((x) => {
-              const auto = x.source === 'auto';
-              const err = typeof x.priceSource === 'string' && x.priceSource.includes('error');
-              return (
-                <tr key={x.id}>
-                  <td className="mono ticker">{x.symbol}</td>
-                  <td className="name-cell">{x.name}</td>
-                  <td><span className="chip">{typeLabel(x.type)}</span></td>
-                  <td>
-                    <span className={`src ${auto ? 'src-auto' : 'src-manual'}`}>
-                      {auto ? 'Live' : 'Manual'}
-                    </span>
-                  </td>
-                  <td className="r mono">{pct(x.weight)}</td>
-                  <td className="r mono">{err ? <span className="muted">n/a</span> : `${num(x.price)} ${x.currency}`}</td>
-                  <td className="r mono">{money(x.weight * BASIS)}</td>
-                  <td className="r mono muted">{x.priceAsOf ? x.priceAsOf.slice(0, 10) : '—'}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-          <tfoot>
-            <tr>
-              <td colSpan={4}>Total</td>
-              <td className="r mono">{pct(h.reduce((s, x) => s + x.weight, 0))}</td>
-              <td></td>
-              <td className="r mono">{money(h.reduce((s, x) => s + x.weight, 0) * BASIS)}</td>
-              <td></td>
-            </tr>
-          </tfoot>
-        </table>
+    <>
+      <div className="toolbar">
+        <button className="round-btn" aria-label="Filter"><IconSort /></button>
+        <button className="dropdown" onClick={() => setSort((s) => (s === 'weight' ? 'name' : 'weight'))}>
+          {sort === 'weight' ? 'Highest weight' : 'Alphabetical'} ▾
+        </button>
       </div>
-    </div>
+
+      <div className="rows grouped">
+        {h.map((x) => {
+          const auto = x.source === 'auto';
+          const err = typeof x.priceSource === 'string' && x.priceSource.includes('error');
+          return (
+            <div className="row" key={x.id}>
+              <AssetIcon symbol={x.symbol} type={x.type} />
+              <div className="row-main">
+                <div className="row-sym">{x.symbol}</div>
+                <div className="row-sub">{x.name}</div>
+              </div>
+              <div className="row-right">
+                <div className="row-val num">{money(x.weight * BASIS)}</div>
+                <div className="row-tags">
+                  <span className="pill weight num">{pct(x.weight)}</span>
+                  <span className={`pill ${auto ? 'green' : 'neutral'}`}>{auto ? 'Live' : 'Manual'}</span>
+                </div>
+                <div className="row-sub num" style={{ marginTop: 4 }}>
+                  {err ? 'price n/a' : `${num(x.price)} ${x.currency}`}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <p className="note">Values shown per {money(BASIS)} invested. Live prices via Yahoo; manual holdings use your latest entered NAV.</p>
+    </>
   );
 }
