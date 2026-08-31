@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { seedData } from './seed.js';
-import { uid, instrumentFromSpec } from './util.js';
+import { uid, instrumentFromSpec, normalizeBreakdown } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data', 'store.json');
@@ -41,6 +41,20 @@ export class JsonStore {
     const id = input.id || uid('inst');
     const inst = { id, ...s, createdAt: new Date().toISOString() };
     this.db.instruments[id] = inst;
+    this._persist();
+    return inst;
+  }
+
+  async updateInstrument(id, patch) {
+    const inst = this.db.instruments[id];
+    if (!inst) return null;
+    if (patch.sector !== undefined) inst.sector = patch.sector || null;
+    if (patch.country !== undefined) inst.country = patch.country || null;
+    if (patch.sectorBreakdown !== undefined || patch.countryBreakdown !== undefined) {
+      if (patch.sectorBreakdown !== undefined) inst.sectorBreakdown = normalizeBreakdown(patch.sectorBreakdown);
+      if (patch.countryBreakdown !== undefined) inst.countryBreakdown = normalizeBreakdown(patch.countryBreakdown);
+      inst.breakdownUpdatedAt = new Date().toISOString();
+    }
     this._persist();
     return inst;
   }

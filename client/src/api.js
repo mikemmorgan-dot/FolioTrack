@@ -22,6 +22,12 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }),
+  updateInstrument: (id, patch) =>
+    j(`/api/instruments/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }),
 };
 
 // ---- formatting ----
@@ -40,6 +46,30 @@ export function aggregateBy(holdings, field) {
   for (const h of holdings) {
     const k = h[field] || 'Unclassified';
     map.set(k, (map.get(k) || 0) + h.weight);
+  }
+  return [...map.entries()].map(([label, weight]) => ({ label, weight })).sort((a, b) => b.weight - a.weight);
+}
+
+// Sector/country aggregation with fund look-through: a holding carrying a
+// {label,weight}[] breakdown (entered from its factsheet — see HoldingsTab)
+// distributes its model weight across that breakdown instead of counting as
+// one bucket. Breakdown weights are normalized by their own sum, so a
+// slightly-off-100% factsheet entry still distributes proportionally.
+export function aggregateLookThrough(holdings, kind) {
+  const breakdownField = kind === 'sector' ? 'sectorBreakdown' : 'countryBreakdown';
+  const map = new Map();
+  for (const h of holdings) {
+    const bd = h[breakdownField];
+    if (Array.isArray(bd) && bd.length) {
+      const total = bd.reduce((s, r) => s + (Number(r.weight) || 0), 0) || 1;
+      for (const r of bd) {
+        const k = r.label || 'Unclassified';
+        map.set(k, (map.get(k) || 0) + h.weight * ((Number(r.weight) || 0) / total));
+      }
+    } else {
+      const k = h[kind] || 'Unclassified';
+      map.set(k, (map.get(k) || 0) + h.weight);
+    }
   }
   return [...map.entries()].map(([label, weight]) => ({ label, weight })).sort((a, b) => b.weight - a.weight);
 }

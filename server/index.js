@@ -226,6 +226,12 @@ app.post('/api/models/:key/simulate', async (req, res) => {
 
 app.get('/api/instruments', async (_req, res) => res.json(await store.listInstruments()));
 app.post('/api/instruments', async (req, res) => res.status(201).json(await store.addInstrument(req.body || {})));
+// Factsheet entry: sector/country and their fund look-through breakdowns.
+app.put('/api/instruments/:id', async (req, res) => {
+  const inst = await store.updateInstrument(req.params.id, req.body || {});
+  if (!inst) return res.status(404).json({ error: 'Instrument not found' });
+  res.json(inst);
+});
 app.post('/api/instruments/:id/nav', async (req, res) => {
   const inst = await store.getInstrument(req.params.id);
   if (!inst) return res.status(404).json({ error: 'Instrument not found' });

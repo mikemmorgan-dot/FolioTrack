@@ -1,4 +1,4 @@
-import { pct, aggregateBy } from '../../api.js';
+import { pct, aggregateLookThrough } from '../../api.js';
 import EmptyState from '../EmptyState.jsx';
 
 function BarList({ rows }) {
@@ -22,10 +22,10 @@ export default function GeoSectorTab({ model, onEdit }) {
   return (
     <div style={{ '--risk': 'var(--green)' }}>
       <div className="section-title">Sector mix</div>
-      <BarList rows={aggregateBy(h, 'sector')} />
+      <BarList rows={aggregateLookThrough(h, 'sector')} />
       <div className="section-title">Geographic mix</div>
-      <BarList rows={aggregateBy(h, 'country')} />
-      <p className="note">Classified at the instrument level. Funds contribute a single sector/region here — true fund look-through comes from factsheet entry, added next.</p>
+      <BarList rows={aggregateLookThrough(h, 'country')} />
+      <p className="note">Funds with a factsheet breakdown entered (Holdings tab → tap a fund) look through to their real sector/geography here. Funds without one still count as a single sector/region.</p>
     </div>
   );
 }

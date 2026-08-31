@@ -31,5 +31,18 @@ export function instrumentFromSpec(spec) {
     sector: spec.sector || null,
     country: spec.country || null,
     mer: spec.mer ?? null,
+    sectorBreakdown: spec.sectorBreakdown || null,
+    countryBreakdown: spec.countryBreakdown || null,
   };
+}
+
+// A breakdown is a list of {label, weight} entered from a fund's factsheet.
+// Weights don't have to sum to 1 — callers normalize by the actual sum so a
+// slightly-stale or rounded factsheet entry still distributes sensibly.
+export function normalizeBreakdown(list) {
+  if (!Array.isArray(list)) return null;
+  const rows = list
+    .map((r) => ({ label: String(r?.label || '').trim(), weight: Number(r?.weight) }))
+    .filter((r) => r.label && Number.isFinite(r.weight) && r.weight > 0);
+  return rows.length ? rows : null;
 }

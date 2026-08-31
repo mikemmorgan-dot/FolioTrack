@@ -28,6 +28,14 @@ CREATE TABLE IF NOT EXISTS instruments (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS instruments_symbol_lower ON instruments (lower(symbol));
 
+-- Fund look-through: optional [{label, weight}] breakdowns entered from a
+-- fund's factsheet, used instead of the single sector/country above when
+-- present. ADD COLUMN IF NOT EXISTS because the live table already exists —
+-- CREATE TABLE IF NOT EXISTS above is a no-op against it.
+ALTER TABLE instruments ADD COLUMN IF NOT EXISTS sector_breakdown jsonb;
+ALTER TABLE instruments ADD COLUMN IF NOT EXISTS country_breakdown jsonb;
+ALTER TABLE instruments ADD COLUMN IF NOT EXISTS breakdown_updated_at timestamptz;
+
 CREATE TABLE IF NOT EXISTS models (
   key text PRIMARY KEY,
   name text NOT NULL,

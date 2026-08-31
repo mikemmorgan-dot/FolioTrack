@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from './api.js';
 import Hero from './components/Hero.jsx';
 import EditModel from './components/EditModel.jsx';
+import ClassifyPanel from './components/ClassifyPanel.jsx';
 import { IconMenu, IconSearch, IconOverview, IconPerf, IconRisk, IconHoldings, IconGeo, IconMix } from './components/icons.jsx';
 import OverviewTab from './components/tabs/OverviewTab.jsx';
 import PerformanceTab from './components/tabs/PerformanceTab.jsx';
@@ -28,6 +29,7 @@ export default function App() {
   const [model, setModel] = useState(null);
   const [view, setView] = useState('overview');
   const [editing, setEditing] = useState(false);
+  const [classifying, setClassifying] = useState(null);
   const [err, setErr] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -77,7 +79,7 @@ export default function App() {
         <>
           <Hero model={model} riskRank={riskRank} />
           <div className="content">
-            <Active model={model} goto={setView} riskRank={riskRank} onEdit={() => setEditing(true)} />
+            <Active model={model} goto={setView} riskRank={riskRank} onEdit={() => setEditing(true)} onClassify={setClassifying} />
           </div>
           <button className="fab" aria-label="Edit model" onClick={() => setEditing(true)}>+</button>
         </>
@@ -100,6 +102,14 @@ export default function App() {
           model={model}
           onClose={() => setEditing(false)}
           onSaved={async () => { setEditing(false); await loadModel(selected); refreshCounts(); }}
+        />
+      )}
+
+      {classifying && (
+        <ClassifyPanel
+          instrument={classifying}
+          onClose={() => setClassifying(null)}
+          onSaved={async () => { setClassifying(null); await loadModel(selected); }}
         />
       )}
     </div>

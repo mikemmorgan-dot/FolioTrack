@@ -1,6 +1,6 @@
 // store-pg.js — durable Postgres backend. Same API as JsonStore.
 import { makePool, initSchema, seedIfEmpty } from './db.js';
-import { uid, instrumentFromSpec } from './util.js';
+import { uid, instrumentFromSpec, normalizeBreakdown } from './util.js';
 
 const numOrNull = (x) => (x == null ? null : Number(x));
 
@@ -9,6 +9,9 @@ function rowToInstrument(r) {
     id: r.id, symbol: r.symbol, name: r.name, type: r.type, source: r.source,
     currency: r.currency, sector: r.sector, country: r.country,
     mer: numOrNull(r.mer), createdAt: r.created_at,
+    sectorBreakdown: r.sector_breakdown || null,
+    countryBreakdown: r.country_breakdown || null,
+    breakdownUpdatedAt: r.breakdown_updated_at,
   };
 }
 const d = (x) => (x instanceof Date ? x.toISOString().slice(0, 10) : String(x).slice(0, 10));
@@ -48,6 +51,31 @@ export class PgStore {
       [id, s.symbol, s.name, s.type, s.source, s.currency, s.sector, s.country, s.mer]
     );
     return rowToInstrument(rows[0]);
+  }
+
+  async updateInstrument(id, patch) {
+    const sets = [];
+    const vals = [];
+    let n = 1;
+    if (patch.sector !== undefined) { sets.push(`sector=$${n++}`); vals.push(patch.sector || null); }
+    if (patch.country !== undefined) { sets.push(`country=$${n++}`); vals.push(patch.country || null); }
+    if (patch.sectorBreakdown !== undefined) {
+      sets.push(`sector_breakdown=$${n++}`);
+      vals.push(JSON.stringify(normalizeBreakdown(patch.sectorBreakdown)));
+    }
+    if (patch.countryBreakdown !== undefined) {
+      sets.push(`country_breakdown=$${n++}`);
+      vals.push(JSON.stringify(normalizeBreakdown(patch.countryBreakdown)));
+    }
+    if (patch.sectorBreakdown !== undefined || patch.countryBreakdown !== undefined) {
+      sets.push('breakdown_updated_at=now()');
+    }
+    if (!sets.length) return this.getInstrument(id);
+    vals.push(id);
+    const { rows } = await this.pool.query(
+      `UPDATE instruments SET ${sets.join(', ')} WHERE id=$${n} RETURNING *`, vals
+    );
+    return rows[0] ? rowToInstrument(rows[0]) : null;
   }
 
   async addNav(instrumentId, { date, nav }) {

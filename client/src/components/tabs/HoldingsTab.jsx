@@ -9,7 +9,7 @@ const SORTS = {
   name: (a, b) => a.symbol.localeCompare(b.symbol),
 };
 
-export default function HoldingsTab({ model, onEdit }) {
+export default function HoldingsTab({ model, onEdit, onClassify }) {
   const [sort, setSort] = useState('weight');
   if (!model.holdings.length) return <EmptyState text="No holdings in this model yet." onAction={onEdit} />;
   const h = [...model.holdings].sort(SORTS[sort]);
@@ -27,12 +27,13 @@ export default function HoldingsTab({ model, onEdit }) {
         {h.map((x) => {
           const auto = x.source === 'auto';
           const err = typeof x.priceSource === 'string' && x.priceSource.includes('error');
+          const classified = !!(x.sectorBreakdown || x.countryBreakdown);
           return (
-            <div className="row" key={x.id}>
+            <button type="button" className="row row-tappable" key={x.id} onClick={() => onClassify?.(x)}>
               <AssetIcon symbol={x.symbol} type={x.type} />
               <div className="row-main">
                 <div className="row-sym">{x.symbol}</div>
-                <div className="row-sub">{x.name}</div>
+                <div className="row-sub">{x.name}{classified ? ' · look-through set' : ''}</div>
               </div>
               <div className="row-right">
                 <div className="row-val num">{money(x.weight * BASIS)}</div>
@@ -44,11 +45,11 @@ export default function HoldingsTab({ model, onEdit }) {
                   {err ? 'price n/a' : `${num(x.price)} ${x.currency}`}
                 </div>
               </div>
-            </div>
+            </button>
           );
         })}
       </div>
-      <p className="note">Values shown per {money(BASIS)} invested. Live prices via Yahoo; manual holdings use your latest entered NAV.</p>
+      <p className="note">Values shown per {money(BASIS)} invested. Live prices via Yahoo; manual holdings use your latest entered NAV. Tap a holding to set its sector/geography or a fund look-through breakdown.</p>
     </>
   );
 }
