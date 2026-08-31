@@ -79,6 +79,19 @@ const twelvedata = {
   },
 };
 
+// Best-effort sector/country enrichment for the lookup flow only — not part
+// of the price chain, since a profile isn't required for pricing to work.
+// Verified against Twelve Data's free tier for AAPL (sector "Technology",
+// country "United States"); TSX coverage is unverified — Twelve Data's TSX
+// *quotes* are paywalled on the free tier, so this may fail the same way for
+// TSX symbols. lookup() treats a failure here as "no classification data",
+// not a lookup failure.
+async function twelvedataProfile(symbol) {
+  const { symbol: sym, exchange } = twelvedataParams(symbol);
+  const p = await twelvedataFetch('profile', { symbol: sym, exchange });
+  return { sector: p.sector || null, country: p.country || null };
+}
+
 // ---------- Finnhub (keyed, free tier: 60 req/min) ----------
 // Twelve Data's free tier paywalls TSX quotes despite listing TSX in its
 // symbol search — confirmed live, not assumed. Finnhub's pricing page lists
@@ -186,9 +199,12 @@ export async function lookup(symbol) {
     if (q.price == null) return { found: false, symbol, reason: 'No price returned', blocked: false };
     const bare = symbol.replace(/\..*$/, '');
     const guessType = /^[A-Z]{5}X$/i.test(bare) ? 'mutualfund' : 'stock';
+    let profile = null;
+    try { profile = await twelvedataProfile(symbol); } catch { /* best-effort — no classification data, not a lookup failure */ }
     return {
       found: true, symbol, provider: q.provider, partial: !!q.partial,
       name: q.name, currency: q.currency, exchange: q.exchange, guessType, price: q.price,
+      sector: profile?.sector || null, country: profile?.country || null,
     };
   } catch (e) {
     return {

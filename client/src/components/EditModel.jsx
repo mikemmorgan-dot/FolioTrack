@@ -127,9 +127,9 @@ function AddPanel({ onAdd, onCancel }) {
   const [looking, setLooking] = useState(false);
   const [resolved, setResolved] = useState(null); // null | {found,...}
   const [form, setForm] = useState({ name: '', type: 'stock', currency: 'CAD', sector: '', country: '', navDate: '', nav: '' });
-  // Once the user picks a type or edits the name themselves, lookups must not
+  // Once the user picks a type or edits a field themselves, lookups must not
   // overwrite their choice — that was silently resetting the selection to Fund.
-  const [touched, setTouched] = useState({ type: false, name: false });
+  const [touched, setTouched] = useState({ type: false, name: false, sector: false, country: false });
   const panelRef = useRef(null);
   const resultRef = useRef(null);
 
@@ -148,6 +148,10 @@ function AddPanel({ onAdd, onCancel }) {
         name: touched.name ? f.name : (r.found ? r.name : f.name),
         type: touched.type ? f.type : (r.found ? r.guessType : f.type),
         currency: r.found ? (r.currency || f.currency) : f.currency,
+        // Best-effort — providers.js only fills these in when its profile
+        // source (Twelve Data) actually covers the symbol, unverified for TSX.
+        sector: touched.sector ? f.sector : (r.sector || f.sector),
+        country: touched.country ? f.country : (r.country || f.country),
       }));
     } catch (e) {
       setResolved({ found: false, symbol, reason: e.message, blocked: true });
@@ -228,9 +232,17 @@ function AddPanel({ onAdd, onCancel }) {
 
           <div className="field-row">
             <label className="field"><span>Currency</span><input type="text" value={form.currency} onChange={set('currency')} /></label>
-            <label className="field"><span>Sector (optional)</span><input type="text" value={form.sector} onChange={set('sector')} placeholder="e.g. Energy" /></label>
+            <label className="field"><span>Sector (optional)</span>
+              <input type="text" value={form.sector}
+                onChange={(e) => { setTouched((t) => ({ ...t, sector: true })); set('sector')(e); }}
+                placeholder="e.g. Energy" />
+            </label>
           </div>
-          <label className="field"><span>Region (optional)</span><input type="text" value={form.country} onChange={set('country')} placeholder="e.g. Canada" /></label>
+          <label className="field"><span>Region (optional)</span>
+            <input type="text" value={form.country}
+              onChange={(e) => { setTouched((t) => ({ ...t, country: true })); set('country')(e); }}
+              placeholder="e.g. Canada" />
+          </label>
 
           {!resolved.found && (
             <div className="field-row">
