@@ -29,6 +29,7 @@ export default function App() {
   const [model, setModel] = useState(null);
   const [view, setView] = useState('overview');
   const [editing, setEditing] = useState(false);
+  const [editWeights, setEditWeights] = useState(null);
   const [classifying, setClassifying] = useState(null);
   const [err, setErr] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -79,9 +80,13 @@ export default function App() {
         <>
           <Hero model={model} riskRank={riskRank} />
           <div className="content">
-            <Active model={model} goto={setView} riskRank={riskRank} onEdit={() => setEditing(true)} onClassify={setClassifying} />
+            <Active model={model} goto={setView} riskRank={riskRank}
+              onEdit={() => { setEditWeights(null); setEditing(true); }}
+              onClassify={setClassifying}
+              onOptimizeApply={(weights) => { setEditWeights(weights); setEditing(true); }}
+            />
           </div>
-          <button className="fab" aria-label="Edit model" onClick={() => setEditing(true)}>+</button>
+          <button className="fab" aria-label="Edit model" onClick={() => { setEditWeights(null); setEditing(true); }}>+</button>
         </>
       )}
 
@@ -100,8 +105,9 @@ export default function App() {
       {editing && model && (
         <EditModel
           model={model}
-          onClose={() => setEditing(false)}
-          onSaved={async () => { setEditing(false); await loadModel(selected); refreshCounts(); }}
+          initialWeights={editWeights}
+          onClose={() => { setEditing(false); setEditWeights(null); }}
+          onSaved={async () => { setEditing(false); setEditWeights(null); await loadModel(selected); refreshCounts(); }}
         />
       )}
 

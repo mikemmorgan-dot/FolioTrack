@@ -7,6 +7,7 @@ import { getQuote, getHistory, lookup, probeAll } from './providers.js';
 import { currentVersionOf } from './util.js';
 import { runPerformance, gatherReturns, returnsForRefs, computeCore } from './perf.js';
 import { riskMetrics, staticPortfolioMonthly } from './risk.js';
+import { runOptimize } from './optimize.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -166,6 +167,23 @@ app.get('/api/models/:key/risk', async (req, res) => {
     res.json({ key: m.key, name: m.name, rf, metrics, coverageMin: core.coverageMin, dataNotes });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Ex-ante max-Sharpe suggestion from historical mean/covariance — NOT a
+// forecast, see optimize.js. maxWeight is an optional per-holding cap, passed
+// as a percent (e.g. 30 -> 0.30).
+app.get('/api/models/:key/optimize', async (req, res) => {
+  try {
+    const m = await store.getModel(req.params.key);
+    if (!m) return res.status(404).json({ error: 'Model not found' });
+    const rf = parseRf(req.query.rf);
+    const maxWeight = req.query.maxWeight != null && req.query.maxWeight !== ''
+      ? Number(req.query.maxWeight) / 100 : null;
+    const result = await runOptimize(m, fetchers(), { gatherReturns, currentVersionOf }, { rf, maxWeight });
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
 });
 

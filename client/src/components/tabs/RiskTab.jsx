@@ -1,11 +1,12 @@
 import { useEffect, useState, useRef } from 'react';
 import { api } from '../../api.js';
 import { METRIC_DEFS, asRatio, asPct } from '../../riskFormat.js';
+import OptimizePanel from '../OptimizePanel.jsx';
 
 const RATIO3 = ['sharpe', 'sortino', 'informationRatio'];
 const GRID2 = ['volatility', 'maxDrawdown', 'beta', 'alpha', 'trackingError', 'upCapture', 'downCapture', 'correlation'];
 
-export default function RiskTab({ model }) {
+export default function RiskTab({ model, onOptimizeApply }) {
   const [rf, setRf] = useState(4);
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
@@ -77,6 +78,9 @@ export default function RiskTab({ model }) {
           )}
 
           <p className="note">Sharpe = (annualized return − risk-free) ÷ annualized volatility. Sortino uses downside deviation vs the risk-free rate. Info ratio = active return ÷ tracking error. Computed on monthly returns of the model as actually run.</p>
+
+          <div className="section-title" style={{ marginTop: 20 }}>Optimize</div>
+          <OptimizePanel modelKey={model.key} rf={(Number(rf) || 0) / 100} onApply={onOptimizeApply} />
         </>
       )}
     </>

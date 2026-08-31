@@ -11,6 +11,8 @@ export const api = {
   model: (key) => j(`/api/models/${key}`),
   performance: (key) => j(`/api/models/${key}/performance`),
   risk: (key, rf) => j(`/api/models/${key}/risk?rf=${rf}`),
+  optimize: (key, { rf, maxWeight } = {}) =>
+    j(`/api/models/${key}/optimize?rf=${rf}${maxWeight != null ? `&maxWeight=${maxWeight}` : ''}`),
   simulate: (key, body) => j(`/api/models/${key}/simulate`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   }),

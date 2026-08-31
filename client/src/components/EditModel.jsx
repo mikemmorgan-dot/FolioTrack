@@ -12,18 +12,22 @@ const TYPES = [
 let seq = 0;
 const keyify = () => `h${seq++}`;
 
-function fromModel(model) {
+// `overrideWeights` (instrumentId -> weightPct) lets a caller open the editor
+// pre-filled with, e.g., the optimizer's suggested weights instead of the
+// model's currently saved ones. Falls back to the saved weight per holding.
+function fromModel(model, overrideWeights) {
   return model.holdings.map((h) => ({
     uiKey: keyify(),
     instrumentId: h.id,
     symbol: h.symbol, name: h.name, type: h.type, currency: h.currency,
     sector: h.sector, country: h.country, mer: h.mer,
-    source: h.source, weightPct: +(h.weight * 100).toFixed(2),
+    source: h.source,
+    weightPct: overrideWeights?.[h.id] ?? +(h.weight * 100).toFixed(2),
   }));
 }
 
-export default function EditModel({ model, onClose, onSaved }) {
-  const [rows, setRows] = useState(() => fromModel(model));
+export default function EditModel({ model, initialWeights, onClose, onSaved }) {
+  const [rows, setRows] = useState(() => fromModel(model, initialWeights));
   const [effectiveDate, setEffectiveDate] = useState(new Date().toISOString().slice(0, 10));
   const [note, setNote] = useState('');
   const [adding, setAdding] = useState(false);
