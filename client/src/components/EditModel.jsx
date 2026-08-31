@@ -33,6 +33,7 @@ export default function EditModel({ model, initialWeights, onClose, onSaved }) {
   const [adding, setAdding] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
+  const [noChange, setNoChange] = useState(false);
 
   const total = rows.reduce((s, r) => s + (Number(r.weightPct) || 0), 0);
   const balanced = Math.abs(total - 100) <= 0.5;
@@ -48,7 +49,7 @@ export default function EditModel({ model, initialWeights, onClose, onSaved }) {
   const addRow = (row) => { setRows((rs) => [...rs, { ...row, uiKey: keyify() }]); setAdding(false); };
 
   async function save() {
-    setSaving(true); setErr(null);
+    setSaving(true); setErr(null); setNoChange(false);
     try {
       const holdings = rows.map((r) => {
         const weight = (Number(r.weightPct) || 0) / 100;
@@ -59,7 +60,8 @@ export default function EditModel({ model, initialWeights, onClose, onSaved }) {
           ...(r.initialNav ? { initialNav: r.initialNav } : {}),
         };
       });
-      await api.addVersion(model.key, { effectiveDate, note, holdings });
+      const result = await api.addVersion(model.key, { effectiveDate, note, holdings });
+      if (result?.noChange) { setSaving(false); setNoChange(true); return; }
       onSaved();
     } catch (e) {
       setErr(e.message); setSaving(false);
@@ -115,6 +117,7 @@ export default function EditModel({ model, initialWeights, onClose, onSaved }) {
         {rows.length > 0 && <RiskPreview modelKey={model.key} rows={rows} />}
 
         {err && <div className="banner" style={{ margin: '16px 0 0' }}>Couldn’t save — {err}</div>}
+        {noChange && <div className="data-warn" style={{ margin: '16px 0 0' }}>No changes from the current version — nothing was saved.</div>}
       </div>
 
       <div className={`sum-bar${balanced ? ' ok' : ''}`}>

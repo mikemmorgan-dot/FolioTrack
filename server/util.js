@@ -36,6 +36,21 @@ export function instrumentFromSpec(spec) {
   };
 }
 
+// True if two holdings lists reference the same instruments at the same
+// weights (order-independent, small float tolerance for the /100 and *100
+// round-trip the client does on every save). Used to reject a save that
+// wouldn't actually change anything — see addVersion in both stores.
+export function holdingsEqual(a, b, eps = 1e-6) {
+  if (a.length !== b.length) return false;
+  const remaining = new Map(a.map((h) => [h.instrumentId, h.weight]));
+  for (const h of b) {
+    if (!remaining.has(h.instrumentId)) return false;
+    if (Math.abs(remaining.get(h.instrumentId) - h.weight) > eps) return false;
+    remaining.delete(h.instrumentId);
+  }
+  return remaining.size === 0;
+}
+
 // A breakdown is a list of {label, weight} entered from a fund's factsheet.
 // Weights don't have to sum to 1 — callers normalize by the actual sum so a
 // slightly-stale or rounded factsheet entry still distributes sensibly.

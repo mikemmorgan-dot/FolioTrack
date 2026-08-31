@@ -1,6 +1,6 @@
 // store-pg.js — durable Postgres backend. Same API as JsonStore.
 import { makePool, initSchema, seedIfEmpty } from './db.js';
-import { uid, instrumentFromSpec, normalizeBreakdown } from './util.js';
+import { uid, instrumentFromSpec, normalizeBreakdown, currentVersionOf, holdingsEqual } from './util.js';
 
 const numOrNull = (x) => (x == null ? null : Number(x));
 
@@ -146,6 +146,9 @@ export class PgStore {
       }
       if (instrumentId) resolved.push({ instrumentId, weight: Number(h.weight) });
     }
+
+    const cur = currentVersionOf({ versions: await this._versionsFor(key) });
+    if (cur && holdingsEqual(cur.holdings, resolved)) return { noChange: true };
 
     const id = uid('ver');
     const eff = effectiveDate || new Date().toISOString().slice(0, 10);

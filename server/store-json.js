@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { seedData } from './seed.js';
-import { uid, instrumentFromSpec, normalizeBreakdown } from './util.js';
+import { uid, instrumentFromSpec, normalizeBreakdown, currentVersionOf, holdingsEqual } from './util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data', 'store.json');
@@ -92,6 +92,8 @@ export class JsonStore {
       }
       if (instrumentId) resolved.push({ instrumentId, weight: Number(h.weight) });
     }
+    const cur = currentVersionOf({ versions: m.versions });
+    if (cur && holdingsEqual(cur.holdings, resolved)) return { noChange: true };
     const version = {
       id: uid('ver'),
       effectiveDate: effectiveDate || new Date().toISOString().slice(0, 10),

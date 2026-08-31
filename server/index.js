@@ -86,6 +86,7 @@ app.post('/api/models/:key/versions', async (req, res) => {
   try {
     const v = await store.addVersion(req.params.key, req.body || {});
     if (!v) return res.status(404).json({ error: 'Model not found' });
+    if (v.noChange) return res.status(200).json({ noChange: true, message: 'No changes from the current version — nothing was saved.' });
     res.status(201).json(v);
   } catch (e) {
     res.status(500).json({ error: e.message });
