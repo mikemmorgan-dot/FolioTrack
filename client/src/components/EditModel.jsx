@@ -210,6 +210,9 @@ function AddPanel({ onAdd, onCancel }) {
               {resolved.partial
                 ? <span>Price found, but this source carries no name or currency — please fill them in.</span>
                 : <span>{resolved.name} · {resolved.currency}</span>}
+              {!resolved.sector && !resolved.country && resolved.classificationError && (
+                <div className="reason">Sector/region couldn’t be auto-filled ({resolved.classificationError}) — fill them in below if you have them.</div>
+              )}
             </div>
           ) : resolved.blocked ? (
             <div className="notfound blocked-note">
