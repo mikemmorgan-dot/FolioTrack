@@ -1,0 +1,225 @@
+import { useState, useRef, useEffect } from 'react';
+import { api, pct, typeColor, typeLabel } from '../api.js';
+import RiskPreview from './RiskPreview.jsx';
+
+const TYPES = [
+  { id: 'stock', label: 'Stock' },
+  { id: 'etf', label: 'ETF' },
+  { id: 'mutualfund', label: 'Fund' },
+  { id: 'alt', label: 'Alt' },
+];
+
+let seq = 0;
+const keyify = () => `h${seq++}`;
+
+function fromModel(model) {
+  return model.holdings.map((h) => ({
+    uiKey: keyify(),
+    instrumentId: h.id,
+    symbol: h.symbol, name: h.name, type: h.type, currency: h.currency,
+    sector: h.sector, country: h.country, mer: h.mer,
+    source: h.source, weightPct: +(h.weight * 100).toFixed(2),
+  }));
+}
+
+export default function EditModel({ model, onClose, onSaved }) {
+  const [rows, setRows] = useState(() => fromModel(model));
+  const [effectiveDate, setEffectiveDate] = useState(new Date().toISOString().slice(0, 10));
+  const [note, setNote] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const total = rows.reduce((s, r) => s + (Number(r.weightPct) || 0), 0);
+  const balanced = Math.abs(total - 100) <= 0.5;
+  const canSave = rows.length > 0 && balanced && !saving;
+
+  const setWeight = (uiKey, v) => setRows((rs) => rs.map((r) => (r.uiKey === uiKey ? { ...r, weightPct: v } : r)));
+  const remove = (uiKey) => setRows((rs) => rs.filter((r) => r.uiKey !== uiKey));
+  const normalize = () => {
+    if (total <= 0) return;
+    setRows((rs) => rs.map((r) => ({ ...r, weightPct: +((Number(r.weightPct) || 0) / total * 100).toFixed(2) })));
+  };
+
+  const addRow = (row) => { setRows((rs) => [...rs, { ...row, uiKey: keyify() }]); setAdding(false); };
+
+  async function save() {
+    setSaving(true); setErr(null);
+    try {
+      const holdings = rows.map((r) => {
+        const weight = (Number(r.weightPct) || 0) / 100;
+        if (r.instrumentId) return { instrumentId: r.instrumentId, weight };
+        return {
+          instrument: { symbol: r.symbol, name: r.name, type: r.type, source: r.source, currency: r.currency, sector: r.sector, country: r.country, mer: r.mer },
+          weight,
+          ...(r.initialNav ? { initialNav: r.initialNav } : {}),
+        };
+      });
+      await api.addVersion(model.key, { effectiveDate, note, holdings });
+      onSaved();
+    } catch (e) {
+      setErr(e.message); setSaving(false);
+    }
+  }
+
+  return (
+    <div className="editor">
+      <header className="editor-bar">
+        <button className="ed-cancel" onClick={onClose}>Cancel</button>
+        <span className="ed-title">Edit {model.name}</span>
+        <button className="ed-save" disabled={!canSave} onClick={save}>{saving ? 'Saving…' : 'Save'}</button>
+      </header>
+
+      <div className="editor-body">
+        <p className="ed-hint">Saving records a new effective-dated version — it doesn’t overwrite history.</p>
+
+        <div className="field-row">
+          <label className="field">
+            <span>Effective date</span>
+            <input type="date" value={effectiveDate} onChange={(e) => setEffectiveDate(e.target.value)} />
+          </label>
+        </div>
+        <label className="field">
+          <span>What changed &amp; why</span>
+          <input type="text" placeholder="e.g. Trimmed bonds, added private credit" value={note} onChange={(e) => setNote(e.target.value)} />
+        </label>
+
+        <div className="ed-section">Holdings</div>
+        <div className="rows grouped">
+          {rows.map((r) => (
+            <div className="row edit-row" key={r.uiKey}>
+              <span className="asset-icon" style={{ '--ai-c': typeColor(r.type) }}>{(r.symbol || '?').replace(/\..*/, '').slice(0, 3)}</span>
+              <div className="row-main">
+                <div className="row-sym">{r.symbol}</div>
+                <div className="row-sub">{r.name}{r.source === 'manual' ? ' · manual' : ''}</div>
+              </div>
+              <div className="weight-input">
+                <input type="number" inputMode="decimal" value={r.weightPct}
+                  onChange={(e) => setWeight(r.uiKey, e.target.value)} />
+                <span>%</span>
+              </div>
+              <button className="row-x" aria-label="Remove" onClick={() => remove(r.uiKey)}>×</button>
+            </div>
+          ))}
+          {rows.length === 0 && <div className="row"><span className="muted">No holdings — add one below.</span></div>}
+        </div>
+
+        {adding
+          ? <AddPanel onAdd={addRow} onCancel={() => setAdding(false)} />
+          : <button className="add-holding" onClick={() => setAdding(true)}>+ Add holding</button>}
+
+        {rows.length > 0 && <RiskPreview modelKey={model.key} rows={rows} />}
+
+        {err && <div className="banner" style={{ margin: '16px 0 0' }}>Couldn’t save — {err}</div>}
+      </div>
+
+      <div className={`sum-bar${balanced ? ' ok' : ''}`}>
+        <span>Total weight</span>
+        <span className="sum-val num">{pct(total / 100)}</span>
+        {!balanced && <button className="sum-normalize" onClick={normalize}>Normalize to 100%</button>}
+      </div>
+    </div>
+  );
+}
+
+function AddPanel({ onAdd, onCancel }) {
+  const [symbol, setSymbol] = useState('');
+  const [looking, setLooking] = useState(false);
+  const [resolved, setResolved] = useState(null); // null | {found,...}
+  const [form, setForm] = useState({ name: '', type: 'stock', currency: 'CAD', sector: '', country: '', navDate: '', nav: '' });
+  const panelRef = useRef(null);
+  const resultRef = useRef(null);
+
+  useEffect(() => { panelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, []);
+  useEffect(() => { if (resolved) resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, [resolved]);
+
+  async function doLookup() {
+    if (!symbol.trim()) return;
+    setLooking(true);
+    try {
+      const r = await api.lookup(symbol.trim());
+      setResolved(r);
+      setForm((f) => ({
+        ...f,
+        name: r.found ? r.name : f.name,
+        type: r.found ? r.guessType : 'mutualfund',
+        currency: r.found ? (r.currency || 'CAD') : f.currency,
+      }));
+    } catch {
+      setResolved({ found: false, symbol });
+    } finally {
+      setLooking(false);
+    }
+  }
+
+  function confirm() {
+    const auto = resolved?.found;
+    const row = {
+      instrumentId: null,
+      symbol: symbol.trim().toUpperCase(),
+      name: form.name || symbol.trim().toUpperCase(),
+      type: form.type,
+      source: auto ? 'auto' : 'manual',
+      currency: form.currency || 'CAD',
+      sector: form.sector || null,
+      country: form.country || null,
+      mer: null,
+      weightPct: 0,
+    };
+    if (!auto && form.nav && form.navDate) row.initialNav = { date: form.navDate, nav: Number(form.nav) };
+    onAdd(row);
+  }
+
+  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  return (
+    <div className="add-panel" ref={panelRef}>
+      <div className="lookup-row">
+        <input className="sym-input" placeholder="Ticker / fund code (e.g. AAPL, VFV.TO, RBF1005)"
+          value={symbol} autoCapitalize="characters"
+          onChange={(e) => { setSymbol(e.target.value); setResolved(null); }} />
+        <button className="lookup-btn" onClick={doLookup} disabled={looking || !symbol.trim()}>{looking ? '…' : 'Look up'}</button>
+      </div>
+
+      {resolved && (
+        <div className="lookup-result" ref={resultRef}>
+          {resolved.found
+            ? <div className="found"><span className="pill green">Live on Yahoo</span> {resolved.name} · {resolved.currency}</div>
+            : <div className="notfound"><span className="pill neutral">Not on Yahoo</span> add it manually below</div>}
+
+          <label className="field"><span>Name</span>
+            <input type="text" value={form.name} onChange={set('name')} placeholder="Instrument name" />
+          </label>
+
+          <div className="field"><span>Type</span>
+            <div className="segmented">
+              {TYPES.map((t) => (
+                <button key={t.id} className={form.type === t.id ? 'seg active' : 'seg'}
+                  style={form.type === t.id ? { '--seg-c': typeColor(t.id) } : undefined}
+                  onClick={() => setForm((f) => ({ ...f, type: t.id }))}>{t.label}</button>
+              ))}
+            </div>
+          </div>
+
+          <div className="field-row">
+            <label className="field"><span>Currency</span><input type="text" value={form.currency} onChange={set('currency')} /></label>
+            <label className="field"><span>Sector (optional)</span><input type="text" value={form.sector} onChange={set('sector')} placeholder="e.g. Energy" /></label>
+          </div>
+          <label className="field"><span>Region (optional)</span><input type="text" value={form.country} onChange={set('country')} placeholder="e.g. Canada" /></label>
+
+          {!resolved.found && (
+            <div className="field-row">
+              <label className="field"><span>NAV date (optional)</span><input type="date" value={form.navDate} onChange={set('navDate')} /></label>
+              <label className="field"><span>NAV (optional)</span><input type="number" inputMode="decimal" value={form.nav} onChange={set('nav')} placeholder="e.g. 42.15" /></label>
+            </div>
+          )}
+
+          <div className="add-actions">
+            <button className="ed-cancel" onClick={onCancel}>Cancel</button>
+            <button className="btn-primary sm" onClick={confirm} disabled={!form.name.trim()}>Add to model</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
