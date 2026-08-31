@@ -277,13 +277,31 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 
 .field { display: flex; flex-direction: column; gap: 7px; margin-bottom: 14px; }
 .field > span { font-size: 13px; font-weight: 600; color: var(--text-2); padding-left: 2px; }
-.field input {
+.field input, .field-row > input {
   background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
   padding: 14px 14px; font-size: 16px; color: var(--text); font-family: inherit; width: 100%;
 }
-.field input:focus { outline: none; border-color: var(--green); }
+.field input:focus, .field-row > input:focus { outline: none; border-color: var(--green); }
 .field-row { display: flex; gap: 12px; }
 .field-row .field { flex: 1; }
+
+.field select, .field-row select {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  padding: 14px 14px; font-size: 16px; color: var(--text); font-family: inherit; width: 100%;
+  appearance: none; -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-3) 50%), linear-gradient(135deg, var(--text-3) 50%, transparent 50%);
+  background-position: calc(100% - 20px) center, calc(100% - 15px) center;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+.field select:focus, .field-row select:focus { outline: none; border-color: var(--green); }
+.field select option, .field-row select option { background: var(--surface); color: var(--text); }
+.classify-select-row { display: flex; gap: 8px; align-items: center; }
+.classify-select-row input { flex: 1; }
+.classify-select-back {
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px;
+  color: var(--text-2); font-size: 13px; padding: 10px 12px; flex: none;
+}
 
 .edit-row { gap: 12px; }
 .weight-input { display: flex; align-items: center; gap: 3px; background: var(--surface-3); border-radius: 10px; padding: 6px 10px; flex: none; }

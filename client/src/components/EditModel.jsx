@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
 import { api, pct, typeColor, typeLabel } from '../api.js';
+import { SECTOR_OPTIONS, REGION_OPTIONS } from '../classify.js';
 import RiskPreview from './RiskPreview.jsx';
+import ClassifySelect from './ClassifySelect.jsx';
 
 const TYPES = [
   { id: 'stock', label: 'Stock' },
@@ -243,15 +245,13 @@ function AddPanel({ onAdd, onCancel }) {
           <div className="field-row">
             <label className="field"><span>Currency</span><input type="text" value={form.currency} onChange={set('currency')} /></label>
             <label className="field"><span>Sector (optional)</span>
-              <input type="text" value={form.sector}
-                onChange={(e) => { setTouched((t) => ({ ...t, sector: true })); set('sector')(e); }}
-                placeholder="e.g. Energy" />
+              <ClassifySelect options={SECTOR_OPTIONS} value={form.sector} placeholder="e.g. Energy"
+                onChange={(v) => { setTouched((t) => ({ ...t, sector: true })); setForm((f) => ({ ...f, sector: v })); }} />
             </label>
           </div>
           <label className="field"><span>Region (optional)</span>
-            <input type="text" value={form.country}
-              onChange={(e) => { setTouched((t) => ({ ...t, country: true })); set('country')(e); }}
-              placeholder="e.g. Canada" />
+            <ClassifySelect options={REGION_OPTIONS} value={form.country} placeholder="e.g. Canada"
+              onChange={(v) => { setTouched((t) => ({ ...t, country: true })); setForm((f) => ({ ...f, country: v })); }} />
           </label>
 
           {!resolved.found && (

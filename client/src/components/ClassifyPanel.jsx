@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { api } from '../api.js';
+import { SECTOR_OPTIONS, REGION_OPTIONS } from '../classify.js';
+import ClassifySelect from './ClassifySelect.jsx';
 
 let seq = 0;
 const rowify = (list) => (list || []).map((r) => ({ uiKey: `bd${seq++}`, label: r.label, weight: String(r.weight) }));
 
-function BreakdownEditor({ title, rows, setRows }) {
+function BreakdownEditor({ title, options, placeholder, rows, setRows }) {
   const total = rows.reduce((s, r) => s + (Number(r.weight) || 0), 0);
   const update = (uiKey, patch) => setRows((rs) => rs.map((r) => (r.uiKey === uiKey ? { ...r, ...patch } : r)));
   const remove = (uiKey) => setRows((rs) => rs.filter((r) => r.uiKey !== uiKey));
@@ -15,8 +17,10 @@ function BreakdownEditor({ title, rows, setRows }) {
       <span>{title} <span className="muted">(optional — from the fund's factsheet)</span></span>
       {rows.map((r) => (
         <div className="field-row" key={r.uiKey}>
-          <input type="text" placeholder="e.g. Financials" value={r.label}
-            onChange={(e) => update(r.uiKey, { label: e.target.value })} />
+          <div style={{ flex: 1 }}>
+            <ClassifySelect options={options} value={r.label} placeholder={placeholder}
+              onChange={(v) => update(r.uiKey, { label: v })} />
+          </div>
           <input type="number" inputMode="decimal" placeholder="%" style={{ maxWidth: 80 }}
             value={r.weight} onChange={(e) => update(r.uiKey, { weight: e.target.value })} />
           <button type="button" className="row-x" aria-label="Remove" onClick={() => remove(r.uiKey)}>×</button>
@@ -76,13 +80,17 @@ export default function ClassifyPanel({ instrument, onClose, onSaved }) {
         <div className="ed-section">Fallback classification</div>
         <p className="note">Used for Geo/Sector when no breakdown is entered below.</p>
         <div className="field-row">
-          <label className="field"><span>Sector</span><input type="text" value={sector} onChange={(e) => setSector(e.target.value)} placeholder="e.g. Equity" /></label>
-          <label className="field"><span>Region</span><input type="text" value={country} onChange={(e) => setCountry(e.target.value)} placeholder="e.g. Canada" /></label>
+          <label className="field"><span>Sector</span>
+            <ClassifySelect options={SECTOR_OPTIONS} value={sector} placeholder="e.g. Equity" onChange={setSector} />
+          </label>
+          <label className="field"><span>Region</span>
+            <ClassifySelect options={REGION_OPTIONS} value={country} placeholder="e.g. Canada" onChange={setCountry} />
+          </label>
         </div>
 
         <div className="ed-section">Fund look-through</div>
-        <BreakdownEditor title="Sector breakdown" rows={sectorRows} setRows={setSectorRows} />
-        <BreakdownEditor title="Country breakdown" rows={countryRows} setRows={setCountryRows} />
+        <BreakdownEditor title="Sector breakdown" options={SECTOR_OPTIONS} placeholder="e.g. Financials" rows={sectorRows} setRows={setSectorRows} />
+        <BreakdownEditor title="Country breakdown" options={REGION_OPTIONS} placeholder="e.g. Canada" rows={countryRows} setRows={setCountryRows} />
 
         {err && <div className="banner" style={{ margin: '16px 0 0' }}>Couldn’t save — {err}</div>}
       </div>
