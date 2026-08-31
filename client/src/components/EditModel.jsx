@@ -157,12 +157,13 @@ function AddPanel({ onAdd, onCancel }) {
   }
 
   function confirm() {
-    // 'auto' = priced from Yahoo, 'manual' = priced from entered NAVs.
-    // If Yahoo confirmed it, it's auto. If Yahoo was merely unreachable, a
-    // listed type stays auto so it starts pricing itself once access is
-    // restored — only a genuine "not on Yahoo" falls back to manual.
-    const listed = form.type === 'stock' || form.type === 'etf';
-    const auto = resolved?.found || (resolved?.blocked && listed);
+    // 'auto' = priced from the provider chain. 'manual' = priced from
+    // user-entered NAVs. Only an actual confirmed price earns 'auto' — a
+    // block doesn't get the benefit of the doubt. That used to be assumed
+    // transient for listed types, but for TSX specifically it isn't: no
+    // free-tier fallback covers TSX quotes (see providers.js), so a blocked
+    // TSX symbol would otherwise sit "auto" and just never price.
+    const auto = !!resolved?.found;
     const row = {
       instrumentId: null,
       symbol: symbol.trim().toUpperCase(),
@@ -203,7 +204,7 @@ function AddPanel({ onAdd, onCancel }) {
             <div className="notfound blocked-note">
               <div><span className="pill amber">No data source reachable</span> couldn’t verify this ticker</div>
               <div className="reason">{resolved.reason}</div>
-              <div className="reason">Every price source failed, which points to the server’s outbound access, not a bad symbol. You can still add it manually — open <code>/api/diagnostics</code> to see which sources work.</div>
+              <div className="reason">Adding this as a manual holding for now — enter a NAV below and update it periodically. Open <code>/api/diagnostics</code> to see which price sources currently work.</div>
             </div>
           ) : (
             <div className="notfound"><span className="pill neutral">Not on Yahoo</span> add it manually below</div>
