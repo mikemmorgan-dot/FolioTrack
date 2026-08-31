@@ -80,7 +80,7 @@ export default function RiskTab({ model, onOptimizeApply }) {
           <p className="note">Sharpe = (annualized return − risk-free) ÷ annualized volatility. Sortino uses downside deviation vs the risk-free rate. Info ratio = active return ÷ tracking error. Computed on monthly returns of the model as actually run.</p>
 
           <div className="section-title" style={{ marginTop: 20 }}>Optimize</div>
-          <OptimizePanel modelKey={model.key} rf={(Number(rf) || 0) / 100} onApply={onOptimizeApply} />
+          <OptimizePanel modelKey={model.key} rf={rf} onApply={onOptimizeApply} />
         </>
       )}
     </>
