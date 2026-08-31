@@ -260,12 +260,19 @@ export async function lookup(symbol) {
     if (q.price == null) return { found: false, symbol, reason: 'No price returned', blocked: false };
     const bare = symbol.replace(/\..*$/, '');
     const guessType = /^[A-Z]{5}X$/i.test(bare) ? 'mutualfund' : 'stock';
-    let profile = null;
-    try { profile = await twelvedataProfile(symbol); } catch { /* best-effort — no classification data, not a lookup failure */ }
+    let profile = null, profileError = null;
+    // Best-effort — a failure here doesn't fail the lookup, since a price
+    // without a classification is still useful. But swallowing it silently
+    // last time made a real rate-limit hit look like an unexplained gap
+    // (Twelve Data pricing the quote + this profile call = 2 of its 8
+    // requests/minute in one lookup), so the reason is surfaced instead.
+    try { profile = await twelvedataProfile(symbol); }
+    catch (e) { profileError = e.message; }
     return {
       found: true, symbol, provider: q.provider, partial: !!q.partial,
       name: q.name, currency: q.currency, exchange: q.exchange, guessType, price: q.price,
       sector: profile?.sector || null, country: profile?.country || null,
+      classificationError: profile ? null : profileError,
     };
   } catch (e) {
     return {
