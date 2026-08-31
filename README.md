@@ -24,22 +24,32 @@ Push to GitHub, then either commit `render.yaml` (Blueprint) or create a Web Ser
 - **Start:** `npm start`
 - **Node:** 20+
 
-## ⚠️ Persistence — read before relying on saved changes
-The default store writes to `server/data/store.json`. **Render's free tier has an
-ephemeral filesystem and spins down when idle** — that file is wiped on every
-restart/redeploy, so model changes you save will not survive. The app re-seeds so
-it never looks broken, which can mask silent data loss.
+## Persistence — set DATABASE_URL for durable data
+Storage auto-selects at boot:
+- **`DATABASE_URL` set** → Postgres. Schema is created automatically; seed data is
+  inserted only if the tables are empty, so restarts/redeploys never clobber your edits.
+- **Not set** → a JSON file (`server/data/store.json`). Fine for local dev, but on
+  Render's free tier the filesystem is ephemeral, so this is wiped on restart.
 
-Fix one of these before real use:
-1. **Managed Postgres** (recommended) — Neon or Supabase free tier. Replace the
-   body of `server/store.js` only; the API it exposes stays identical, so nothing
-   else changes. This is the clean long-term path.
-2. **Render persistent disk** — set `DATA_FILE=/var/data/store.json` and mount a
-   disk (requires a paid instance; see commented block in `render.yaml`).
-3. **Gist-backed JSON** — like your TravelSmart price-watch setup; fine for
-   single-user, low write volume.
+**Recommended (free): Neon Postgres.**
+1. Create a project at neon.tech, copy the connection string
+   (`postgresql://…?sslmode=require`).
+2. In Render → your service → Environment, add `DATABASE_URL` = that string.
+3. Redeploy. The logs should print `Storage: Postgres`. That's the switch.
 
+Both backends implement the same interface (`store-json.js` / `store-pg.js` behind
+`store.js`), so the rest of the app is unaware of which is active.
 (Verify current free-tier terms on Render/Neon — they change.)
+
+## Editing a model
+Tap the **+** button (or "Add holdings" on an empty model) to open the editor. You can:
+- add any ticker — it's looked up on Yahoo; if found it's tracked live, if not you
+  add it manually (name, type, currency, optional starting NAV) for funds/alts;
+- set target weights with a live "sums to 100%" check and a Normalize button;
+- set an effective date and a note describing the change.
+
+Saving writes a **new effective-dated version** — it never overwrites history, which
+is what feeds the Performance change-timeline (and, next, attribution).
 
 ## Data coverage (honest)
 | Instrument | Source |
@@ -55,7 +65,20 @@ Keep this to model **allocations** and instrument data. Do not put client accoun
 values or PII on a public URL — gate behind auth or deploy privately if that changes.
 
 ## Live now vs. next
-- **Live:** Overview, Holdings, Allocation, Geo/Sector, model-change timeline.
-- **Next:** return & attribution engine (Performance), risk metrics — both compute
-  from data already wired (Yahoo history + entered NAVs, vs the blended benchmark).
+- **Live:** Overview, Holdings, Allocation, Geo/Sector, model editing, and the
+  **return & attribution engine** (Performance) — monthly model-vs-benchmark
+  returns, period breakdown, per-change attribution (new mix vs. holding the prior
+  version), and holding contribution.
+- **Next:** Risk metrics — they derive from the same monthly return series the
+  Performance engine already produces.
+
+### How performance is computed (methodology)
+Monthly return series (the honest common frequency, since manual funds/alts report
+periodic NAVs). Within each version's window the model holds that version's target
+weights; windows are chained. Any month a holding lacks data is renormalized out and
+a **coverage** figure is surfaced. Manual holdings realize their return in the month
+their NAV updates. Change attribution compares each new version's return to holding
+the prior version over the same window. Contribution is arithmetic (weight × return)
+over the current version's window. If Yahoo is unreachable the engine degrades
+gracefully (flags missing sleeves, computes what it can) rather than failing.
 ```
