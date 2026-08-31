@@ -8,7 +8,8 @@
     "build": "npm --prefix client install && npm --prefix client run build",
     "start": "npm --prefix server start",
     "dev:server": "npm --prefix server run dev",
-    "dev:client": "npm --prefix client run dev"
+    "dev:client": "npm --prefix client run dev",
+    "test": "npm --prefix server test"
   },
   "engines": {
     "node": ">=20"
