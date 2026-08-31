@@ -102,7 +102,10 @@ async function finnhubFetch(path, params) {
   for (const [k, v] of Object.entries(params)) if (v != null) url.searchParams.set(k, v);
   url.searchParams.set('token', key);
   const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
-  if (!res.ok) throw new Error(`Finnhub HTTP ${res.status}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Finnhub HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ''}`);
+  }
   return res.json();
 }
 
