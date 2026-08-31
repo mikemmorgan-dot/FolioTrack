@@ -50,3 +50,18 @@ export async function getHistory(symbol, range = '1y', interval = '1d') {
     .filter((p) => p.close != null);
   return { symbol, range, interval, series };
 }
+
+// Resolve a ticker for the editor: return name/currency if Yahoo covers it,
+// else { found:false } so the client can offer manual entry.
+export async function lookup(symbol) {
+  try {
+    const q = await getQuote(symbol);
+    if (q.price == null) return { found: false, symbol };
+    // crude type guess: 5-letter all-caps ending in X → US mutual fund, else ETF/stock
+    const bare = symbol.replace(/\..*$/, '');
+    const guessType = /^[A-Z]{5}X$/.test(bare) ? 'mutualfund' : 'stock';
+    return { found: true, symbol, name: q.name, currency: q.currency, exchange: q.exchange, guessType, price: q.price };
+  } catch {
+    return { found: false, symbol };
+  }
+}
