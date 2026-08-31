@@ -79,6 +79,64 @@ const twelvedata = {
   },
 };
 
+// ---------- Finnhub (keyed, free tier: 60 req/min) ----------
+// Twelve Data's free tier paywalls TSX quotes despite listing TSX in its
+// symbol search — confirmed live, not assumed. Finnhub's pricing page lists
+// "Canadian Exchanges" (TSX/TSXV/CNSX) as a covered exchange group, but that's
+// marketing copy, not a tested claim — verify via diagnostics before trusting
+// it. Symbol suffix is assumed to match Yahoo's convention (XBB.TO passed
+// through as-is) since that's unconfirmed too.
+//
+// Free tier's /quote returns HTTP 200 with all-zero fields for a symbol it
+// doesn't have, not an error — a zero price is treated as "no data" below.
+// Historical candles (/stock/candle) have been Premium-only on Finnhub for a
+// while by reputation, not verified here either; history() attempts it anyway
+// so a real failure (or success) shows up in diagnostics instead of being
+// assumed.
+const FINNHUB_BASE = 'https://finnhub.io/api/v1';
+
+async function finnhubFetch(path, params) {
+  const key = process.env.FINNHUB_API_KEY;
+  if (!key) throw new Error('FINNHUB_API_KEY not configured');
+  const url = new URL(`${FINNHUB_BASE}/${path}`);
+  for (const [k, v] of Object.entries(params)) if (v != null) url.searchParams.set(k, v);
+  url.searchParams.set('token', key);
+  const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+  if (!res.ok) throw new Error(`Finnhub HTTP ${res.status}`);
+  return res.json();
+}
+
+const finnhub = {
+  id: 'finnhub',
+  supports: () => true,
+  async quote(symbol) {
+    const q = await finnhubFetch('quote', { symbol });
+    if (!q.c) throw new Error(`Finnhub has no data for ${symbol}`);
+    return {
+      symbol,
+      price: q.c,
+      previousClose: q.pc || null,
+      currency: null,   // free-tier /quote doesn't carry currency
+      name: symbol,     // nor a display name
+      exchange: null,
+      asOf: q.t ? new Date(q.t * 1000).toISOString() : null,
+      partial: true,    // flags that name/currency need user input
+    };
+  },
+  async history(symbol, range) {
+    const days = range === '1y' ? 365 : range === '2y' ? 730 : 1825;
+    const to = Math.floor(Date.now() / 1000);
+    const from = to - days * 86400;
+    const c = await finnhubFetch('stock/candle', { symbol, resolution: 'D', from, to });
+    if (c.s !== 'ok' || !c.t?.length) throw new Error(`Finnhub: no candle data for ${symbol} (${c.s || 'no status'})`);
+    const series = c.t
+      .map((ts, i) => ({ date: new Date(ts * 1000).toISOString().slice(0, 10), close: c.c[i] }))
+      .filter((p) => Number.isFinite(p.close));
+    if (!series.length) throw new Error(`Finnhub returned no rows for ${symbol}`);
+    return { symbol, series };
+  },
+};
+
 const yahoo = {
   id: 'yahoo',
   supports: () => true,
@@ -87,7 +145,7 @@ const yahoo = {
 };
 
 // Order matters: richest metadata first, most-reachable last.
-export const PROVIDERS = [yahoo, twelvedata];
+export const PROVIDERS = [yahoo, twelvedata, finnhub];
 
 function isNotFound(e) {
   return (e instanceof YahooError && e.notFound) || /no data|not\s*found/i.test(e.message || '');

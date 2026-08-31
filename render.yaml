@@ -16,6 +16,11 @@ services:
       # Twelve Data free API key (twelvedata.com/pricing) — fallback price source
       # when Yahoo blocks Render's IP. Set in the Render dashboard, not here.
       # WITHOUT it the app still works but has no fallback: a Yahoo block means
-      # lookups fail until this is set.
+      # lookups fail until this is set. Free tier does NOT cover TSX quotes.
       - key: TWELVEDATA_API_KEY
+        sync: false
+      # Finnhub free API key (finnhub.io) — second fallback, added specifically
+      # for TSX coverage that Twelve Data's free tier doesn't include. Set in
+      # the Render dashboard, not here.
+      - key: FINNHUB_API_KEY
         sync: false
