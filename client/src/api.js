@@ -9,6 +9,12 @@ async function j(url, opts) {
 export const api = {
   models: () => j('/api/models'),
   model: (key) => j(`/api/models/${key}`),
+  performance: (key) => j(`/api/models/${key}/performance`),
+  risk: (key, rf) => j(`/api/models/${key}/risk?rf=${rf}`),
+  simulate: (key, body) => j(`/api/models/${key}/simulate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  }),
+  lookup: (symbol) => j(`/api/lookup/${encodeURIComponent(symbol)}`),
   history: (symbol, range = '1y') => j(`/api/history/${encodeURIComponent(symbol)}?range=${range}`),
   addVersion: (key, body) =>
     j(`/api/models/${key}/versions`, {
@@ -20,6 +26,7 @@ export const api = {
 
 // ---- formatting ----
 export const pct = (x, d = 1) => (x == null ? '—' : `${(x * 100).toFixed(d)}%`);
+export const signedPct = (x, d = 1) => (x == null ? '—' : `${x >= 0 ? '+' : ''}${(x * 100).toFixed(d)}%`);
 export const money = (x, ccy = 'CAD') =>
   x == null ? '—' : new Intl.NumberFormat('en-CA', { style: 'currency', currency: ccy, maximumFractionDigits: 2 }).format(x);
 export const num = (x, d = 2) => (x == null ? '—' : Number(x).toFixed(d));

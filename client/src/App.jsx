@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from './api.js';
 import Hero from './components/Hero.jsx';
+import EditModel from './components/EditModel.jsx';
 import { IconMenu, IconSearch, IconOverview, IconPerf, IconRisk, IconHoldings, IconGeo, IconMix } from './components/icons.jsx';
 import OverviewTab from './components/tabs/OverviewTab.jsx';
 import PerformanceTab from './components/tabs/PerformanceTab.jsx';
@@ -26,6 +27,7 @@ export default function App() {
   const [selected, setSelected] = useState(null);
   const [model, setModel] = useState(null);
   const [view, setView] = useState('overview');
+  const [editing, setEditing] = useState(false);
   const [err, setErr] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -35,11 +37,14 @@ export default function App() {
       .catch((e) => setErr(e.message));
   }, []);
 
-  useEffect(() => {
-    if (!selected) return;
+  const loadModel = (key) => {
     setLoading(true);
-    api.model(selected).then(setModel).catch((e) => setErr(e.message)).finally(() => setLoading(false));
-  }, [selected]);
+    return api.model(key).then(setModel).catch((e) => setErr(e.message)).finally(() => setLoading(false));
+  };
+
+  useEffect(() => { if (selected) loadModel(selected); }, [selected]);
+
+  const refreshCounts = () => api.models().then(setModels).catch(() => {});
 
   const riskRank = models.find((m) => m.key === selected)?.riskRank;
   const Active = VIEWS.find((v) => v.id === view).C;
@@ -72,8 +77,9 @@ export default function App() {
         <>
           <Hero model={model} riskRank={riskRank} />
           <div className="content">
-            <Active model={model} goto={setView} riskRank={riskRank} />
+            <Active model={model} goto={setView} riskRank={riskRank} onEdit={() => setEditing(true)} />
           </div>
+          <button className="fab" aria-label="Edit model" onClick={() => setEditing(true)}>+</button>
         </>
       )}
 
@@ -88,6 +94,14 @@ export default function App() {
           );
         })}
       </nav>
+
+      {editing && model && (
+        <EditModel
+          model={model}
+          onClose={() => setEditing(false)}
+          onSaved={async () => { setEditing(false); await loadModel(selected); refreshCounts(); }}
+        />
+      )}
     </div>
   );
 }
