@@ -50,6 +50,7 @@ export class JsonStore {
     if (!inst) return null;
     if (patch.sector !== undefined) inst.sector = patch.sector || null;
     if (patch.country !== undefined) inst.country = patch.country || null;
+    if (patch.mer !== undefined) inst.mer = patch.mer === null || patch.mer === '' ? null : Number(patch.mer);
     if (patch.sectorBreakdown !== undefined || patch.countryBreakdown !== undefined) {
       if (patch.sectorBreakdown !== undefined) inst.sectorBreakdown = normalizeBreakdown(patch.sectorBreakdown);
       if (patch.countryBreakdown !== undefined) inst.countryBreakdown = normalizeBreakdown(patch.countryBreakdown);

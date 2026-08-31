@@ -1,7 +1,74 @@
-import { useState } from 'react';
-import { api } from '../api.js';
+import { useState, useEffect } from 'react';
+import { api, money } from '../api.js';
+import { asPctSigned, asPct } from '../riskFormat.js';
 import { SECTOR_OPTIONS, REGION_OPTIONS } from '../classify.js';
 import ClassifySelect from './ClassifySelect.jsx';
+import LineChart from './LineChart.jsx';
+
+const RANGES = ['1y', '2y', '5y'];
+
+function SecurityInfo({ instrument }) {
+  const [range, setRange] = useState('1y');
+  const [detail, setDetail] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    setLoading(true); setErr(null);
+    api.instrumentDetail(instrument.id, { range })
+      .then(setDetail)
+      .catch((e) => setErr(e.message))
+      .finally(() => setLoading(false));
+  }, [instrument.id, range]);
+
+  const s = detail?.stats;
+  const smallSample = s && s.months < 24;
+
+  return (
+    <div className="card pad" style={{ marginBottom: 18 }}>
+      <div className="rp-head">
+        <span className="rp-title">{instrument.symbol}</span>
+        <div className="segmented">
+          {RANGES.map((r) => (
+            <button key={r} type="button" className={range === r ? 'seg active' : 'seg'} onClick={() => setRange(r)}>{r.toUpperCase()}</button>
+          ))}
+        </div>
+      </div>
+
+      {loading && <div className="loading">Loading…</div>}
+      {err && <div className="banner" style={{ margin: '10px 0 0' }}>Couldn’t load — {err}</div>}
+
+      {detail && !loading && (
+        <>
+          {detail.quote ? (
+            <div className="rc-row" style={{ marginTop: 4 }}>
+              <span>Price</span>
+              <span className="num">{money(detail.quote.price, detail.quote.currency || instrument.currency)}{detail.quote.asOf ? ` · ${String(detail.quote.asOf).slice(0, 10)}` : ''}</span>
+            </div>
+          ) : (
+            <div className="data-warn" style={{ marginTop: 8 }}>No current price available{detail.error ? ` — ${detail.error}` : ''}.</div>
+          )}
+
+          {detail.series.length >= 2
+            ? <div style={{ marginTop: 10 }}><LineChart model={detail.series} benchmark={[]} height={140} /></div>
+            : <div className="chart-empty" style={{ marginTop: 10 }}>Not enough history yet to chart.</div>}
+
+          {s ? (
+            <div className="metric-grid" style={{ marginTop: 12 }}>
+              <div className="metric"><div className="k">Return (ann.)</div><div className="v num">{asPctSigned(s.annualizedReturn)}</div></div>
+              <div className="metric"><div className="k">Volatility</div><div className="v num">{asPct(s.volatility)}</div></div>
+              <div className="metric"><div className="k">Max drawdown</div><div className="v num">{asPct(s.maxDrawdown)}</div></div>
+            </div>
+          ) : (
+            <p className="note" style={{ marginTop: 10 }}>Not enough price history yet to compute return/volatility.</p>
+          )}
+          {smallSample && <div className="data-warn" style={{ marginTop: 8 }}>Only {s.months} monthly observations — treat as indicative, not precise.</div>}
+          <p className="note" style={{ marginTop: 10 }}>This instrument’s own price history — not the model’s. {instrument.source === 'auto' ? 'Live pricing via the provider chain.' : 'From entered NAV points.'}</p>
+        </>
+      )}
+    </div>
+  );
+}
 
 let seq = 0;
 const rowify = (list) => (list || []).map((r) => ({ uiKey: `bd${seq++}`, label: r.label, weight: String(r.weight) }));
@@ -39,6 +106,7 @@ function BreakdownEditor({ title, options, placeholder, rows, setRows }) {
 export default function ClassifyPanel({ instrument, onClose, onSaved }) {
   const [sector, setSector] = useState(instrument.sector || '');
   const [country, setCountry] = useState(instrument.country || '');
+  const [mer, setMer] = useState(instrument.mer != null ? String(instrument.mer) : '');
   const [sectorRows, setSectorRows] = useState(() => rowify(instrument.sectorBreakdown));
   const [countryRows, setCountryRows] = useState(() => rowify(instrument.countryBreakdown));
   const [saving, setSaving] = useState(false);
@@ -54,6 +122,7 @@ export default function ClassifyPanel({ instrument, onClose, onSaved }) {
       const updated = await api.updateInstrument(instrument.id, {
         sector: sector.trim() || null,
         country: country.trim() || null,
+        mer: mer.trim() === '' ? null : Number(mer),
         sectorBreakdown: validRows(sectorRows).length ? validRows(sectorRows) : null,
         countryBreakdown: validRows(countryRows).length ? validRows(countryRows) : null,
       });
@@ -67,11 +136,19 @@ export default function ClassifyPanel({ instrument, onClose, onSaved }) {
     <div className="editor">
       <header className="editor-bar">
         <button type="button" className="ed-cancel" onClick={onClose}>Cancel</button>
-        <span className="ed-title">Classify {instrument.symbol}</span>
+        <span className="ed-title">{instrument.symbol}</span>
         <button type="button" className="ed-save" disabled={saving} onClick={save}>{saving ? 'Saving…' : 'Save'}</button>
       </header>
 
       <div className="editor-body">
+        <SecurityInfo instrument={instrument} />
+
+        <div className="ed-section">MER</div>
+        <label className="field"><span>Management expense ratio (optional, %)</span>
+          <input type="number" inputMode="decimal" step="0.01" min="0" value={mer}
+            onChange={(e) => setMer(e.target.value)} placeholder="e.g. 0.09" />
+        </label>
+
         <p className="ed-hint">
           A breakdown below is entered manually from {instrument.name}'s factsheet — it isn't live data.
           {instrument.breakdownUpdatedAt && ` Last updated ${new Date(instrument.breakdownUpdatedAt).toISOString().slice(0, 10)}.`}

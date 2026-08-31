@@ -135,7 +135,7 @@ function AddPanel({ onAdd, onCancel }) {
   const [symbol, setSymbol] = useState('');
   const [looking, setLooking] = useState(false);
   const [resolved, setResolved] = useState(null); // null | {found,...}
-  const [form, setForm] = useState({ name: '', type: 'stock', currency: 'CAD', sector: '', country: '', navDate: '', nav: '' });
+  const [form, setForm] = useState({ name: '', type: 'stock', currency: 'CAD', sector: '', country: '', mer: '', navDate: '', nav: '' });
   // Once the user picks a type or edits a field themselves, lookups must not
   // overwrite their choice — that was silently resetting the selection to Fund.
   const [touched, setTouched] = useState({ type: false, name: false, sector: false, country: false });
@@ -186,7 +186,7 @@ function AddPanel({ onAdd, onCancel }) {
       currency: form.currency || 'CAD',
       sector: form.sector || null,
       country: form.country || null,
-      mer: null,
+      mer: form.mer.trim() === '' ? null : Number(form.mer),
       weightPct: 0,
     };
     if (!auto && form.nav && form.navDate) row.initialNav = { date: form.navDate, nav: Number(form.nav) };
@@ -253,6 +253,13 @@ function AddPanel({ onAdd, onCancel }) {
             <ClassifySelect options={REGION_OPTIONS} value={form.country} placeholder="e.g. Canada"
               onChange={(v) => { setTouched((t) => ({ ...t, country: true })); setForm((f) => ({ ...f, country: v })); }} />
           </label>
+
+          {(form.type === 'etf' || form.type === 'mutualfund') && (
+            <label className="field"><span>MER (optional, %)</span>
+              <input type="number" inputMode="decimal" step="0.01" min="0" value={form.mer}
+                onChange={set('mer')} placeholder="e.g. 0.09" />
+            </label>
+          )}
 
           {!resolved.found && (
             <div className="field-row">

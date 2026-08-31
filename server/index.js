@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { getStore } from './store.js';
 import { getQuote, getHistory, lookup, probeAll } from './providers.js';
 import { currentVersionOf } from './util.js';
-import { runPerformance, gatherReturns, returnsForRefs, computeCore } from './perf.js';
+import { runPerformance, gatherReturns, returnsForRefs, computeCore, monthGrid, levelsOnGrid, monthlyReturnsFromLevels } from './perf.js';
 import { riskMetrics, staticPortfolioMonthly } from './risk.js';
 import { runOptimize } from './optimize.js';
 
@@ -255,6 +255,48 @@ app.post('/api/instruments/:id/nav', async (req, res) => {
   const inst = await store.getInstrument(req.params.id);
   if (!inst) return res.status(404).json({ error: 'Instrument not found' });
   res.status(201).json(await store.addNav(req.params.id, req.body || {}));
+});
+
+// Quote/chart/basic performance for a single instrument — the "tap a
+// security" detail view. Performance stats are computed from the same
+// instrument's own price/NAV history (not the model's), so they only need
+// >=2 monthly observations to exist, unlike the model-level engines.
+app.get('/api/instruments/:id/detail', async (req, res) => {
+  try {
+    const inst = await store.getInstrument(req.params.id);
+    if (!inst) return res.status(404).json({ error: 'Instrument not found' });
+    const range = req.query.range || '1y';
+    const rf = parseRf(req.query.rf);
+
+    let series = [], quote = null, error = null;
+    if (inst.source === 'auto') {
+      try {
+        const h = await cachedHistory(inst.symbol, range);
+        series = h.series.map((p) => ({ date: p.date, value: p.close }));
+      } catch (e) { error = e.message; }
+      try { quote = await cachedQuote(inst.symbol); } catch (e) { if (!error) error = e.message; }
+    } else {
+      series = (await store.getNavSeries(inst.id)).map((p) => ({ date: p.date, value: p.nav }));
+      const latest = await store.latestNav(inst.id);
+      quote = latest ? { price: latest.nav, asOf: latest.date, currency: inst.currency } : null;
+    }
+
+    let stats = null;
+    if (series.length >= 2) {
+      const grid = monthGrid(series[0].date.slice(0, 7), new Date().toISOString().slice(0, 7));
+      const levels = levelsOnGrid(series, grid);
+      const rets = monthlyReturnsFromLevels(levels, grid);
+      const monthlyRets = grid.slice(1).map((ym) => rets[ym]).filter((r) => r != null);
+      if (monthlyRets.length >= 2) {
+        const m = riskMetrics(monthlyRets, monthlyRets.map(() => null), rf);
+        stats = { annualizedReturn: m.annualizedReturn, volatility: m.volatility, maxDrawdown: m.maxDrawdown, months: m.n };
+      }
+    }
+
+    res.json({ instrument: inst, quote, series, stats, error });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get('/api/quote/:symbol', async (req, res) => {

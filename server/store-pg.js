@@ -59,6 +59,10 @@ export class PgStore {
     let n = 1;
     if (patch.sector !== undefined) { sets.push(`sector=$${n++}`); vals.push(patch.sector || null); }
     if (patch.country !== undefined) { sets.push(`country=$${n++}`); vals.push(patch.country || null); }
+    if (patch.mer !== undefined) {
+      sets.push(`mer=$${n++}`);
+      vals.push(patch.mer === null || patch.mer === '' ? null : Number(patch.mer));
+    }
     if (patch.sectorBreakdown !== undefined) {
       sets.push(`sector_breakdown=$${n++}`);
       vals.push(JSON.stringify(normalizeBreakdown(patch.sectorBreakdown)));

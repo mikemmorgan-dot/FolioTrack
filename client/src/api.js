@@ -30,6 +30,8 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
     }),
+  instrumentDetail: (id, { range = '1y', rf = 4 } = {}) =>
+    j(`/api/instruments/${id}/detail?range=${range}&rf=${rf}`),
 };
 
 // ---- formatting ----
