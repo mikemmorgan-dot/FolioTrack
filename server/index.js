@@ -3,7 +3,7 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getStore } from './store.js';
-import { getQuote, getHistory, lookup } from './yahoo.js';
+import { getQuote, getHistory, lookup, probeAll } from './providers.js';
 import { currentVersionOf } from './util.js';
 import { runPerformance, gatherReturns, returnsForRefs, computeCore } from './perf.js';
 import { riskMetrics, staticPortfolioMonthly } from './risk.js';
@@ -93,7 +93,20 @@ app.post('/api/models/:key/versions', async (req, res) => {
 
 // Ticker resolution for the editor.
 app.get('/api/lookup/:symbol', async (req, res) => {
-  res.json(await lookup(req.params.symbol));
+  const r = await lookup(req.params.symbol);
+  if (!r.found) console.warn(`[yahoo] lookup ${req.params.symbol}: ${r.blocked ? 'BLOCKED' : 'not found'} — ${r.reason}`);
+  res.json(r);
+});
+
+// Which price providers are reachable from this server? Open in a browser to check.
+app.get('/api/diagnostics', async (req, res) => {
+  const symbols = req.query.symbols ? req.query.symbols.split(',') : ['AAPL', 'XBB.TO'];
+  const probe = await probeAll(symbols);
+  res.json({
+    storage: process.env.DATABASE_URL ? 'postgres' : 'json-ephemeral',
+    ...probe,
+    ts: new Date().toISOString(),
+  });
 });
 
 // --- history cache (1h) so the perf engine doesn't refetch on every open ---
@@ -103,9 +116,14 @@ async function cachedHistory(symbol, range) {
   const k = `${symbol}:${range}`;
   const hit = histCache.get(k);
   if (hit && Date.now() - hit.t < HIST_TTL) return hit.v;
-  const v = await getHistory(symbol, range);
-  histCache.set(k, { t: Date.now(), v });
-  return v;
+  try {
+    const v = await getHistory(symbol, range);
+    histCache.set(k, { t: Date.now(), v });
+    return v;
+  } catch (e) {
+    console.warn(`[yahoo] history failed for ${symbol}: ${e.message}`);
+    throw e;
+  }
 }
 
 
@@ -229,4 +247,12 @@ app.use(express.static(clientDist));
 app.get('*', (_req, res) => res.sendFile(path.join(clientDist, 'index.html')));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`MPT server on :${PORT}`));
+app.listen(PORT, async () => {
+  console.log(`MPT server on :${PORT}`);
+  // State the Yahoo verdict in the deploy log so it never has to be guessed.
+  const probe = await probeAll();
+  console.log(`[data] ${probe.verdict}`);
+  for (const r of probe.results) {
+    if (!r.ok) console.warn(`[data] ${r.provider} ${r.symbol}: ${r.error}`);
+  }
+});

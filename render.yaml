@@ -13,3 +13,9 @@ services:
       # ephemeral JSON file that is wiped on every restart — edits will not survive.
       - key: DATABASE_URL
         sync: false
+      # Twelve Data free API key (twelvedata.com/pricing) — fallback price source
+      # when Yahoo blocks Render's IP. Set in the Render dashboard, not here.
+      # WITHOUT it the app still works but has no fallback: a Yahoo block means
+      # lookups fail until this is set.
+      - key: TWELVEDATA_API_KEY
+        sync: false

@@ -65,9 +65,9 @@ export default function EditModel({ model, onClose, onSaved }) {
   return (
     <div className="editor">
       <header className="editor-bar">
-        <button className="ed-cancel" onClick={onClose}>Cancel</button>
+        <button type="button" className="ed-cancel" onClick={onClose}>Cancel</button>
         <span className="ed-title">Edit {model.name}</span>
-        <button className="ed-save" disabled={!canSave} onClick={save}>{saving ? 'Saving…' : 'Save'}</button>
+        <button type="button" className="ed-save" disabled={!canSave} onClick={save}>{saving ? 'Saving…' : 'Save'}</button>
       </header>
 
       <div className="editor-body">
@@ -98,7 +98,7 @@ export default function EditModel({ model, onClose, onSaved }) {
                   onChange={(e) => setWeight(r.uiKey, e.target.value)} />
                 <span>%</span>
               </div>
-              <button className="row-x" aria-label="Remove" onClick={() => remove(r.uiKey)}>×</button>
+              <button type="button" className="row-x" aria-label="Remove" onClick={() => remove(r.uiKey)}>×</button>
             </div>
           ))}
           {rows.length === 0 && <div className="row"><span className="muted">No holdings — add one below.</span></div>}
@@ -106,7 +106,7 @@ export default function EditModel({ model, onClose, onSaved }) {
 
         {adding
           ? <AddPanel onAdd={addRow} onCancel={() => setAdding(false)} />
-          : <button className="add-holding" onClick={() => setAdding(true)}>+ Add holding</button>}
+          : <button type="button" className="add-holding" onClick={() => setAdding(true)}>+ Add holding</button>}
 
         {rows.length > 0 && <RiskPreview modelKey={model.key} rows={rows} />}
 
@@ -116,7 +116,7 @@ export default function EditModel({ model, onClose, onSaved }) {
       <div className={`sum-bar${balanced ? ' ok' : ''}`}>
         <span>Total weight</span>
         <span className="sum-val num">{pct(total / 100)}</span>
-        {!balanced && <button className="sum-normalize" onClick={normalize}>Normalize to 100%</button>}
+        {!balanced && <button type="button" className="sum-normalize" onClick={normalize}>Normalize to 100%</button>}
       </div>
     </div>
   );
@@ -127,6 +127,9 @@ function AddPanel({ onAdd, onCancel }) {
   const [looking, setLooking] = useState(false);
   const [resolved, setResolved] = useState(null); // null | {found,...}
   const [form, setForm] = useState({ name: '', type: 'stock', currency: 'CAD', sector: '', country: '', navDate: '', nav: '' });
+  // Once the user picks a type or edits the name themselves, lookups must not
+  // overwrite their choice — that was silently resetting the selection to Fund.
+  const [touched, setTouched] = useState({ type: false, name: false });
   const panelRef = useRef(null);
   const resultRef = useRef(null);
 
@@ -141,19 +144,25 @@ function AddPanel({ onAdd, onCancel }) {
       setResolved(r);
       setForm((f) => ({
         ...f,
-        name: r.found ? r.name : f.name,
-        type: r.found ? r.guessType : 'mutualfund',
-        currency: r.found ? (r.currency || 'CAD') : f.currency,
+        // only fill fields the user hasn't set themselves
+        name: touched.name ? f.name : (r.found ? r.name : f.name),
+        type: touched.type ? f.type : (r.found ? r.guessType : f.type),
+        currency: r.found ? (r.currency || f.currency) : f.currency,
       }));
-    } catch {
-      setResolved({ found: false, symbol });
+    } catch (e) {
+      setResolved({ found: false, symbol, reason: e.message, blocked: true });
     } finally {
       setLooking(false);
     }
   }
 
   function confirm() {
-    const auto = resolved?.found;
+    // 'auto' = priced from Yahoo, 'manual' = priced from entered NAVs.
+    // If Yahoo confirmed it, it's auto. If Yahoo was merely unreachable, a
+    // listed type stays auto so it starts pricing itself once access is
+    // restored — only a genuine "not on Yahoo" falls back to manual.
+    const listed = form.type === 'stock' || form.type === 'etf';
+    const auto = resolved?.found || (resolved?.blocked && listed);
     const row = {
       instrumentId: null,
       symbol: symbol.trim().toUpperCase(),
@@ -178,25 +187,40 @@ function AddPanel({ onAdd, onCancel }) {
         <input className="sym-input" placeholder="Ticker / fund code (e.g. AAPL, VFV.TO, RBF1005)"
           value={symbol} autoCapitalize="characters"
           onChange={(e) => { setSymbol(e.target.value); setResolved(null); }} />
-        <button className="lookup-btn" onClick={doLookup} disabled={looking || !symbol.trim()}>{looking ? '…' : 'Look up'}</button>
+        <button type="button" className="lookup-btn" onClick={doLookup} disabled={looking || !symbol.trim()}>{looking ? '…' : 'Look up'}</button>
       </div>
 
       {resolved && (
         <div className="lookup-result" ref={resultRef}>
-          {resolved.found
-            ? <div className="found"><span className="pill green">Live on Yahoo</span> {resolved.name} · {resolved.currency}</div>
-            : <div className="notfound"><span className="pill neutral">Not on Yahoo</span> add it manually below</div>}
+          {resolved.found ? (
+            <div className="found">
+              <span className="pill green">Live{resolved.provider ? ` · ${resolved.provider}` : ''}</span>
+              {resolved.partial
+                ? <span>Price found, but this source carries no name or currency — please fill them in.</span>
+                : <span>{resolved.name} · {resolved.currency}</span>}
+            </div>
+          ) : resolved.blocked ? (
+            <div className="notfound blocked-note">
+              <div><span className="pill amber">No data source reachable</span> couldn’t verify this ticker</div>
+              <div className="reason">{resolved.reason}</div>
+              <div className="reason">Every price source failed, which points to the server’s outbound access, not a bad symbol. You can still add it manually — open <code>/api/diagnostics</code> to see which sources work.</div>
+            </div>
+          ) : (
+            <div className="notfound"><span className="pill neutral">Not on Yahoo</span> add it manually below</div>
+          )}
 
           <label className="field"><span>Name</span>
-            <input type="text" value={form.name} onChange={set('name')} placeholder="Instrument name" />
+            <input type="text" value={form.name}
+              onChange={(e) => { setTouched((t) => ({ ...t, name: true })); set('name')(e); }}
+              placeholder="Instrument name" />
           </label>
 
           <div className="field"><span>Type</span>
             <div className="segmented">
               {TYPES.map((t) => (
-                <button key={t.id} className={form.type === t.id ? 'seg active' : 'seg'}
+                <button key={t.id} type="button" className={form.type === t.id ? 'seg active' : 'seg'}
                   style={form.type === t.id ? { '--seg-c': typeColor(t.id) } : undefined}
-                  onClick={() => setForm((f) => ({ ...f, type: t.id }))}>{t.label}</button>
+                  onClick={() => { setTouched((s) => ({ ...s, type: true })); setForm((f) => ({ ...f, type: t.id })); }}>{t.label}</button>
               ))}
             </div>
           </div>
@@ -215,8 +239,8 @@ function AddPanel({ onAdd, onCancel }) {
           )}
 
           <div className="add-actions">
-            <button className="ed-cancel" onClick={onCancel}>Cancel</button>
-            <button className="btn-primary sm" onClick={confirm} disabled={!form.name.trim()}>Add to model</button>
+            <button type="button" className="ed-cancel" onClick={onCancel}>Cancel</button>
+            <button type="button" className="btn-primary sm" onClick={confirm} disabled={!form.name.trim()}>Add to model</button>
           </div>
         </div>
       )}
