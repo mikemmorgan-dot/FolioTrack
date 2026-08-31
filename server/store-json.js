@@ -92,11 +92,14 @@ export class JsonStore {
       }
       if (instrumentId) resolved.push({ instrumentId, weight: Number(h.weight) });
     }
+    const eff = effectiveDate || new Date().toISOString().slice(0, 10);
     const cur = currentVersionOf({ versions: m.versions });
-    if (cur && holdingsEqual(cur.holdings, resolved)) return { noChange: true };
+    if (cur && cur.effectiveDate === eff && cur.note === (note || '') && holdingsEqual(cur.holdings, resolved)) {
+      return { noChange: true };
+    }
     const version = {
       id: uid('ver'),
-      effectiveDate: effectiveDate || new Date().toISOString().slice(0, 10),
+      effectiveDate: eff,
       note: note || '',
       holdings: resolved,
       createdAt: new Date().toISOString(),

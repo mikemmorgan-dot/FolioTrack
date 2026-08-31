@@ -147,11 +147,13 @@ export class PgStore {
       if (instrumentId) resolved.push({ instrumentId, weight: Number(h.weight) });
     }
 
+    const eff = effectiveDate || new Date().toISOString().slice(0, 10);
     const cur = currentVersionOf({ versions: await this._versionsFor(key) });
-    if (cur && holdingsEqual(cur.holdings, resolved)) return { noChange: true };
+    if (cur && cur.effectiveDate === eff && cur.note === (note || '') && holdingsEqual(cur.holdings, resolved)) {
+      return { noChange: true };
+    }
 
     const id = uid('ver');
-    const eff = effectiveDate || new Date().toISOString().slice(0, 10);
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
