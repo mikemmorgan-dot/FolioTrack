@@ -2,9 +2,9 @@ import { pct, money, BASIS, aggregateBy, typeColor, typeLabel } from '../../api.
 import AssetIcon from '../AssetIcon.jsx';
 import EmptyState from '../EmptyState.jsx';
 
-export default function OverviewTab({ model, goto }) {
+export default function OverviewTab({ model, goto, onEdit }) {
   const h = model.holdings;
-  if (!h.length) return <EmptyState />;
+  if (!h.length) return <EmptyState onAction={onEdit} />;
 
   const top = [...h].sort((a, b) => b.weight - a.weight).slice(0, 4);
   const byType = aggregateBy(h, 'type');

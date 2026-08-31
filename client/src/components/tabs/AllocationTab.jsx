@@ -1,9 +1,9 @@
 import { pct, money, BASIS, aggregateBy, typeColor, typeLabel } from '../../api.js';
 import EmptyState from '../EmptyState.jsx';
 
-export default function AllocationTab({ model }) {
+export default function AllocationTab({ model, onEdit }) {
   const h = model.holdings;
-  if (!h.length) return <EmptyState text="No holdings to allocate yet." />;
+  if (!h.length) return <EmptyState text="No holdings to allocate yet." onAction={onEdit} />;
 
   const byType = aggregateBy(h, 'type');
   const fixed = h.filter((x) => x.sector === 'Fixed Income').reduce((s, x) => s + x.weight, 0);

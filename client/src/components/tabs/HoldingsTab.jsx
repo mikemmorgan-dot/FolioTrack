@@ -9,9 +9,9 @@ const SORTS = {
   name: (a, b) => a.symbol.localeCompare(b.symbol),
 };
 
-export default function HoldingsTab({ model }) {
+export default function HoldingsTab({ model, onEdit }) {
   const [sort, setSort] = useState('weight');
-  if (!model.holdings.length) return <EmptyState text="No holdings in this model yet." />;
+  if (!model.holdings.length) return <EmptyState text="No holdings in this model yet." onAction={onEdit} />;
   const h = [...model.holdings].sort(SORTS[sort]);
 
   return (

@@ -15,9 +15,9 @@ function BarList({ rows }) {
   );
 }
 
-export default function GeoSectorTab({ model, riskRank }) {
+export default function GeoSectorTab({ model, onEdit }) {
   const h = model.holdings;
-  if (!h.length) return <EmptyState text="No holdings to classify yet." />;
+  if (!h.length) return <EmptyState text="No holdings to classify yet." onAction={onEdit} />;
 
   return (
     <div style={{ '--risk': 'var(--green)' }}>
