@@ -153,6 +153,65 @@ const finnhub = {
   },
 };
 
+// ---------- Alpha Vantage (keyed, free tier: 25 req/DAY, not per-minute) ----------
+// Last resort in the chain, on purpose: the daily cap is thin enough that
+// burning it on symbols the other providers already cover would starve out
+// the one case it's actually here for (TSX, once the other three fail).
+// Toronto suffix is `.TRT` per their docs examples, unconfirmed against a
+// real TSX symbol — verify via /api/diagnostics same as the other providers.
+// Alpha Vantage returns HTTP 200 with an "Information"/"Note" field instead
+// of a real error code when the key is invalid or the daily cap is hit, so
+// that has to be checked explicitly rather than relying on res.ok.
+const ALPHAVANTAGE_BASE = 'https://www.alphavantage.co/query';
+
+function alphavantageSymbol(symbol) {
+  return /\.to$/i.test(symbol) ? symbol.replace(/\.to$/i, '.TRT') : symbol;
+}
+
+async function alphavantageFetch(params) {
+  const key = process.env.ALPHAVANTAGE_API_KEY;
+  if (!key) throw new Error('ALPHAVANTAGE_API_KEY not configured');
+  const url = new URL(ALPHAVANTAGE_BASE);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  url.searchParams.set('apikey', key);
+  const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+  const json = await res.json();
+  if (json['Error Message']) throw new Error(`Alpha Vantage: ${json['Error Message']}`);
+  if (json['Note'] || json['Information']) throw new Error(`Alpha Vantage: ${json['Note'] || json['Information']}`);
+  return json;
+}
+
+const alphavantage = {
+  id: 'alphavantage',
+  supports: () => true,
+  async quote(symbol) {
+    const sym = alphavantageSymbol(symbol);
+    const json = await alphavantageFetch({ function: 'GLOBAL_QUOTE', symbol: sym });
+    const q = json['Global Quote'];
+    const price = q ? parseFloat(q['05. price']) : NaN;
+    if (!q || !Number.isFinite(price)) throw new Error(`Alpha Vantage: no quote data for ${symbol}`);
+    return {
+      symbol, price,
+      previousClose: Number.isFinite(parseFloat(q['08. previous close'])) ? parseFloat(q['08. previous close']) : null,
+      currency: null, name: symbol, exchange: null,
+      asOf: q['07. latest trading day'] || null,
+      partial: true,
+    };
+  },
+  async history(symbol) {
+    const sym = alphavantageSymbol(symbol);
+    const json = await alphavantageFetch({ function: 'TIME_SERIES_DAILY', symbol: sym, outputsize: 'full' });
+    const series0 = json['Time Series (Daily)'];
+    if (!series0) throw new Error(`Alpha Vantage: no history for ${symbol}`);
+    const series = Object.entries(series0)
+      .map(([date, v]) => ({ date, close: parseFloat(v['4. close']) }))
+      .filter((p) => Number.isFinite(p.close))
+      .sort((a, b) => a.date.localeCompare(b.date));
+    if (!series.length) throw new Error(`Alpha Vantage returned no rows for ${symbol}`);
+    return { symbol, series };
+  },
+};
+
 const yahoo = {
   id: 'yahoo',
   supports: () => true,
@@ -160,8 +219,10 @@ const yahoo = {
   history: (symbol, range) => yHistory(symbol, range || '5y'),
 };
 
-// Order matters: richest metadata first, most-reachable last.
-export const PROVIDERS = [yahoo, twelvedata, finnhub];
+// Order matters: richest metadata first, most-reachable last. Alpha Vantage
+// goes last — its 25/day cap is too thin to spend on symbols the earlier
+// providers already cover.
+export const PROVIDERS = [yahoo, twelvedata, finnhub, alphavantage];
 
 function isNotFound(e) {
   return (e instanceof YahooError && e.notFound) || /no data|not\s*found/i.test(e.message || '');

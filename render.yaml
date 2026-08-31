@@ -24,3 +24,8 @@ services:
       # the Render dashboard, not here.
       - key: FINNHUB_API_KEY
         sync: false
+      # Alpha Vantage free API key (alphavantage.co) — last-resort fallback.
+      # Free tier is 25 requests/DAY total, so it only matters for symbols the
+      # other three providers all miss. Set in the Render dashboard, not here.
+      - key: ALPHAVANTAGE_API_KEY
+        sync: false
