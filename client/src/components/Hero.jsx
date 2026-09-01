@@ -1,4 +1,4 @@
-import { pct, aggregateBy, typeColor, typeLabel, blendedMer } from '../api.js';
+import { pct, money, BASIS, aggregateBy, typeColor, typeLabel, blendedMer } from '../api.js';
 import { RISK_COLORS, RISK_LABELS } from '../App.jsx';
 
 export default function Hero({ model, riskRank }) {
@@ -24,7 +24,7 @@ export default function Hero({ model, riskRank }) {
     <div className="hero" style={{ '--risk': color }}>
       <div className="hero-name"><span className="dot" />{model.name} model</div>
       <div className="hero-figure num">{pct(growth, 0)}<span className="unit">growth</span></div>
-      <div className="hero-caption">{pct(fixed, 0)} fixed income · per $10,000 modelled</div>
+      <div className="hero-caption">{pct(fixed, 0)} fixed income · per {money(BASIS)} modelled</div>
 
       <div className="alloc-bar">
         {byType.map((t) => (

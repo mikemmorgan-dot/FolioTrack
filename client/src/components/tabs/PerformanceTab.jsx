@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, pct, signedPct, money } from '../../api.js';
+import { api, pct, signedPct, money, BASIS } from '../../api.js';
 import LineChart from '../LineChart.jsx';
 import AssetIcon from '../AssetIcon.jsx';
 
@@ -36,8 +36,10 @@ export default function PerformanceTab({ model }) {
       {chartable ? <LineChart model={m.cumulative} benchmark={b.cumulative} /> : <div className="chart-empty">Not enough history yet to chart — need at least two month-ends of data.</div>}
       {chartable && (
         <div className="chart-legend">
-          <span className="leg"><span className="ln" style={{ background: up ? 'var(--green)' : 'var(--red)' }} />Model {money(m.cumulative.at(-1).value)}</span>
-          <span className="leg"><span className="ln muted-ln" />Benchmark {money(b.cumulative.at(-1)?.value ?? 0)}</span>
+          {/* server computes growth-of-basis at its own default; rescale to the
+              user's display basis — growth is linear in the starting amount */}
+          <span className="leg"><span className="ln" style={{ background: up ? 'var(--green)' : 'var(--red)' }} />Model {money(m.cumulative.at(-1).value * (BASIS / (perf.basis || BASIS)))}</span>
+          <span className="leg"><span className="ln muted-ln" />Benchmark {money((b.cumulative.at(-1)?.value ?? 0) * (BASIS / (perf.basis || BASIS)))}</span>
         </div>
       )}
 

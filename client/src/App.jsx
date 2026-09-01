@@ -3,6 +3,7 @@ import { api } from './api.js';
 import Hero from './components/Hero.jsx';
 import EditModel from './components/EditModel.jsx';
 import ClassifyPanel from './components/ClassifyPanel.jsx';
+import SettingsPanel from './components/SettingsPanel.jsx';
 import { IconMenu, IconSearch, IconOverview, IconPerf, IconRisk, IconHoldings, IconGeo, IconMix } from './components/icons.jsx';
 import OverviewTab from './components/tabs/OverviewTab.jsx';
 import PerformanceTab from './components/tabs/PerformanceTab.jsx';
@@ -31,6 +32,10 @@ export default function App() {
   const [editing, setEditing] = useState(false);
   const [editWeights, setEditWeights] = useState(null);
   const [classifying, setClassifying] = useState(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Bumped when a display setting (e.g. the modelled basis) changes, so tabs
+  // re-render with the new value without a data refetch.
+  const [, setSettingsRev] = useState(0);
   const [err, setErr] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -55,7 +60,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <button className="icon-btn" aria-label="Menu"><IconMenu /></button>
+        <button className="icon-btn" aria-label="Settings" onClick={() => setSettingsOpen(true)}><IconMenu /></button>
         <h1>Model Portfolios</h1>
         <button className="icon-btn" aria-label="Search"><IconSearch /></button>
       </header>
@@ -116,6 +121,13 @@ export default function App() {
           instrument={classifying}
           onClose={() => setClassifying(null)}
           onSaved={async () => { setClassifying(null); await loadModel(selected); }}
+        />
+      )}
+
+      {settingsOpen && (
+        <SettingsPanel
+          onClose={() => setSettingsOpen(false)}
+          onSaved={() => { setSettingsOpen(false); setSettingsRev((r) => r + 1); }}
         />
       )}
     </div>

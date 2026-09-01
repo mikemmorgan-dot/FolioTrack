@@ -1,4 +1,5 @@
 // api.js — thin fetch wrappers + shared helpers used across views.
+import { getSettings, saveSettings } from './settings.js';
 
 async function j(url, opts) {
   const res = await fetch(url, opts);
@@ -41,8 +42,18 @@ export const money = (x, ccy = 'CAD') =>
   x == null ? '—' : new Intl.NumberFormat('en-CA', { style: 'currency', currency: ccy, maximumFractionDigits: 2 }).format(x);
 export const num = (x, d = 2) => (x == null ? '—' : Number(x).toFixed(d));
 
-// A tangible reference basis: show every model as if $10,000 were invested.
-export const BASIS = 10000;
+// A tangible reference basis: show every model as if this amount were
+// invested. User-editable in Settings (persisted per device); `export let`
+// keeps existing `import { BASIS }` call sites working — ES module bindings
+// are live, so importers see the new value on their next render.
+export let BASIS = getSettings().basis;
+export function setBasis(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return BASIS;
+  BASIS = n;
+  saveSettings({ basis: n });
+  return BASIS;
+}
 
 // ---- aggregation helpers (weighted by model target weight) ----
 export function aggregateBy(holdings, field) {
