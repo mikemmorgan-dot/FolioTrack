@@ -33,6 +33,14 @@ export const api = {
     }),
   instrumentDetail: (id, { range = '1y', rf = 4 } = {}) =>
     j(`/api/instruments/${id}/detail?range=${range}&rf=${rf}`),
+  // Manual names in any current model, with latest NAV + which models use them.
+  manualInstruments: () => j('/api/instruments?source=manual&inUse=1'),
+  addNavBatch: (body) =>
+    j('/api/nav/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
 };
 
 // ---- formatting ----

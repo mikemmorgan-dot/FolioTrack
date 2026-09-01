@@ -1,16 +1,23 @@
 import { pct, money, BASIS, aggregateBy, typeColor, typeLabel } from '../../api.js';
+import { isNavStale, isCashHolding } from '../../nav.js';
 import AssetIcon from '../AssetIcon.jsx';
 import EmptyState from '../EmptyState.jsx';
 
-export default function OverviewTab({ model, goto, onEdit }) {
+export default function OverviewTab({ model, goto, onEdit, onUpdatePrices }) {
   const h = model.holdings;
   if (!h.length) return <EmptyState onAction={onEdit} />;
 
   const top = [...h].sort((a, b) => b.weight - a.weight).slice(0, 4);
   const byType = aggregateBy(h, 'type');
+  const staleCount = h.filter((x) => x.source === 'manual' && !isCashHolding(x) && isNavStale(x.type, x.priceAsOf)).length;
 
   return (
     <>
+      {staleCount > 0 && (
+        <button type="button" className="stale-line" onClick={onUpdatePrices}>
+          {staleCount} manual price{staleCount === 1 ? '' : 's'} older than cadence
+        </button>
+      )}
       <div className="section-title">Top holdings</div>
       <div className="rows grouped">
         {top.map((x) => (

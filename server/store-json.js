@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { seedData } from './seed.js';
 import { uid, instrumentFromSpec, normalizeBreakdown, currentVersionOf, holdingsEqual } from './util.js';
+import { planNavBatch, todayToronto, batchError } from './nav.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data', 'store.json');
@@ -68,6 +69,34 @@ export class JsonStore {
     this.db.navSeries[instrumentId] = arr;
     this._persist();
     return arr;
+  }
+
+  // One persist for the whole payload — not a model version.
+  async addNavBatch({ asOf, points } = {}) {
+    const instrumentsById = new Map();
+    for (const p of points || []) {
+      if (!p?.instrumentId || instrumentsById.has(p.instrumentId)) continue;
+      const inst = this.db.instruments[p.instrumentId];
+      if (inst) instrumentsById.set(p.instrumentId, inst);
+    }
+    const planned = planNavBatch(points, { asOf, instrumentsById, fallbackDate: todayToronto() });
+    if (planned.error) throw batchError(planned.error);
+
+    for (const w of planned.writes) {
+      if (!this.db.navSeries[w.instrumentId]) this.db.navSeries[w.instrumentId] = [];
+      const arr = this.db.navSeries[w.instrumentId].filter((p) => p.date !== w.date);
+      arr.push({ date: w.date, nav: w.nav });
+      arr.sort((a, b) => a.date.localeCompare(b.date));
+      this.db.navSeries[w.instrumentId] = arr;
+    }
+    if (planned.writes.length) this._persist();
+
+    const latest = [];
+    for (const id of new Set(planned.writes.map((w) => w.instrumentId))) {
+      const nav = await this.latestNav(id);
+      latest.push({ instrumentId: id, date: nav?.date ?? null, nav: nav?.nav ?? null });
+    }
+    return { latest };
   }
   async getNavSeries(instrumentId) { return this.db.navSeries[instrumentId] || []; }
   async latestNav(instrumentId) {

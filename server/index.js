@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { getStore } from './store.js';
 import { getQuote, getHistory, lookup, probeAll } from './providers.js';
 import { currentVersionOf } from './util.js';
+import { listInUseManualInstruments } from './nav.js';
 import { runPerformance, gatherReturns, returnsForRefs, monthGrid, levelsOnGrid, monthlyReturnsFromLevels } from './perf.js';
 import { riskMetrics, staticPortfolioMonthly } from './risk.js';
 import { runOptimize } from './optimize.js';
@@ -251,8 +252,33 @@ app.post('/api/models/:key/simulate', async (req, res) => {
   }
 });
 
-app.get('/api/instruments', async (_req, res) => res.json(await store.listInstruments()));
+app.get('/api/instruments', async (req, res) => {
+  try {
+    // Prices panel: unique manuals in any current version, with latest NAV and
+    // which models use them — one round-trip, cash excluded, no quote APIs.
+    if ((req.query.inUse === '1' || req.query.inUse === 'true') && req.query.source === 'manual') {
+      return res.json(await listInUseManualInstruments(store));
+    }
+    let list = await store.listInstruments();
+    if (req.query.source) list = list.filter((i) => i.source === req.query.source);
+    res.json(list);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 app.post('/api/instruments', async (req, res) => res.status(201).json(await store.addInstrument(req.body || {})));
+
+// Many dated NAV points, one transaction. Does not create a model version.
+app.post('/api/nav/batch', async (req, res) => {
+  try {
+    const { asOf, points } = req.body || {};
+    if (!Array.isArray(points)) return res.status(400).json({ error: 'points must be an array' });
+    const result = await store.addNavBatch({ asOf, points });
+    res.json(result);
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
 // Factsheet entry: sector/country and their fund look-through breakdowns.
 app.put('/api/instruments/:id', async (req, res) => {
   const inst = await store.updateInstrument(req.params.id, req.body || {});
