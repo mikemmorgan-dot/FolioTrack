@@ -2,8 +2,10 @@ import { useState } from 'react';
 import { api } from '../api.js';
 import { asRatio, asPct } from '../riskFormat.js';
 
+const DEFAULT_CAP = '10';
+
 export default function OptimizePanel({ modelKey, rf, onApply }) {
-  const [maxWeight, setMaxWeight] = useState('');
+  const [maxWeight, setMaxWeight] = useState(DEFAULT_CAP);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
