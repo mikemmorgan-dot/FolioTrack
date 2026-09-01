@@ -10,6 +10,7 @@ async function j(url, opts) {
 export const api = {
   models: () => j('/api/models'),
   model: (key) => j(`/api/models/${key}`),
+  modelQuotes: (key) => j(`/api/models/${key}/quotes`),
   performance: (key) => j(`/api/models/${key}/performance`),
   risk: (key, rf) => j(`/api/models/${key}/risk?rf=${rf}`),
   optimize: (key, { rf, maxWeight } = {}) =>
@@ -109,6 +110,21 @@ export const TYPE_COLORS = {
   cash: '#8A8F98',
 };
 export const typeColor = (t) => TYPE_COLORS[t] || '#8A8F98';
+
+// Merge a /quotes payload onto a model already on screen. Returns the previous
+// model unchanged when the payload is for a different key (stale response).
+export function applyHoldingPrices(model, payload) {
+  if (!model || !payload || model.key !== payload.key) return model;
+  const byId = new Map((payload.holdings || []).map((h) => [h.id, h]));
+  return {
+    ...model,
+    holdings: model.holdings.map((h) => {
+      const q = byId.get(h.id);
+      if (!q) return h;
+      return { ...h, price: q.price, priceAsOf: q.priceAsOf, priceSource: q.priceSource };
+    }),
+  };
+}
 
 // Blended MER: weight-average of instrument MERs where known.
 export function blendedMer(holdings) {
