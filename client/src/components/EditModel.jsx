@@ -163,14 +163,21 @@ function AddPanel({ onAdd, onCancel }) {
       setResolved(r);
       setForm((f) => ({
         ...f,
-        // only fill fields the user hasn't set themselves
-        name: touched.name ? f.name : (r.found ? r.name : f.name),
-        type: touched.type ? f.type : (r.found ? r.guessType : f.type),
+        // Only fill fields the user hasn't set themselves — and on a failed
+        // lookup, clear them back to blank rather than leaving whatever a
+        // PREVIOUS (different) symbol's successful lookup had filled in.
+        // Otherwise a blocked H.TO lookup right after a resolved bare H
+        // leaves Hyatt's name sitting there looking like it belongs to H.TO.
+        name: touched.name ? f.name : (r.found ? r.name : ''),
+        type: touched.type ? f.type : (r.found ? r.guessType : 'stock'),
         currency: r.found ? (r.currency || f.currency) : f.currency,
         // Best-effort — providers.js only fills these in when its profile
         // source (Twelve Data) actually covers the symbol, unverified for TSX.
-        sector: touched.sector ? f.sector : (r.sector || f.sector),
-        country: touched.country ? f.country : (r.country || f.country),
+        // Same stale-data reasoning as name/type: a symbol change that fails
+        // to classify (or fails outright) must not keep a DIFFERENT earlier
+        // symbol's sector/country sitting there looking current.
+        sector: touched.sector ? f.sector : (r.sector || ''),
+        country: touched.country ? f.country : (r.country || ''),
       }));
     } catch (e) {
       setResolved({ found: false, symbol, reason: e.message, blocked: true });
