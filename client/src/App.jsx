@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { api } from './api.js';
+import { useEffect, useRef, useState } from 'react';
+import { api, applyHoldingPrices } from './api.js';
 import Hero from './components/Hero.jsx';
 import EditModel from './components/EditModel.jsx';
 import ClassifyPanel from './components/ClassifyPanel.jsx';
@@ -48,9 +48,33 @@ export default function App() {
       .catch((e) => setErr(e.message));
   }, []);
 
+  // Bumped on every load so an in-flight GET for model A cannot overwrite
+  // model B after a fast pill switch (or apply A's late quotes onto B).
+  const loadSeq = useRef(0);
+
   const loadModel = (key) => {
+    const seq = ++loadSeq.current;
     setLoading(true);
-    return api.model(key).then(setModel).catch((e) => setErr(e.message)).finally(() => setLoading(false));
+    setErr(null);
+    return api.model(key)
+      .then((m) => {
+        if (seq !== loadSeq.current) return;
+        setModel(m);
+        setLoading(false);
+        const needsQuotes = (m.holdings || []).some((h) => h.source === 'auto' && h.price == null);
+        if (!needsQuotes) return;
+        return api.modelQuotes(key)
+          .then((q) => {
+            if (seq !== loadSeq.current) return;
+            setModel((prev) => applyHoldingPrices(prev, q));
+          })
+          .catch(() => { /* prices stay n/a; the book is already on screen */ });
+      })
+      .catch((e) => {
+        if (seq !== loadSeq.current) return;
+        setErr(e.message);
+        setLoading(false);
+      });
   };
 
   useEffect(() => { if (selected) loadModel(selected); }, [selected]);

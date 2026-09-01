@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getStore } from './store.js';
 import { getQuote, getHistory, lookup, probeAll } from './providers.js';
+import { createQuoteCache, enrichHoldings, quotePatch } from './enrich.js';
 import { currentVersionOf } from './util.js';
 import { listInUseManualInstruments } from './nav.js';
 import { runPerformance, gatherReturns, returnsForRefs, monthGrid, levelsOnGrid, monthlyReturnsFromLevels } from './perf.js';
@@ -16,40 +17,11 @@ app.use(express.json());
 
 const store = await getStore();
 
-// --- tiny quote cache so we don't hammer Yahoo on every view ---
-const cache = new Map();
-const TTL_MS = 60 * 1000;
-async function cachedQuote(symbol) {
-  const hit = cache.get(symbol);
-  if (hit && Date.now() - hit.t < TTL_MS) return hit.v;
-  const v = await getQuote(symbol);
-  cache.set(symbol, { t: Date.now(), v });
-  return v;
-}
-
-// Hybrid price seam: 'auto' → Yahoo, 'manual' → latest stored NAV.
-async function enrichHoldings(version) {
-  if (!version) return [];
-  const out = [];
-  for (const h of version.holdings) {
-    const inst = await store.getInstrument(h.instrumentId);
-    if (!inst) continue;
-    let price = null, priceAsOf = null, priceSource = inst.source;
-    try {
-      if (inst.source === 'auto') {
-        const q = await cachedQuote(inst.symbol);
-        price = q.price; priceAsOf = q.asOf;
-      } else {
-        const nav = await store.latestNav(inst.id);
-        price = nav?.nav ?? null; priceAsOf = nav?.date ?? null;
-      }
-    } catch (e) {
-      priceSource = `${inst.source} (error: ${e.message})`;
-    }
-    out.push({ ...inst, weight: h.weight, price, priceAsOf, priceSource });
-  }
-  return out;
-}
+// Quote cache (60s) + in-flight dedupe so a model view doesn't stampede the
+// provider chain. GET /api/models/:key peeks this cache only — it never waits
+// on a live fetch — so the current version can render immediately.
+const quotes = createQuoteCache({ getQuote });
+const cachedQuote = (symbol) => quotes.cachedQuote(symbol);
 
 // ---------------- API ----------------
 app.get('/api/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
@@ -71,13 +43,29 @@ app.get('/api/models/:key', async (req, res) => {
   const m = await store.getModel(req.params.key);
   if (!m) return res.status(404).json({ error: 'Model not found' });
   const cv = currentVersionOf(m);
-  const holdings = await enrichHoldings(cv);
+  // Cache-only prices: never block the book on the provider chain.
+  const holdings = await enrichHoldings(cv, store, quotes, { liveQuotes: false });
   res.json({
     key: m.key, name: m.name, riskRank: m.riskRank, benchmark: m.benchmark,
     versions: m.versions.map((v) => ({ id: v.id, effectiveDate: v.effectiveDate, note: v.note, holdingCount: v.holdings.length })),
     currentVersion: cv ? { id: cv.id, effectiveDate: cv.effectiveDate, note: cv.note, holdings: cv.holdings } : null,
     holdings,
   });
+});
+
+// Live prices for a model already painted from GET /api/models/:key.
+// Auto holdings missing from the quote cache are fetched (in parallel);
+// manual NAVs are local and cheap. Safe to ignore if the client has moved on.
+app.get('/api/models/:key/quotes', async (req, res) => {
+  try {
+    const m = await store.getModel(req.params.key);
+    if (!m) return res.status(404).json({ error: 'Model not found' });
+    const cv = currentVersionOf(m);
+    const holdings = await enrichHoldings(cv, store, quotes, { liveQuotes: true });
+    res.json({ key: m.key, versionId: cv?.id ?? null, holdings: quotePatch(holdings) });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
 });
 
 // A model change = a new effective-dated version. Holdings may reference an
