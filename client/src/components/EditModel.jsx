@@ -286,7 +286,9 @@ function AddPanel({ onAdd, onCancel, hasCash }) {
           </div>
           <div className="add-actions">
             <button type="button" className="ed-cancel" onClick={onCancel}>Cancel</button>
-            <button type="button" className="btn-primary sm" onClick={confirm} disabled={hasCash}>Add to model</button>
+            {!hasCash && (
+              <button type="button" className="btn-primary sm" onClick={confirm}>Add to model</button>
+            )}
           </div>
         </div>
       ) : (
