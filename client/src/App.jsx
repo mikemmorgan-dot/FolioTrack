@@ -56,6 +56,12 @@ export default function App() {
 
   const riskRank = models.find((m) => m.key === selected)?.riskRank;
   const Active = VIEWS.find((v) => v.id === view).C;
+  // `model` updates asynchronously after `selected` changes — without this
+  // guard, switching models and acting quickly (tapping the FAB before the
+  // fetch resolves) rendered the PREVIOUS model's data inside a screen
+  // already labeled with the new model's name/pills, which could save one
+  // model's holdings over another's.
+  const modelReady = model && model.key === selected;
 
   return (
     <div className="app">
@@ -79,9 +85,9 @@ export default function App() {
       </nav>
 
       {err && <div className="banner">Couldn’t load — {err}</div>}
-      {loading && !model && <div className="loading">Loading…</div>}
+      {(loading || !modelReady) && <div className="loading">Loading…</div>}
 
-      {model && (
+      {modelReady && (
         <>
           <Hero model={model} riskRank={riskRank} />
           <div className="content">
@@ -107,7 +113,7 @@ export default function App() {
         })}
       </nav>
 
-      {editing && model && (
+      {editing && modelReady && (
         <EditModel
           model={model}
           initialWeights={editWeights}
