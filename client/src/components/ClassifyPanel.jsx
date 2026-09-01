@@ -9,6 +9,7 @@ const RANGES = ['1y', '2y', '5y'];
 
 function SecurityInfo({ instrument }) {
   const [range, setRange] = useState('1y');
+  const [reloadKey, setReloadKey] = useState(0);
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
@@ -19,7 +20,7 @@ function SecurityInfo({ instrument }) {
       .then(setDetail)
       .catch((e) => setErr(e.message))
       .finally(() => setLoading(false));
-  }, [instrument.id, range]);
+  }, [instrument.id, range, reloadKey]);
 
   const s = detail?.stats;
   const smallSample = s && s.months < 24;
@@ -49,9 +50,16 @@ function SecurityInfo({ instrument }) {
             <div className="data-warn" style={{ marginTop: 8 }}>No current price available{detail.error ? ` — ${detail.error}` : ''}.</div>
           )}
 
-          {detail.series.length >= 2
-            ? <div style={{ marginTop: 10 }}><LineChart model={detail.series} benchmark={[]} height={140} /></div>
-            : <div className="chart-empty" style={{ marginTop: 10 }}>Not enough history yet to chart.</div>}
+          {detail.series.length >= 2 ? (
+            <div style={{ marginTop: 10 }}><LineChart model={detail.series} benchmark={[]} height={140} /></div>
+          ) : detail.error ? (
+            <div className="data-warn" style={{ marginTop: 10 }}>
+              Couldn’t load price history right now — {detail.error}
+              <button type="button" className="classify-select-back" style={{ marginTop: 8 }} onClick={() => setReloadKey((k) => k + 1)}>Retry</button>
+            </div>
+          ) : (
+            <div className="chart-empty" style={{ marginTop: 10 }}>Not enough history yet to chart.</div>
+          )}
 
           {s ? (
             <div className="metric-grid" style={{ marginTop: 12 }}>
@@ -59,9 +67,9 @@ function SecurityInfo({ instrument }) {
               <div className="metric"><div className="k">Volatility</div><div className="v num">{asPct(s.volatility)}</div></div>
               <div className="metric"><div className="k">Max drawdown</div><div className="v num">{asPct(s.maxDrawdown)}</div></div>
             </div>
-          ) : (
+          ) : !detail.error ? (
             <p className="note" style={{ marginTop: 10 }}>Not enough price history yet to compute return/volatility.</p>
-          )}
+          ) : null}
           {smallSample && <div className="data-warn" style={{ marginTop: 8 }}>Only {s.months} monthly observations — treat as indicative, not precise.</div>}
           <p className="note" style={{ marginTop: 10 }}>This instrument’s own price history — not the model’s. {instrument.source === 'auto' ? 'Live pricing via the provider chain.' : 'From entered NAV points.'}</p>
         </>
