@@ -75,28 +75,53 @@ export function buildMuSigma(ids, instReturns, grid) {
   return { usable, excluded, mu, sigma };
 }
 
+// Unallocated weight (1 - sum(w)) is idle cash — the standard Sharpe-ratio
+// assumption is that it earns the risk-free rate, not 0%, so it's added into
+// expectedReturn here. This makes `expectedReturn - rf` correctly scale by
+// how much is actually AT RISK: expectedReturn - rf = investedReturn -
+// rf*sum(w), not investedReturn - rf outright — critical once sum(w) can be
+// < 1 (a capped optimization that can't fully deploy). Caught by testing:
+// with sum(w)=1 always (true before caps could leave weight unallocated),
+// rf and rf*sum(w) were identical, so this was silently correct by
+// coincidence until the cap relaxation made the difference matter — an
+// 8-holding, 10%-capped, fully-positive-excess-return test case produced a
+// nonsensical negative Sharpe before this fix, positive 0.89 after, and
+// verified better than the single-best-asset alternative (0.65).
 function portfolioStats(w, ids, mu, sigma, rf) {
-  const expectedReturn = ids.reduce((s, id) => s + w[id] * mu[id], 0);
+  const investedReturn = ids.reduce((s, id) => s + w[id] * mu[id], 0);
+  const totalW = ids.reduce((s, id) => s + w[id], 0);
+  const cashWeight = Math.max(0, 1 - totalW);
+  const expectedReturn = investedReturn + rf * cashWeight;
   let variance = 0;
-  for (const a of ids) for (const b of ids) variance += w[a] * sigma[a][b] * w[b];
+  for (const a of ids) for (const b of ids) variance += w[a] * sigma[a][b] * w[b]; // cash: 0 variance, 0 covariance
   const volatility = Math.sqrt(Math.max(0, variance));
   const sharpe = volatility > 0 ? (expectedReturn - rf) / volatility : null;
-  return { expectedReturn, volatility, sharpe };
+  return { expectedReturn, volatility, sharpe, cashWeight };
 }
 
 // Linear-minimization oracle for a "capped simplex": maximize g·w subject to
-// 0 <= w_i <= caps[id], sum(w) = 1. Greedy water-filling — give weight to the
-// highest-g assets first, each up to its cap, until the budget of 1 is used.
-// This is the textbook LMO for this feasible set: correct by a straightforward
-// exchange argument (swapping any unit of weight from a lower-g asset to a
-// higher-g one with spare capacity can only improve g·w).
-function capSimplexLMO(g, ids, caps) {
+// 0 <= w_i <= caps[id], sum(w) <= 1 (NOT '='  — see below). Greedy water-
+// filling — give weight to the highest-g assets first, each up to its cap,
+// until the budget of 1 is used. Correct by a straightforward exchange
+// argument (swapping any unit of weight from a lower-g asset to a higher-g
+// one with spare capacity can only improve g·w).
+//
+// sum(w) <= 1 rather than = 1: leaving weight unallocated is exactly
+// equivalent to holding it in a zero-return, zero-variance cash position —
+// it drops out of both w·mu and w'Σw the same way either way. So when
+// `stopAtNonPositive` is set, the fill stops as soon as the next-best asset's
+// gradient turns non-positive, rather than being forced into it just to
+// reach 100%. This is what lets a restrictive cap (e.g. a 10% cap across
+// fewer than 10 holdings) degrade to "invest what the caps allow, leave the
+// rest as cash" instead of failing outright.
+function capSimplexLMO(g, ids, caps, stopAtNonPositive) {
   const order = [...ids].sort((a, b) => g[b] - g[a]);
   let remaining = 1;
   const w = {};
   for (const id of ids) w[id] = 0;
   for (const id of order) {
     if (remaining <= 1e-12) break;
+    if (stopAtNonPositive && g[id] <= 0) break;
     const take = Math.min(caps[id], remaining);
     w[id] = take;
     remaining -= take;
@@ -104,21 +129,21 @@ function capSimplexLMO(g, ids, caps) {
   return w;
 }
 
-// Long-only, fully-invested max-Sharpe via Frank-Wolfe. `caps` optionally
-// bounds each weight (default 1 = no effective cap beyond long-only+sum-to-1).
+// Long-only max-Sharpe via Frank-Wolfe, up to fully invested. `caps`
+// optionally bounds each weight (default 1 = no effective cap). Any capacity
+// caps can't place into a positive-excess-return asset is left unallocated
+// (implicit cash) rather than erroring — see capSimplexLMO.
 export function maxSharpePortfolio({ ids, mu, sigma, rf, caps, iterations = 1500 }) {
   if (!ids.length) throw new Error('No instruments with enough history to optimize');
   const cap = {};
   for (const id of ids) cap[id] = caps?.[id] ?? 1;
-  const capSum = ids.reduce((s, id) => s + cap[id], 0);
-  if (capSum < 1 - 1e-9) {
-    throw new Error(`Weight caps too restrictive to reach 100% invested (caps sum to ${(capSum * 100).toFixed(1)}%)`);
-  }
 
-  // Start from the cap-respecting fill in id order — any feasible point works
-  // as a Frank-Wolfe start; this one is cheap and deterministic.
+  // Start fully invested in id order regardless of gradient sign — any
+  // feasible point works as a Frank-Wolfe start, and starting from an
+  // all-zero point (which stopAtNonPositive would give from a flat initial
+  // gradient) makes the first real gradient numerically degenerate.
   const zeroGrad = {}; for (const id of ids) zeroGrad[id] = 0;
-  let w = capSimplexLMO(zeroGrad, ids, cap);
+  let w = capSimplexLMO(zeroGrad, ids, cap, false);
 
   for (let t = 1; t <= iterations; t++) {
     let variance = 0;
@@ -138,7 +163,7 @@ export function maxSharpePortfolio({ ids, mu, sigma, rf, caps, iterations = 1500
       grad[id] = (mu[id] - rf) / sigmaVol - (excessReturn * sigmaW[id]) / (sigmaVol ** 3);
     }
 
-    const s = capSimplexLMO(grad, ids, cap);
+    const s = capSimplexLMO(grad, ids, cap, true);
     const gamma = 2 / (t + 2);
     const next = {};
     for (const id of ids) next[id] = w[id] + gamma * (s[id] - w[id]);
@@ -191,7 +216,7 @@ export async function runOptimize(model, { getInstrument, getNavSeries, getHisto
   return {
     key: model.key, rf, maxWeight,
     current: { weights: curW, ...current },
-    suggested,
+    suggested, // suggested.cashWeight is already set by maxSharpePortfolio -> portfolioStats
     holdings,
     excludedHoldings,
     excludedWeight: 1 - usedWeightSum,

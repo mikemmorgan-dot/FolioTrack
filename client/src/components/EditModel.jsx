@@ -14,6 +14,19 @@ const TYPES = [
 let seq = 0;
 const keyify = () => `h${seq++}`;
 
+// Cash is an ordinary manual holding whose NAV never moves — $1.00, always —
+// so it needs no special-casing anywhere in the pricing/return/risk math:
+// a constant price is already exactly 0% return, 0% volatility by
+// construction in every existing calculation. ensureInstrument dedupes by
+// symbol, so this resolves to the same instrument every time it's used.
+const CASH_SYMBOL = 'CASH';
+const cashRow = (weightPct) => ({
+  uiKey: keyify(), instrumentId: null, symbol: CASH_SYMBOL, name: 'Cash', type: 'cash',
+  source: 'manual', currency: 'CAD', sector: null, country: null, mer: null,
+  weightPct: +weightPct.toFixed(2),
+  initialNav: { date: '2020-01-01', nav: 1 },
+});
+
 // `overrideWeights` (instrumentId -> weightPct) lets a caller open the editor
 // pre-filled with, e.g., the optimizer's suggested weights instead of the
 // model's currently saved ones. Falls back to the saved weight per holding.
@@ -39,7 +52,11 @@ export default function EditModel({ model, initialWeights, onClose, onSaved }) {
 
   const total = rows.reduce((s, r) => s + (Number(r.weightPct) || 0), 0);
   const balanced = Math.abs(total - 100) <= 0.5;
-  const canSave = rows.length > 0 && balanced && !saving;
+  const overAllocated = total > 100.5;
+  // Under 100% is fine now — save() tops up a Cash sleeve for the shortfall
+  // automatically. Over 100% still blocks: there's no equivalent automatic
+  // fix for "too much allocated" (nothing to shrink without guessing what).
+  const canSave = rows.length > 0 && !overAllocated && !saving;
 
   const setWeight = (uiKey, v) => setRows((rs) => rs.map((r) => (r.uiKey === uiKey ? { ...r, weightPct: v } : r)));
   const remove = (uiKey) => setRows((rs) => rs.filter((r) => r.uiKey !== uiKey));
@@ -53,7 +70,18 @@ export default function EditModel({ model, initialWeights, onClose, onSaved }) {
   async function save() {
     setSaving(true); setErr(null); setNoChange(false);
     try {
-      const holdings = rows.map((r) => {
+      // Top up (or create) a Cash row for any shortfall below 100% — the
+      // "allocate to cash automatically" behavior. Over 100% is already
+      // blocked by canSave, so shortfall here is never negative in practice.
+      let finalRows = rows;
+      const shortfall = 100 - total;
+      if (shortfall > 0.01) {
+        const cashIdx = rows.findIndex((r) => r.symbol === CASH_SYMBOL);
+        finalRows = cashIdx >= 0
+          ? rows.map((r, i) => (i === cashIdx ? { ...r, weightPct: +((Number(r.weightPct) || 0) + shortfall).toFixed(2) } : r))
+          : [...rows, cashRow(shortfall)];
+      }
+      const holdings = finalRows.map((r) => {
         const weight = (Number(r.weightPct) || 0) / 100;
         if (r.instrumentId) return { instrumentId: r.instrumentId, weight };
         return {
@@ -123,10 +151,11 @@ export default function EditModel({ model, initialWeights, onClose, onSaved }) {
       </div>
 
       <div className={`sum-bar${balanced ? ' ok' : ''}`}>
-        <span>Total weight</span>
+        <span>Total weight{!balanced && !overAllocated ? ` · ${pct((100 - total) / 100)} will go to Cash` : ''}</span>
         <span className="sum-val num">{pct(total / 100)}</span>
         {!balanced && <button type="button" className="sum-normalize" onClick={normalize}>Normalize to 100%</button>}
       </div>
+      {overAllocated && <p className="note" style={{ padding: '8px 18px 0', margin: 0 }}>Over 100% — reduce a holding or normalize before saving; cash can only fill a shortfall, not remove an excess.</p>}
     </div>
   );
 }

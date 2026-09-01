@@ -32,7 +32,8 @@ export default function OptimizePanel({ modelKey, rf, onApply }) {
 
       <p className="note" style={{ padding: '0 2px 10px' }}>
         Suggests weights that maximize Sharpe using each holding's own historical mean return and covariance —
-        a historical estimate, not a forecast of future performance. Long-only, fully invested{maxWeight ? `, capped at ${maxWeight}% per holding` : ''}.
+        a historical estimate, not a forecast of future performance. Long-only{maxWeight ? `, capped at ${maxWeight}% per holding` : ', fully invested'}.
+        {maxWeight && ' A restrictive cap can leave some of the portfolio in cash rather than force it into a holding that doesn’t improve risk-adjusted return.'}
       </p>
 
       <button className="rp-run" onClick={run} disabled={loading}>{loading ? 'Optimizing…' : 'Run optimizer'}</button>
@@ -77,6 +78,14 @@ export default function OptimizePanel({ modelKey, rf, onApply }) {
                 </div>
               );
             })}
+            {data.suggested.cashWeight > 0.001 && (
+              <div className="rp-r">
+                <span>Cash</span>
+                <span className="r num muted">—</span>
+                <span className="r num">{asPct(data.suggested.cashWeight)}</span>
+                <span className="r num muted">+{asPct(data.suggested.cashWeight)}</span>
+              </div>
+            )}
           </div>
 
           {data.excludedHoldings?.length > 0 && (

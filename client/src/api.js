@@ -89,7 +89,7 @@ export function aggregateLookThrough(holdings, kind) {
   return [...map.entries()].map(([label, weight]) => ({ label, weight })).sort((a, b) => b.weight - a.weight);
 }
 
-const TYPE_LABELS = { stock: 'Individual Stocks', etf: 'ETFs', mutualfund: 'Mutual Funds', alt: 'Alternatives' };
+const TYPE_LABELS = { stock: 'Individual Stocks', etf: 'ETFs', mutualfund: 'Mutual Funds', alt: 'Alternatives', cash: 'Cash' };
 export const typeLabel = (t) => TYPE_LABELS[t] || t;
 
 // Asset-type palette — drives circular icons and the allocation bar.
@@ -98,6 +98,7 @@ export const TYPE_COLORS = {
   etf: '#2DD4A7',
   mutualfund: '#E5A84B',
   alt: '#B98AF0',
+  cash: '#8A8F98',
 };
 export const typeColor = (t) => TYPE_COLORS[t] || '#8A8F98';
 
