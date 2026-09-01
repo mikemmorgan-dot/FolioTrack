@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { getStore } from './store.js';
 import { getQuote, getHistory, lookup, probeAll } from './providers.js';
 import { currentVersionOf } from './util.js';
-import { runPerformance, gatherReturns, returnsForRefs, computeCore, monthGrid, levelsOnGrid, monthlyReturnsFromLevels } from './perf.js';
+import { runPerformance, gatherReturns, returnsForRefs, monthGrid, levelsOnGrid, monthlyReturnsFromLevels } from './perf.js';
 import { riskMetrics, staticPortfolioMonthly } from './risk.js';
 import { runOptimize } from './optimize.js';
 
@@ -159,13 +159,21 @@ app.get('/api/models/:key/risk', async (req, res) => {
     const m = await store.getModel(req.params.key);
     if (!m) return res.status(404).json({ error: 'Model not found' });
     const rf = parseRf(req.query.rf);
-    const { grid, instReturns, instMeta, benchMonthly, dataNotes } = await gatherReturns(m, fetchers());
-    const core = computeCore({ grid, versions: m.versions, instReturns, benchMonthly, instMeta });
-    const months = core.grid.slice(1); // active months
-    const modelRets = core.model.cumulative.slice(1).map((p) => p.ret);
-    const benchRets = months.map((ym) => (benchMonthly[ym] ?? null));
-    const metrics = riskMetrics(modelRets, benchRets, rf);
-    res.json({ key: m.key, name: m.name, rf, metrics, coverageMin: core.coverageMin, dataNotes });
+    const { grid, instReturns, benchMonthly, dataNotes } = await gatherReturns(m, fetchers());
+    // Backtest the CURRENT target weights held statically over each holding's
+    // full available history — not the model's actual realized version-chain
+    // history. Mike wants this specifically so the Risk tab answers "would a
+    // change help or hurt risk-adjusted return", which needs a like-for-like
+    // baseline comparable to the pre-trade preview and optimizer (both of
+    // which already backtest this way) — the realized/chained history is a
+    // different, valid question ("how did my actual decisions do") that
+    // stays in the Performance tab's change attribution, unchanged here.
+    const cur = currentVersionOf(m);
+    const baseRefs = (cur?.holdings || []).map((h) => ({ ref: h.instrumentId, weight: h.weight }));
+    const series = staticPortfolioMonthly(baseRefs, instReturns, grid);
+    const benchRets = series.months.map((ym) => (benchMonthly[ym] ?? null));
+    const metrics = riskMetrics(series.rets, benchRets, rf);
+    res.json({ key: m.key, name: m.name, rf, metrics, coverageMin: series.coverageMin, dataNotes });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
