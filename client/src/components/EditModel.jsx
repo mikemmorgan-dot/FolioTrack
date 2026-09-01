@@ -147,6 +147,16 @@ function AddPanel({ onAdd, onCancel }) {
 
   async function doLookup() {
     if (!symbol.trim()) return;
+    // A space means a company name, not a ticker ("HYDRO ONE" vs "H.TO") —
+    // catch it before it burns a provider call and returns a confusing wall
+    // of per-provider errors for a symbol that was never going to exist.
+    if (/\s/.test(symbol.trim())) {
+      setResolved({
+        found: false, blocked: false, symbol: symbol.trim(),
+        nameLike: true,
+      });
+      return;
+    }
     setLooking(true);
     try {
       const r = await api.lookup(symbol.trim());
@@ -215,6 +225,11 @@ function AddPanel({ onAdd, onCancel }) {
               {!resolved.sector && !resolved.country && resolved.classificationError && (
                 <div className="reason">Sector/region couldn’t be auto-filled ({resolved.classificationError}) — fill them in below if you have them.</div>
               )}
+            </div>
+          ) : resolved.nameLike ? (
+            <div className="notfound blocked-note">
+              <div><span className="pill amber">That looks like a company name</span></div>
+              <div className="reason">Enter the ticker symbol instead — e.g. Hydro One is <code>H.TO</code>, Royal Bank is <code>RY.TO</code>. TSX listings use the <code>.TO</code> suffix; a bare symbol is treated as US-listed.</div>
             </div>
           ) : resolved.blocked ? (
             <div className="notfound blocked-note">
