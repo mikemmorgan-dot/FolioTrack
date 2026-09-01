@@ -13,6 +13,13 @@ describe('riskMetrics', () => {
     expect(m.sharpe).toBeNull();
   });
 
+  it('a single observation gives null sortino, not a number computed from n=1 (hit live: Sharpe correctly showed "no data" while Sortino showed -3.53 for the same one-month-old model)', () => {
+    const m = riskMetrics([-0.01], [null], 0.04);
+    expect(m.n).toBe(1);
+    expect(m.sharpe).toBeNull();
+    expect(m.sortino).toBeNull();
+  });
+
   it('annualizes geometrically: 6 months at a steady 1% compounds to the same total as 12 months at 1%', () => {
     const flat = [0.01, 0.01, 0.01, 0.01, 0.01, 0.01];
     const m = riskMetrics(flat, flat.map(() => null), 0.04);

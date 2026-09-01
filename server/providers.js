@@ -200,7 +200,10 @@ const alphavantage = {
   },
   async history(symbol) {
     const sym = alphavantageSymbol(symbol);
-    const json = await alphavantageFetch({ function: 'TIME_SERIES_DAILY', symbol: sym, outputsize: 'full' });
+    // outputsize=full (full history) is a premium-only parameter on the free
+    // tier — confirmed live. 'compact' (last ~100 daily bars) isn't, and is
+    // still enough for the monthly return calcs this feeds.
+    const json = await alphavantageFetch({ function: 'TIME_SERIES_DAILY', symbol: sym, outputsize: 'compact' });
     const series0 = json['Time Series (Daily)'];
     if (!series0) throw new Error(`Alpha Vantage: no history for ${symbol}`);
     const series = Object.entries(series0)

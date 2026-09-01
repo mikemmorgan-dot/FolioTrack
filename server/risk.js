@@ -48,8 +48,14 @@ export function riskMetrics(modelRets, benchRets, rfAnnual = 0.04) {
   const downs = modelRets.map((r) => Math.min(0, r - rfM));
   const downsideDev = Math.sqrt(mean(downs.map((d) => d * d))) * Math.sqrt(PPY);
 
+  // Sharpe is naturally guarded by annVol>0, since sampleStd returns 0 for
+  // n<2 — but downsideDev has no such floor (it's a mean of squared downside
+  // deviations, well-defined even from a single observation), so sortino
+  // needs its own n>=2 guard. Without it, a single monthly return can
+  // produce a specific-looking Sortino number while Sharpe correctly shows
+  // "no data" for the exact same insufficient sample.
   const sharpe = annVol > 0 ? (annRet - rfAnnual) / annVol : null;
-  const sortino = downsideDev > 0 ? (annRet - rfAnnual) / downsideDev : null;
+  const sortino = n >= 2 && downsideDev > 0 ? (annRet - rfAnnual) / downsideDev : null;
   const mdd = maxDrawdown(modelRets);
 
   const out = {
