@@ -1,6 +1,7 @@
 // store-pg.js — durable Postgres backend. Same API as JsonStore.
 import { makePool, initSchema, seedIfEmpty } from './db.js';
 import { uid, instrumentFromSpec, normalizeBreakdown, currentVersionOf, holdingsEqual } from './util.js';
+import { planNavBatch, todayToronto, batchError } from './nav.js';
 
 const numOrNull = (x) => (x == null ? null : Number(x));
 
@@ -89,6 +90,44 @@ export class PgStore {
       [instrumentId, date, Number(nav)]
     );
     return this.getNavSeries(instrumentId);
+  }
+
+  // One transaction for the whole payload — not a model version.
+  async addNavBatch({ asOf, points } = {}) {
+    const ids = [...new Set((points || []).map((p) => p?.instrumentId).filter(Boolean))];
+    const instrumentsById = new Map();
+    if (ids.length) {
+      const { rows } = await this.pool.query('SELECT * FROM instruments WHERE id = ANY($1)', [ids]);
+      for (const r of rows) instrumentsById.set(r.id, rowToInstrument(r));
+    }
+    const planned = planNavBatch(points, { asOf, instrumentsById, fallbackDate: todayToronto() });
+    if (planned.error) throw batchError(planned.error);
+    if (!planned.writes.length) return { latest: [] };
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const w of planned.writes) {
+        await client.query(
+          `INSERT INTO nav_series (instrument_id,date,nav) VALUES ($1,$2,$3)
+           ON CONFLICT (instrument_id,date) DO UPDATE SET nav=EXCLUDED.nav`,
+          [w.instrumentId, w.date, w.nav]
+        );
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+
+    const latest = [];
+    for (const id of new Set(planned.writes.map((w) => w.instrumentId))) {
+      const nav = await this.latestNav(id);
+      latest.push({ instrumentId: id, date: nav?.date ?? null, nav: nav?.nav ?? null });
+    }
+    return { latest };
   }
   async getNavSeries(instrumentId) {
     const { rows } = await this.pool.query(

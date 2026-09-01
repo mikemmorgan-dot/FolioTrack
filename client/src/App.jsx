@@ -4,6 +4,7 @@ import Hero from './components/Hero.jsx';
 import EditModel from './components/EditModel.jsx';
 import ClassifyPanel from './components/ClassifyPanel.jsx';
 import SettingsPanel from './components/SettingsPanel.jsx';
+import PricesPanel from './components/PricesPanel.jsx';
 import { IconMenu, IconSearch, IconOverview, IconPerf, IconRisk, IconHoldings, IconGeo, IconMix } from './components/icons.jsx';
 import OverviewTab from './components/tabs/OverviewTab.jsx';
 import PerformanceTab from './components/tabs/PerformanceTab.jsx';
@@ -33,6 +34,8 @@ export default function App() {
   const [editWeights, setEditWeights] = useState(null);
   const [classifying, setClassifying] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [pricesOpen, setPricesOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   // Bumped when a display setting (e.g. the modelled basis) changes, so tabs
   // re-render with the new value without a data refetch.
   const [, setSettingsRev] = useState(0);
@@ -66,7 +69,8 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <button className="icon-btn" aria-label="Settings" onClick={() => setSettingsOpen(true)}><IconMenu /></button>
+        <button className="icon-btn" aria-label="Menu" aria-haspopup="menu" aria-expanded={menuOpen}
+          onClick={() => setMenuOpen((o) => !o)}><IconMenu /></button>
         <h1>Model Portfolios</h1>
         <button className="icon-btn" aria-label="Search"><IconSearch /></button>
       </header>
@@ -84,6 +88,16 @@ export default function App() {
         ))}
       </nav>
 
+      {menuOpen && (
+        <>
+          <button type="button" className="app-menu-backdrop" aria-label="Close menu" onClick={() => setMenuOpen(false)} />
+          <div className="app-menu" role="menu">
+            <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setPricesOpen(true); }}>Prices</button>
+            <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setSettingsOpen(true); }}>Settings</button>
+          </div>
+        </>
+      )}
+
       {err && <div className="banner">Couldn’t load — {err}</div>}
       {(loading || !modelReady) && <div className="loading">Loading…</div>}
 
@@ -95,6 +109,7 @@ export default function App() {
               onEdit={() => { setEditWeights(null); setEditing(true); }}
               onClassify={setClassifying}
               onOptimizeApply={(weights) => { setEditWeights(weights); setEditing(true); }}
+              onUpdatePrices={() => setPricesOpen(true)}
             />
           </div>
           <button className="fab" aria-label="Edit model" onClick={() => { setEditWeights(null); setEditing(true); }}>+</button>
@@ -134,6 +149,13 @@ export default function App() {
         <SettingsPanel
           onClose={() => setSettingsOpen(false)}
           onSaved={() => { setSettingsOpen(false); setSettingsRev((r) => r + 1); }}
+        />
+      )}
+
+      {pricesOpen && (
+        <PricesPanel
+          onClose={() => setPricesOpen(false)}
+          onSaved={async () => { setPricesOpen(false); if (selected) await loadModel(selected); }}
         />
       )}
     </div>
