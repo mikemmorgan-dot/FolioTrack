@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { pct, money, num, BASIS } from '../../api.js';
 import { isNavStale, isCashHolding } from '../../nav.js';
+import { lookThroughChip } from '../../lookThrough.js';
 import AssetIcon from '../AssetIcon.jsx';
 import EmptyState from '../EmptyState.jsx';
 
@@ -27,7 +28,7 @@ export default function HoldingsTab({ model, onEdit, onClassify, onUpdatePrices 
         {h.map((x) => {
           const auto = x.source === 'auto';
           const err = typeof x.priceSource === 'string' && x.priceSource.includes('error');
-          const classified = !!(x.sectorBreakdown || x.countryBreakdown);
+          const ltChip = lookThroughChip(x);
           const stale = !auto && !isCashHolding(x) && isNavStale(x.type, x.priceAsOf);
           const priceLine = err || x.price == null
             ? 'price n/a'
@@ -37,7 +38,8 @@ export default function HoldingsTab({ model, onEdit, onClassify, onUpdatePrices 
               <AssetIcon symbol={x.symbol} type={x.type} />
               <div className="row-main">
                 <div className="row-sym">{x.symbol}</div>
-                <div className="row-sub">{x.name}{classified ? ' · look-through set' : ''}</div>
+                <div className="row-sub">{x.name}</div>
+                {ltChip ? <div className={`row-lt${ltChip.includes('incomplete') ? ' warn' : ''}`}>{ltChip}</div> : null}
               </div>
               <div className="row-right">
                 <div className="row-val num">{money(x.weight * BASIS)}</div>

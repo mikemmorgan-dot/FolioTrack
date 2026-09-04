@@ -1,9 +1,10 @@
 // store-pg.js — durable Postgres backend. Same API as JsonStore.
 import { makePool, initSchema, seedIfEmpty } from './db.js';
-import { uid, instrumentFromSpec, normalizeBreakdown, currentVersionOf, holdingsEqual } from './util.js';
+import { uid, instrumentFromSpec, currentVersionOf, holdingsEqual, breakdownPatchPresent, nextBreakdownFields } from './util.js';
 import { planNavBatch, todayToronto, batchError } from './nav.js';
 
 const numOrNull = (x) => (x == null ? null : Number(x));
+const d = (x) => (x instanceof Date ? x.toISOString().slice(0, 10) : String(x).slice(0, 10));
 
 function rowToInstrument(r) {
   return {
@@ -13,9 +14,10 @@ function rowToInstrument(r) {
     sectorBreakdown: r.sector_breakdown || null,
     countryBreakdown: r.country_breakdown || null,
     breakdownUpdatedAt: r.breakdown_updated_at,
+    breakdownAsOf: r.breakdown_as_of ? d(r.breakdown_as_of) : null,
+    breakdownNote: r.breakdown_note || null,
   };
 }
-const d = (x) => (x instanceof Date ? x.toISOString().slice(0, 10) : String(x).slice(0, 10));
 
 export class PgStore {
   constructor() { this.pool = makePool(); }
@@ -64,16 +66,19 @@ export class PgStore {
       sets.push(`mer=$${n++}`);
       vals.push(patch.mer === null || patch.mer === '' ? null : Number(patch.mer));
     }
-    if (patch.sectorBreakdown !== undefined) {
+    if (breakdownPatchPresent(patch)) {
+      const current = await this.getInstrument(id);
+      if (!current) return null;
+      const next = nextBreakdownFields(current, patch);
       sets.push(`sector_breakdown=$${n++}`);
-      vals.push(JSON.stringify(normalizeBreakdown(patch.sectorBreakdown)));
-    }
-    if (patch.countryBreakdown !== undefined) {
+      vals.push(next.sectorBreakdown ? JSON.stringify(next.sectorBreakdown) : null);
       sets.push(`country_breakdown=$${n++}`);
-      vals.push(JSON.stringify(normalizeBreakdown(patch.countryBreakdown)));
-    }
-    if (patch.sectorBreakdown !== undefined || patch.countryBreakdown !== undefined) {
-      sets.push('breakdown_updated_at=now()');
+      vals.push(next.countryBreakdown ? JSON.stringify(next.countryBreakdown) : null);
+      sets.push(`breakdown_as_of=$${n++}`);
+      vals.push(next.breakdownAsOf);
+      sets.push(`breakdown_note=$${n++}`);
+      vals.push(next.breakdownNote);
+      if (next.rowsTouched) sets.push('breakdown_updated_at=now()');
     }
     if (!sets.length) return this.getInstrument(id);
     vals.push(id);

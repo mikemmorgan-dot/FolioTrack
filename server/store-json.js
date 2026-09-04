@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { seedData } from './seed.js';
-import { uid, instrumentFromSpec, normalizeBreakdown, currentVersionOf, holdingsEqual } from './util.js';
+import { uid, instrumentFromSpec, currentVersionOf, holdingsEqual, breakdownPatchPresent, nextBreakdownFields } from './util.js';
 import { planNavBatch, todayToronto, batchError } from './nav.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -49,13 +49,16 @@ export class JsonStore {
   async updateInstrument(id, patch) {
     const inst = this.db.instruments[id];
     if (!inst) return null;
+    const next = breakdownPatchPresent(patch) ? nextBreakdownFields(inst, patch) : null;
     if (patch.sector !== undefined) inst.sector = patch.sector || null;
     if (patch.country !== undefined) inst.country = patch.country || null;
     if (patch.mer !== undefined) inst.mer = patch.mer === null || patch.mer === '' ? null : Number(patch.mer);
-    if (patch.sectorBreakdown !== undefined || patch.countryBreakdown !== undefined) {
-      if (patch.sectorBreakdown !== undefined) inst.sectorBreakdown = normalizeBreakdown(patch.sectorBreakdown);
-      if (patch.countryBreakdown !== undefined) inst.countryBreakdown = normalizeBreakdown(patch.countryBreakdown);
-      inst.breakdownUpdatedAt = new Date().toISOString();
+    if (next) {
+      inst.sectorBreakdown = next.sectorBreakdown;
+      inst.countryBreakdown = next.countryBreakdown;
+      inst.breakdownAsOf = next.breakdownAsOf;
+      inst.breakdownNote = next.breakdownNote;
+      if (next.rowsTouched) inst.breakdownUpdatedAt = new Date().toISOString();
     }
     this._persist();
     return inst;

@@ -117,6 +117,8 @@ export default function ClassifyPanel({ instrument, onClose, onSaved }) {
   const [mer, setMer] = useState(instrument.mer != null ? String(instrument.mer) : '');
   const [sectorRows, setSectorRows] = useState(() => rowify(instrument.sectorBreakdown));
   const [countryRows, setCountryRows] = useState(() => rowify(instrument.countryBreakdown));
+  const [asOf, setAsOf] = useState(String(instrument.breakdownAsOf || '').slice(0, 10));
+  const [note, setNote] = useState(instrument.breakdownNote || '');
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
 
@@ -124,7 +126,19 @@ export default function ClassifyPanel({ instrument, onClose, onSaved }) {
     .map((r) => ({ label: r.label.trim(), weight: Number(r.weight) }))
     .filter((r) => r.label && Number.isFinite(r.weight) && r.weight > 0);
 
+  const hasBreakdown = validRows(sectorRows).length > 0 || validRows(countryRows).length > 0;
+  const asOfOk = /^\d{4}-\d{2}-\d{2}$/.test(asOf);
+  const canSave = !saving && (!hasBreakdown || asOfOk);
+
+  const savedOn = instrument.breakdownUpdatedAt
+    ? new Date(instrument.breakdownUpdatedAt).toISOString().slice(0, 10)
+    : null;
+
   async function save() {
+    if (hasBreakdown && !asOfOk) {
+      setErr('A factsheet as-of date is required when a look-through breakdown is set.');
+      return;
+    }
     setSaving(true); setErr(null);
     try {
       const updated = await api.updateInstrument(instrument.id, {
@@ -133,6 +147,8 @@ export default function ClassifyPanel({ instrument, onClose, onSaved }) {
         mer: mer.trim() === '' ? null : Number(mer),
         sectorBreakdown: validRows(sectorRows).length ? validRows(sectorRows) : null,
         countryBreakdown: validRows(countryRows).length ? validRows(countryRows) : null,
+        breakdownAsOf: asOfOk ? asOf : null,
+        breakdownNote: note.trim() || null,
       });
       onSaved(updated);
     } catch (e) {
@@ -145,7 +161,7 @@ export default function ClassifyPanel({ instrument, onClose, onSaved }) {
       <header className="editor-bar">
         <button type="button" className="ed-cancel" onClick={onClose}>Cancel</button>
         <span className="ed-title">{instrument.symbol}</span>
-        <button type="button" className="ed-save" disabled={saving} onClick={save}>{saving ? 'Saving…' : 'Save'}</button>
+        <button type="button" className="ed-save" disabled={!canSave} onClick={save}>{saving ? 'Saving…' : 'Save'}</button>
       </header>
 
       <div className="editor-body">
@@ -159,7 +175,8 @@ export default function ClassifyPanel({ instrument, onClose, onSaved }) {
 
         <p className="ed-hint">
           A breakdown below is entered manually from {instrument.name}'s factsheet — it isn't live data.
-          {instrument.breakdownUpdatedAt && ` Last updated ${new Date(instrument.breakdownUpdatedAt).toISOString().slice(0, 10)}.`}
+          {asOfOk ? ` Factsheet as-of ${asOf}.` : ''}
+          {savedOn ? ` Last saved in FolioTrack ${savedOn}.` : ''}
         </p>
 
         <div className="ed-section">Fallback classification</div>
@@ -174,6 +191,18 @@ export default function ClassifyPanel({ instrument, onClose, onSaved }) {
         </div>
 
         <div className="ed-section">Fund look-through</div>
+        <label className="field">
+          <span>Factsheet as-of <span className="muted">(required when a breakdown is set)</span></span>
+          <input type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)} required={hasBreakdown} />
+        </label>
+        {hasBreakdown && !asOfOk && (
+          <div className="data-warn">Factsheet as-of is required — without it Geo/Sector looks more precise than the data behind it.</div>
+        )}
+        <label className="field">
+          <span>Note <span className="muted">(optional)</span></span>
+          <input type="text" maxLength={200} value={note} onChange={(e) => setNote(e.target.value)}
+            placeholder="e.g. VFV factsheet Aug 2026" />
+        </label>
         <BreakdownEditor title="Sector breakdown" options={SECTOR_OPTIONS} placeholder="e.g. Financials" rows={sectorRows} setRows={setSectorRows} />
         <BreakdownEditor title="Country breakdown" options={REGION_OPTIONS} placeholder="e.g. Canada" rows={countryRows} setRows={setCountryRows} />
 

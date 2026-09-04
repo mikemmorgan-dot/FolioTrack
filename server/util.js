@@ -33,6 +33,8 @@ export function instrumentFromSpec(spec) {
     mer: spec.mer ?? null,
     sectorBreakdown: spec.sectorBreakdown || null,
     countryBreakdown: spec.countryBreakdown || null,
+    breakdownAsOf: normalizeAsOf(spec.breakdownAsOf),
+    breakdownNote: normalizeNote(spec.breakdownNote),
   };
 }
 
@@ -60,4 +62,67 @@ export function normalizeBreakdown(list) {
     .map((r) => ({ label: String(r?.label || '').trim(), weight: Number(r?.weight) }))
     .filter((r) => r.label && Number.isFinite(r.weight) && r.weight > 0);
   return rows.length ? rows : null;
+}
+
+const AS_OF_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Factsheet effective date — what Mike cares about for "is this still good".
+// Distinct from breakdownUpdatedAt (when FolioTrack last saved the rows).
+export function normalizeAsOf(value) {
+  if (value == null || value === '') return null;
+  const s = String(value).trim().slice(0, 10);
+  return AS_OF_RE.test(s) ? s : null;
+}
+
+// Short free-text (e.g. "VFV factsheet Aug 2026" or "estimate — verify").
+// Trim; empty → null. Cap so a paste doesn't become an essay.
+export function normalizeNote(value) {
+  if (value == null) return null;
+  const s = String(value).trim().slice(0, 200);
+  return s || null;
+}
+
+export function breakdownPatchPresent(patch) {
+  return patch.sectorBreakdown !== undefined
+    || patch.countryBreakdown !== undefined
+    || patch.breakdownAsOf !== undefined
+    || patch.breakdownNote !== undefined;
+}
+
+function hasRows(list) {
+  return Array.isArray(list) && list.length > 0;
+}
+
+// Merge a classify/look-through patch onto the current instrument fields.
+// When both breakdowns end up empty, as-of AND note are cleared: a leftover
+// factsheet date or "VFV factsheet Aug 2026" on a single-bucket holding is
+// noise. Clearing as-of is the load-bearing part; note follows so the two
+// stay in lockstep. Throws 400 if rows remain but as-of is missing — a
+// confident Geo/Sector without a date is the bug this field exists to fix.
+export function nextBreakdownFields(current, patch) {
+  const sectorBreakdown = patch.sectorBreakdown !== undefined
+    ? normalizeBreakdown(patch.sectorBreakdown)
+    : (current.sectorBreakdown ?? null);
+  const countryBreakdown = patch.countryBreakdown !== undefined
+    ? normalizeBreakdown(patch.countryBreakdown)
+    : (current.countryBreakdown ?? null);
+
+  const anyBreakdown = hasRows(sectorBreakdown) || hasRows(countryBreakdown);
+  const rowsTouched = patch.sectorBreakdown !== undefined || patch.countryBreakdown !== undefined;
+
+  let breakdownAsOf = current.breakdownAsOf ?? null;
+  let breakdownNote = current.breakdownNote ?? null;
+  if (patch.breakdownAsOf !== undefined) breakdownAsOf = normalizeAsOf(patch.breakdownAsOf);
+  if (patch.breakdownNote !== undefined) breakdownNote = normalizeNote(patch.breakdownNote);
+
+  if (!anyBreakdown) {
+    breakdownAsOf = null;
+    breakdownNote = null;
+  } else if (rowsTouched && !breakdownAsOf) {
+    const err = new Error('A factsheet as-of date (YYYY-MM-DD) is required when a look-through breakdown is set.');
+    err.status = 400;
+    throw err;
+  }
+
+  return { sectorBreakdown, countryBreakdown, breakdownAsOf, breakdownNote, rowsTouched };
 }

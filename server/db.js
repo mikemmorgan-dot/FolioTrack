@@ -35,6 +35,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS instruments_symbol_lower ON instruments (lower
 ALTER TABLE instruments ADD COLUMN IF NOT EXISTS sector_breakdown jsonb;
 ALTER TABLE instruments ADD COLUMN IF NOT EXISTS country_breakdown jsonb;
 ALTER TABLE instruments ADD COLUMN IF NOT EXISTS breakdown_updated_at timestamptz;
+-- Factsheet as-of (the date on the sheet) vs last-saved timestamp above.
+ALTER TABLE instruments ADD COLUMN IF NOT EXISTS breakdown_as_of date;
+ALTER TABLE instruments ADD COLUMN IF NOT EXISTS breakdown_note text;
 
 CREATE TABLE IF NOT EXISTS models (
   key text PRIMARY KEY,
