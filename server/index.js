@@ -269,9 +269,13 @@ app.post('/api/nav/batch', async (req, res) => {
 });
 // Factsheet entry: sector/country and their fund look-through breakdowns.
 app.put('/api/instruments/:id', async (req, res) => {
-  const inst = await store.updateInstrument(req.params.id, req.body || {});
-  if (!inst) return res.status(404).json({ error: 'Instrument not found' });
-  res.json(inst);
+  try {
+    const inst = await store.updateInstrument(req.params.id, req.body || {});
+    if (!inst) return res.status(404).json({ error: 'Instrument not found' });
+    res.json(inst);
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
 });
 app.post('/api/instruments/:id/nav', async (req, res) => {
   const inst = await store.getInstrument(req.params.id);
