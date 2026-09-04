@@ -81,4 +81,14 @@ their NAV updates. Change attribution compares each new version's return to hold
 the prior version over the same window. Contribution is arithmetic (weight × return)
 over the current version's window. If Yahoo is unreachable the engine degrades
 gracefully (flags missing sleeves, computes what it can) rather than failing.
+
+Holding-level period returns (the row under a security’s chart) are computed from
+that instrument’s own visible price/NAV series — the same Full history / Since added
+slice the chart uses. Each window is `(P_end / P_start) − 1` using the closest
+available EOD **on or before** the window start and end (no interpolation). MTD,
+QTD, YTD, and 1Y are simple total returns. 3Y / 5Y / 10Y / 15Y / 20Y are
+annualized as `(P_end / P_start)^(1/years) − 1` where `years` is the actual
+year-fraction between the two observation dates (day count / 365.25). A dash
+means the visible series does not cover that window — never a fabricated 0%.
+Thin samples (under ~90% of expected trading days) are labeled **est.**
 ```
