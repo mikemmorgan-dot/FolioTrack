@@ -38,7 +38,8 @@ export default function HoldingsTab({ model, onEdit, onClassify, onUpdatePrices 
               <AssetIcon symbol={x.symbol} type={x.type} />
               <div className="row-main">
                 <div className="row-sym">{x.symbol}</div>
-                <div className="row-sub">{x.name}{ltChip ? ` · ${ltChip}` : ''}</div>
+                <div className="row-sub">{x.name}</div>
+                {ltChip ? <div className={`row-lt${ltChip.includes('incomplete') ? ' warn' : ''}`}>{ltChip}</div> : null}
               </div>
               <div className="row-right">
                 <div className="row-val num">{money(x.weight * BASIS)}</div>
