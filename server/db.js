@@ -68,6 +68,16 @@ CREATE TABLE IF NOT EXISTS nav_series (
   nav numeric NOT NULL,
   PRIMARY KEY (instrument_id, date)
 );
+
+-- Cached auto-instrument EOD series. Separate from nav_series (user-entered
+-- NAVs for manual names). One row per symbol — the longest series we have.
+CREATE TABLE IF NOT EXISTS price_history (
+  symbol text PRIMARY KEY,
+  series jsonb NOT NULL,
+  provider text,
+  range text NOT NULL DEFAULT 'max',
+  fetched_at timestamptz NOT NULL DEFAULT now()
+);
 `;
 
 export async function initSchema(pool) {

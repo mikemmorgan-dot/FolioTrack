@@ -107,6 +107,28 @@ export class JsonStore {
     return s.length ? s[s.length - 1] : null;
   }
 
+  _priceHistoryMap() {
+    if (!this.db.priceHistory) this.db.priceHistory = {};
+    return this.db.priceHistory;
+  }
+  async getPriceHistory(symbol) {
+    const key = String(symbol || '').trim().toUpperCase();
+    return this._priceHistoryMap()[key] || null;
+  }
+  async putPriceHistory(symbol, { series, provider, range, fetchedAt } = {}) {
+    const key = String(symbol || '').trim().toUpperCase();
+    const rec = {
+      symbol: key,
+      series: series || [],
+      provider: provider || null,
+      range: range || 'max',
+      fetchedAt: fetchedAt || new Date().toISOString(),
+    };
+    this._priceHistoryMap()[key] = rec;
+    this._persist();
+    return rec;
+  }
+
   async listModels() {
     return Object.values(this.db.models).sort((a, b) => a.riskRank - b.riskRank);
   }

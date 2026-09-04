@@ -11,6 +11,7 @@
 //   supports(symbol) -> boolean (cheap pre-filter)
 
 import { getQuote as yQuote, getHistory as yHistory, YahooError } from './yahoo.js';
+import { isCoolingDown, markIfCooldownError } from './providerCooldown.js';
 
 // ---------- Twelve Data (keyed, free tier: 800 req/day, 8 req/min) ----------
 // Stooq was the original fallback here but as of 2026-08 its entire site sits
@@ -231,16 +232,24 @@ function isNotFound(e) {
   return (e instanceof YahooError && e.notFound) || /no data|not\s*found/i.test(e.message || '');
 }
 
-// Try each provider until one answers. A genuine "symbol doesn't exist" from a
-// provider does NOT stop the chain — another source may still carry it.
-async function viaChain(method, symbol, arg) {
+// Try each provider until one answers. Sequential with early exit — never
+// fan out in parallel. A genuine "symbol doesn't exist" does NOT stop the
+// chain (another source may still carry it). After a 429/403/credit error
+// that provider is skipped for a cooldown window so retries don't burn the
+// rest of the free-tier quota.
+export async function viaChain(method, symbol, arg, providerList = PROVIDERS) {
   const attempts = [];
-  for (const p of PROVIDERS) {
-    if (!p.supports(symbol)) continue;
+  for (const p of providerList) {
+    if (p.supports && !p.supports(symbol)) continue;
+    if (isCoolingDown(p.id)) {
+      attempts.push({ provider: p.id, error: 'cooling down after a recent rate-limit', skipped: true });
+      continue;
+    }
     try {
       const out = await p[method](symbol, arg);
       return { ...out, provider: p.id, attempts };
     } catch (e) {
+      markIfCooldownError(p.id, e);
       attempts.push({ provider: p.id, error: e.message, notFound: isNotFound(e) });
     }
   }

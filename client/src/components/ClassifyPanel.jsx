@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { api, money } from '../api.js';
 import { asPctSigned, asPct } from '../riskFormat.js';
 import { SECTOR_OPTIONS, REGION_OPTIONS } from '../classify.js';
@@ -19,14 +19,19 @@ function SecurityInfo({ instrument, modelKey }) {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
+  const forceRefresh = useRef(false);
 
   useEffect(() => {
+    const refresh = forceRefresh.current;
+    forceRefresh.current = false;
     setLoading(true); setErr(null);
     const req = inModel
-      ? api.holdingHistory(modelKey, instrument.id, { mode })
-      : api.instrumentDetail(instrument.id, { range });
+      ? api.holdingHistory(modelKey, instrument.id, { mode, refresh })
+      : api.instrumentDetail(instrument.id, { range, refresh });
     req.then(setDetail).catch((e) => setErr(e.message)).finally(() => setLoading(false));
   }, [instrument.id, range, mode, modelKey, inModel, reloadKey]);
+
+  const retry = () => { forceRefresh.current = true; setReloadKey((k) => k + 1); };
 
   const s = detail?.stats;
   const smallSample = s && (s.estimate || s.months < 24);
@@ -63,8 +68,15 @@ function SecurityInfo({ instrument, modelKey }) {
               <span>Price</span>
               <span className="num">{money(detail.quote.price, detail.quote.currency || instrument.currency)}{detail.quote.asOf ? ` · ${String(detail.quote.asOf).slice(0, 10)}` : ''}</span>
             </div>
-          ) : (
+          ) : !detail.stale ? (
             <div className="data-warn" style={{ marginTop: 8 }}>No current price available{detail.error ? ` — ${detail.error}` : ''}.</div>
+          ) : null}
+
+          {detail.stale && detail.series.length >= 2 && (
+            <div className="data-warn" style={{ marginTop: 10 }}>
+              Showing cached prices{detail.fetchedAt ? ` from ${String(detail.fetchedAt).slice(0, 10)}` : ''} — live providers are unavailable right now. The chart may be behind.
+              <button type="button" className="classify-select-back" style={{ marginTop: 8 }} onClick={retry}>Retry</button>
+            </div>
           )}
 
           {detail.series.length >= 2 ? (
@@ -72,7 +84,7 @@ function SecurityInfo({ instrument, modelKey }) {
           ) : detail.error ? (
             <div className="data-warn" style={{ marginTop: 10 }}>
               Couldn’t load price history right now — {detail.error}
-              <button type="button" className="classify-select-back" style={{ marginTop: 8 }} onClick={() => setReloadKey((k) => k + 1)}>Retry</button>
+              <button type="button" className="classify-select-back" style={{ marginTop: 8 }} onClick={retry}>Retry</button>
             </div>
           ) : (
             <div className="chart-empty" style={{ marginTop: 10 }}>Not enough history yet to chart.</div>
@@ -101,7 +113,11 @@ function SecurityInfo({ instrument, modelKey }) {
               : inModel && mode === 'full'
                 ? 'Full available price history for this security — not the model’s return. '
                 : 'This instrument’s own price history — not the model’s. '}
-            {instrument.source === 'auto' ? 'Live pricing via the provider chain (TSX history can be thin).' : 'From entered NAV points.'}
+            {instrument.source === 'auto'
+              ? (detail.stale
+                ? 'Cached market data — live providers did not answer this time.'
+                : 'Live pricing via the provider chain (TSX history can be thin).')
+              : 'From entered NAV points.'}
           </p>
         </>
       )}

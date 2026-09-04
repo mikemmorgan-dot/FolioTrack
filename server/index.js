@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getStore } from './store.js';
 import { getQuote, getHistory, lookup, probeAll } from './providers.js';
+import { createHistoryCache } from './historyCache.js';
 import { createQuoteCache, enrichHoldings, quotePatch } from './enrich.js';
 import { currentVersionOf } from './util.js';
 import { listInUseManualInstruments } from './nav.js';
@@ -103,22 +104,24 @@ app.get('/api/diagnostics', async (req, res) => {
   });
 });
 
-// --- history cache (1h) so the perf engine doesn't refetch on every open ---
-const histCache = new Map();
-const HIST_TTL = 60 * 60 * 1000;
-async function cachedHistory(symbol, range) {
-  const k = `${symbol}:${range}`;
-  const hit = histCache.get(k);
-  if (hit && Date.now() - hit.t < HIST_TTL) return hit.v;
+// Persistent history cache (Postgres / JSON) + 18h TTL. Live providers are
+// only called on a miss or stale row; a stored series is returned with
+// stale: true if every live hop fails. Sequential chain + provider cooldown
+// live in providers.js / historyCache.js.
+const history = createHistoryCache({
+  getPriceHistory: (symbol) => store.getPriceHistory(symbol),
+  putPriceHistory: (symbol, rec) => store.putPriceHistory(symbol, rec),
+  fetchLive: (symbol, range) => getHistory(symbol, range),
+});
+async function cachedHistory(symbol, range, opts) {
   try {
-    const v = await getHistory(symbol, range);
-    histCache.set(k, { t: Date.now(), v });
-    return v;
+    return await history.getHistory(symbol, range, opts);
   } catch (e) {
-    console.warn(`[yahoo] history failed for ${symbol}: ${e.message}`);
+    console.warn(`[history] ${symbol}: ${e.message}`);
     throw e;
   }
 }
+const refreshFlag = (q) => q === '1' || q === 'true';
 
 
 
@@ -297,11 +300,15 @@ app.get('/api/instruments/:id/detail', async (req, res) => {
     const range = req.query.range || '1y';
     const rf = parseRf(req.query.rf);
 
-    let series = [], quote = null, error = null;
+    let series = [], quote = null, error = null, stale = false, fetchedAt = null, fromCache = false;
     if (inst.source === 'auto') {
       try {
-        const h = await cachedHistory(inst.symbol, range);
-        series = h.series.map((p) => ({ date: p.date, value: p.close }));
+        const h = await cachedHistory(inst.symbol, range, { force: refreshFlag(req.query.refresh) });
+        series = (h.series || []).map((p) => ({ date: p.date, value: p.close }));
+        stale = !!h.stale;
+        fetchedAt = h.fetchedAt || null;
+        fromCache = !!h.fromCache;
+        if (h.stale) error = h.error || 'Live providers unavailable — showing cached prices';
       } catch (e) { error = e.message; }
       try { quote = await cachedQuote(inst.symbol); } catch (e) { if (!error) error = e.message; }
     } else {
@@ -322,7 +329,7 @@ app.get('/api/instruments/:id/detail', async (req, res) => {
       }
     }
 
-    res.json({ instrument: inst, quote, series, stats, error });
+    res.json({ instrument: inst, quote, series, stats, error, stale, fetchedAt, fromCache });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -373,19 +380,18 @@ app.get('/api/models/:key/instruments/:id/history', async (req, res) => {
     const rf = parseRf(req.query.rf);
     const added = firstAddedToModel(m.versions, inst.id);
 
-    let raw = [], quote = null, error = null;
+    let raw = [], quote = null, error = null, stale = false, fetchedAt = null, fromCache = false;
     const priceSource = inst.source === 'manual' ? 'nav_series' : 'auto';
     if (inst.source === 'auto') {
       try {
-        const h = await cachedHistory(inst.symbol, 'max');
+        const h = await cachedHistory(inst.symbol, 'max', { force: refreshFlag(req.query.refresh) });
         raw = (h.series || []).map((p) => ({ date: p.date, price: p.close }));
+        stale = !!h.stale;
+        fetchedAt = h.fetchedAt || null;
+        fromCache = !!h.fromCache;
+        if (h.stale) error = h.error || 'Live providers unavailable — showing cached prices';
       } catch (e) {
         error = e.message;
-        try {
-          const h = await cachedHistory(inst.symbol, '5y');
-          raw = (h.series || []).map((p) => ({ date: p.date, price: p.close }));
-          error = null;
-        } catch (e2) { error = e2.message; }
       }
       try { quote = await cachedQuote(inst.symbol); } catch (e) { if (!error) error = e.message; }
     } else {
@@ -430,6 +436,9 @@ app.get('/api/models/:key/instruments/:id/history', async (req, res) => {
       source: priceSource,
       range: { mode, ...bounds, addedAt: added?.addedAt || null },
       error,
+      stale,
+      fetchedAt,
+      fromCache,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -441,7 +450,7 @@ app.get('/api/quote/:symbol', async (req, res) => {
   catch (e) { res.status(502).json({ error: e.message }); }
 });
 app.get('/api/history/:symbol', async (req, res) => {
-  try { res.json(await getHistory(req.params.symbol, req.query.range || '1y', req.query.interval || '1d')); }
+  try { res.json(await cachedHistory(req.params.symbol, req.query.range || '1y')); }
   catch (e) { res.status(502).json({ error: e.message }); }
 });
 

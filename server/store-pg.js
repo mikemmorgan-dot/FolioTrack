@@ -147,6 +147,43 @@ export class PgStore {
     return rows[0] ? { date: d(rows[0].date), nav: Number(rows[0].nav) } : null;
   }
 
+  async getPriceHistory(symbol) {
+    const { rows } = await this.pool.query(
+      'SELECT symbol, series, provider, range, fetched_at FROM price_history WHERE lower(symbol)=lower($1)',
+      [symbol]
+    );
+    if (!rows[0]) return null;
+    const r = rows[0];
+    return {
+      symbol: r.symbol,
+      series: r.series || [],
+      provider: r.provider,
+      range: r.range,
+      fetchedAt: r.fetched_at instanceof Date ? r.fetched_at.toISOString() : String(r.fetched_at),
+    };
+  }
+  async putPriceHistory(symbol, { series, provider, range, fetchedAt } = {}) {
+    const key = String(symbol || '').trim().toUpperCase();
+    const at = fetchedAt || new Date().toISOString();
+    const { rows } = await this.pool.query(
+      `INSERT INTO price_history (symbol, series, provider, range, fetched_at)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (symbol) DO UPDATE SET
+         series=EXCLUDED.series, provider=EXCLUDED.provider,
+         range=EXCLUDED.range, fetched_at=EXCLUDED.fetched_at
+       RETURNING symbol, series, provider, range, fetched_at`,
+      [key, JSON.stringify(series || []), provider || null, range || 'max', at]
+    );
+    const r = rows[0];
+    return {
+      symbol: r.symbol,
+      series: r.series || [],
+      provider: r.provider,
+      range: r.range,
+      fetchedAt: r.fetched_at instanceof Date ? r.fetched_at.toISOString() : String(r.fetched_at),
+    };
+  }
+
   async _versionsFor(modelKey) {
     const { rows: vrows } = await this.pool.query(
       'SELECT * FROM versions WHERE model_key=$1 ORDER BY effective_date', [modelKey]
