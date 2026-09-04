@@ -7,6 +7,7 @@
 // instead of an empty chart.
 
 import { getHistory as liveHistory } from './providers.js';
+import { COOLDOWN_MS } from './providerCooldown.js';
 
 export const HISTORY_TTL_MS = 18 * 60 * 60 * 1000;
 
@@ -61,12 +62,14 @@ export function createHistoryCache({
   fetchLive = liveHistory,
   now = () => Date.now(),
   ttlMs = HISTORY_TTL_MS,
+  failCooldownMs = COOLDOWN_MS,
 } = {}) {
   if (typeof getPriceHistory !== 'function' || typeof putPriceHistory !== 'function') {
     throw new Error('createHistoryCache requires getPriceHistory and putPriceHistory');
   }
 
   const inflight = new Map();
+  const liveFailUntil = new Map();
 
   function respond(rec, range, extra = {}) {
     return {
@@ -98,13 +101,23 @@ export function createHistoryCache({
     return rec;
   }
 
-  async function getHistory(symbol, range = 'max') {
+  async function getHistory(symbol, range = 'max', { force = false } = {}) {
     const key = normalizeSymbol(symbol);
     if (!key) throw new Error('Missing symbol');
     const cached = await getPriceHistory(key);
     const fresh = cached?.series?.length && ageMs(cached.fetchedAt, now()) < ttlMs;
-    if (fresh) {
+    if (fresh && !force) {
       return respond(cached, range, { stale: false, fromCache: true });
+    }
+
+    // After a total live miss, don't walk the chain again for a few minutes if
+    // we can still show a stored series. An explicit Retry (force) bypasses this.
+    if (!force && cached?.series?.length && now() < (liveFailUntil.get(key) || 0)) {
+      return respond(cached, range, {
+        stale: true,
+        fromCache: true,
+        error: 'Live providers recently failed — showing cached prices',
+      });
     }
 
     let pending = inflight.get(key);
@@ -115,8 +128,10 @@ export function createHistoryCache({
 
     try {
       const stored = await pending;
+      liveFailUntil.delete(key);
       return respond(stored, range, { stale: false, fromCache: false });
     } catch (e) {
+      liveFailUntil.set(key, now() + failCooldownMs);
       if (cached?.series?.length) {
         return respond(cached, range, {
           stale: true,

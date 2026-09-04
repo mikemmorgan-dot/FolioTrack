@@ -113,14 +113,15 @@ const history = createHistoryCache({
   putPriceHistory: (symbol, rec) => store.putPriceHistory(symbol, rec),
   fetchLive: (symbol, range) => getHistory(symbol, range),
 });
-async function cachedHistory(symbol, range) {
+async function cachedHistory(symbol, range, opts) {
   try {
-    return await history.getHistory(symbol, range);
+    return await history.getHistory(symbol, range, opts);
   } catch (e) {
     console.warn(`[history] ${symbol}: ${e.message}`);
     throw e;
   }
 }
+const refreshFlag = (q) => q === '1' || q === 'true';
 
 
 
@@ -299,13 +300,14 @@ app.get('/api/instruments/:id/detail', async (req, res) => {
     const range = req.query.range || '1y';
     const rf = parseRf(req.query.rf);
 
-    let series = [], quote = null, error = null, stale = false, fetchedAt = null;
+    let series = [], quote = null, error = null, stale = false, fetchedAt = null, fromCache = false;
     if (inst.source === 'auto') {
       try {
-        const h = await cachedHistory(inst.symbol, range);
+        const h = await cachedHistory(inst.symbol, range, { force: refreshFlag(req.query.refresh) });
         series = (h.series || []).map((p) => ({ date: p.date, value: p.close }));
         stale = !!h.stale;
         fetchedAt = h.fetchedAt || null;
+        fromCache = !!h.fromCache;
         if (h.stale) error = h.error || 'Live providers unavailable — showing cached prices';
       } catch (e) { error = e.message; }
       try { quote = await cachedQuote(inst.symbol); } catch (e) { if (!error) error = e.message; }
@@ -327,7 +329,7 @@ app.get('/api/instruments/:id/detail', async (req, res) => {
       }
     }
 
-    res.json({ instrument: inst, quote, series, stats, error, stale, fetchedAt });
+    res.json({ instrument: inst, quote, series, stats, error, stale, fetchedAt, fromCache });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -378,14 +380,15 @@ app.get('/api/models/:key/instruments/:id/history', async (req, res) => {
     const rf = parseRf(req.query.rf);
     const added = firstAddedToModel(m.versions, inst.id);
 
-    let raw = [], quote = null, error = null, stale = false, fetchedAt = null;
+    let raw = [], quote = null, error = null, stale = false, fetchedAt = null, fromCache = false;
     const priceSource = inst.source === 'manual' ? 'nav_series' : 'auto';
     if (inst.source === 'auto') {
       try {
-        const h = await cachedHistory(inst.symbol, 'max');
+        const h = await cachedHistory(inst.symbol, 'max', { force: refreshFlag(req.query.refresh) });
         raw = (h.series || []).map((p) => ({ date: p.date, price: p.close }));
         stale = !!h.stale;
         fetchedAt = h.fetchedAt || null;
+        fromCache = !!h.fromCache;
         if (h.stale) error = h.error || 'Live providers unavailable — showing cached prices';
       } catch (e) {
         error = e.message;
@@ -435,6 +438,7 @@ app.get('/api/models/:key/instruments/:id/history', async (req, res) => {
       error,
       stale,
       fetchedAt,
+      fromCache,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });

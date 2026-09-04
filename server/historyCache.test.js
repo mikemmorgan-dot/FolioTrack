@@ -93,11 +93,13 @@ describe('history cache', () => {
         fetchedAt: '2026-09-01T00:00:00.000Z', // older than 18h
       },
     });
+    let calls = 0;
     const cache = createHistoryCache({
       ...store,
       now: () => Date.parse('2026-09-04T12:00:00.000Z'),
       ttlMs: HISTORY_TTL_MS,
       fetchLive: async () => {
+        calls += 1;
         throw new Error('All providers failed for CRWD: yahoo (HTTP 429); twelvedata (API credits)');
       },
     });
@@ -106,6 +108,16 @@ describe('history cache', () => {
     expect(out.fromCache).toBe(true);
     expect(out.series).toHaveLength(SERIES.length);
     expect(out.error).toMatch(/All providers failed/);
+    expect(calls).toBe(1);
+
+    const again = await cache.getHistory('CRWD', 'max');
+    expect(again.stale).toBe(true);
+    expect(again.series).toHaveLength(SERIES.length);
+    expect(calls).toBe(1);
+
+    const forced = await cache.getHistory('CRWD', 'max', { force: true });
+    expect(forced.stale).toBe(true);
+    expect(calls).toBe(2);
   });
 
   it('hard-fails only when there is no stored series', async () => {
