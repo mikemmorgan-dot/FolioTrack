@@ -6,9 +6,15 @@ import ClassifySelect from './ClassifySelect.jsx';
 import LineChart from './LineChart.jsx';
 
 const RANGES = ['1y', '2y', '5y'];
+const HISTORY_MODES = [
+  { id: 'since-added', label: 'Since added' },
+  { id: 'full', label: 'Full history' },
+];
 
-function SecurityInfo({ instrument }) {
+function SecurityInfo({ instrument, modelKey }) {
+  const inModel = !!modelKey;
   const [range, setRange] = useState('1y');
+  const [mode, setMode] = useState('since-added');
   const [reloadKey, setReloadKey] = useState(0);
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -16,24 +22,35 @@ function SecurityInfo({ instrument }) {
 
   useEffect(() => {
     setLoading(true); setErr(null);
-    api.instrumentDetail(instrument.id, { range })
-      .then(setDetail)
-      .catch((e) => setErr(e.message))
-      .finally(() => setLoading(false));
-  }, [instrument.id, range, reloadKey]);
+    const req = inModel
+      ? api.holdingHistory(modelKey, instrument.id, { mode })
+      : api.instrumentDetail(instrument.id, { range });
+    req.then(setDetail).catch((e) => setErr(e.message)).finally(() => setLoading(false));
+  }, [instrument.id, range, mode, modelKey, inModel, reloadKey]);
 
   const s = detail?.stats;
-  const smallSample = s && s.months < 24;
+  const smallSample = s && (s.estimate || s.months < 24);
+  const periodReturn = s?.periodReturn;
+  const rangeFrom = detail?.range?.from || detail?.series?.[0]?.date;
+  const rangeTo = detail?.range?.to || detail?.series?.at?.(-1)?.date;
 
   return (
     <div className="card pad" style={{ marginBottom: 18 }}>
       <div className="rp-head">
         <span className="rp-title">{instrument.symbol}</span>
-        <div className="segmented">
-          {RANGES.map((r) => (
-            <button key={r} type="button" className={range === r ? 'seg active' : 'seg'} onClick={() => setRange(r)}>{r.toUpperCase()}</button>
-          ))}
-        </div>
+        {inModel ? (
+          <div className="segmented" style={{ flex: '1 1 180px' }}>
+            {HISTORY_MODES.map((m) => (
+              <button key={m.id} type="button" className={mode === m.id ? 'seg active' : 'seg'} onClick={() => setMode(m.id)}>{m.label}</button>
+            ))}
+          </div>
+        ) : (
+          <div className="segmented">
+            {RANGES.map((r) => (
+              <button key={r} type="button" className={range === r ? 'seg active' : 'seg'} onClick={() => setRange(r)}>{r.toUpperCase()}</button>
+            ))}
+          </div>
+        )}
       </div>
 
       {loading && <div className="loading">Loading…</div>}
@@ -61,17 +78,31 @@ function SecurityInfo({ instrument }) {
             <div className="chart-empty" style={{ marginTop: 10 }}>Not enough history yet to chart.</div>
           )}
 
-          {s ? (
+          {periodReturn != null && (
+            <div className="rc-row">
+              <span>Period return{s?.estimate ? ' (est.)' : ''}{rangeFrom && rangeTo ? ` · ${rangeFrom} → ${rangeTo}` : ''}</span>
+              <span className={`num ${periodReturn >= 0 ? 'pos' : 'neg'}`}>{asPctSigned(periodReturn)}</span>
+            </div>
+          )}
+
+          {s && (s.annualizedReturn != null || s.volatility != null) ? (
             <div className="metric-grid" style={{ marginTop: 12 }}>
               <div className="metric"><div className="k">Return (ann.)</div><div className="v num">{asPctSigned(s.annualizedReturn)}</div></div>
               <div className="metric"><div className="k">Volatility</div><div className="v num">{asPct(s.volatility)}</div></div>
               <div className="metric"><div className="k">Max drawdown</div><div className="v num">{asPct(s.maxDrawdown)}</div></div>
             </div>
-          ) : !detail.error ? (
+          ) : !detail.error && periodReturn == null ? (
             <p className="note" style={{ marginTop: 10 }}>Not enough price history yet to compute return/volatility.</p>
           ) : null}
-          {smallSample && <div className="data-warn" style={{ marginTop: 8 }}>Only {s.months} monthly observations — treat as indicative, not precise.</div>}
-          <p className="note" style={{ marginTop: 10 }}>This instrument’s own price history — not the model’s. {instrument.source === 'auto' ? 'Live pricing via the provider chain.' : 'From entered NAV points.'}</p>
+          {smallSample && s?.months > 0 && <div className="data-warn" style={{ marginTop: 8 }}>Only {s.months} monthly observations — treat as indicative, not precise.</div>}
+          <p className="note" style={{ marginTop: 10 }}>
+            {inModel && mode === 'since-added' && detail.addedAt
+              ? `Since first added to this model (${detail.addedAt}). `
+              : inModel && mode === 'full'
+                ? 'Full available price history for this security — not the model’s return. '
+                : 'This instrument’s own price history — not the model’s. '}
+            {instrument.source === 'auto' ? 'Live pricing via the provider chain (TSX history can be thin).' : 'From entered NAV points.'}
+          </p>
         </>
       )}
     </div>
@@ -111,7 +142,7 @@ function BreakdownEditor({ title, options, placeholder, rows, setRows }) {
   );
 }
 
-export default function ClassifyPanel({ instrument, onClose, onSaved }) {
+export default function ClassifyPanel({ instrument, modelKey, onClose, onSaved }) {
   const [sector, setSector] = useState(instrument.sector || '');
   const [country, setCountry] = useState(instrument.country || '');
   const [mer, setMer] = useState(instrument.mer != null ? String(instrument.mer) : '');
@@ -121,6 +152,20 @@ export default function ClassifyPanel({ instrument, onClose, onSaved }) {
   const [note, setNote] = useState(instrument.breakdownNote || '');
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
+  const [sourceInfo, setSourceInfo] = useState(null);
+  const [fetching, setFetching] = useState(false);
+  const [fetchMsg, setFetchMsg] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.factsheetSource(instrument.id)
+      .then((s) => { if (!cancelled) setSourceInfo(s); })
+      .catch(() => { if (!cancelled) setSourceInfo({ mapped: false }); });
+    return () => { cancelled = true; };
+  }, [instrument.id]);
+
+  const mapped = !!sourceInfo?.mapped;
+  const fundLike = instrument.type === 'etf' || instrument.type === 'mutualfund';
 
   const validRows = (rows) => rows
     .map((r) => ({ label: r.label.trim(), weight: Number(r.weight) }))
@@ -133,6 +178,26 @@ export default function ClassifyPanel({ instrument, onClose, onSaved }) {
   const savedOn = instrument.breakdownUpdatedAt
     ? new Date(instrument.breakdownUpdatedAt).toISOString().slice(0, 10)
     : null;
+
+  async function fetchFactsheet() {
+    setFetching(true); setFetchMsg(null); setErr(null);
+    try {
+      const out = await api.fetchBreakdown(instrument.id);
+      const p = out.proposed || {};
+      setSectorRows(rowify(p.sectorBreakdown));
+      setCountryRows(rowify(p.countryBreakdown));
+      if (p.breakdownAsOf) setAsOf(p.breakdownAsOf);
+      if (p.breakdownNote) setNote(p.breakdownNote);
+      const bits = ['Filled from the issuer factsheet — review, then Save.'];
+      if (out.asOfEstimated || out.estimates) bits.push('Treat weights / as-of as estimates.');
+      setFetchMsg(bits.join(' '));
+    } catch (e) {
+      setFetchMsg(null);
+      setErr(e.message || 'Factsheet fetch failed. Enter the breakdown manually below.');
+    } finally {
+      setFetching(false);
+    }
+  }
 
   async function save() {
     if (hasBreakdown && !asOfOk) {
@@ -152,7 +217,7 @@ export default function ClassifyPanel({ instrument, onClose, onSaved }) {
       });
       onSaved(updated);
     } catch (e) {
-      setErr(e.message); setSaving(false);
+      setErr(`Couldn’t save — ${e.message}`); setSaving(false);
     }
   }
 
@@ -165,7 +230,7 @@ export default function ClassifyPanel({ instrument, onClose, onSaved }) {
       </header>
 
       <div className="editor-body">
-        <SecurityInfo instrument={instrument} />
+        <SecurityInfo instrument={instrument} modelKey={modelKey} />
 
         <div className="ed-section">MER</div>
         <label className="field"><span>Management expense ratio (optional, %)</span>
@@ -174,10 +239,29 @@ export default function ClassifyPanel({ instrument, onClose, onSaved }) {
         </label>
 
         <p className="ed-hint">
-          A breakdown below is entered manually from {instrument.name}'s factsheet — it isn't live data.
+          A breakdown can be fetched from a mapped issuer factsheet or entered manually — it isn't a live feed.
           {asOfOk ? ` Factsheet as-of ${asOf}.` : ''}
           {savedOn ? ` Last saved in FolioTrack ${savedOn}.` : ''}
         </p>
+
+        {fundLike && (
+          <div className="fetch-box">
+            <button type="button" className="fetch-factsheet" disabled={!mapped || fetching} onClick={fetchFactsheet}>
+              {fetching ? 'Fetching…' : 'Fetch from factsheet'}
+            </button>
+            {!mapped && sourceInfo && (
+              <p className="note" style={{ paddingTop: 8 }}>
+                No issuer factsheet mapped for {instrument.symbol}. Enter the breakdown manually below.
+              </p>
+            )}
+            {mapped && sourceInfo?.source && (
+              <p className="note" style={{ paddingTop: 8 }}>
+                Mapped: {sourceInfo.source.issuer}. Fills the form only — Save still required.
+              </p>
+            )}
+            {fetchMsg && <div className="data-warn" style={{ marginTop: 8 }}>{fetchMsg}</div>}
+          </div>
+        )}
 
         <div className="ed-section">Fallback classification</div>
         <p className="note">Used for Geo/Sector when no breakdown is entered below.</p>
@@ -206,7 +290,7 @@ export default function ClassifyPanel({ instrument, onClose, onSaved }) {
         <BreakdownEditor title="Sector breakdown" options={SECTOR_OPTIONS} placeholder="e.g. Financials" rows={sectorRows} setRows={setSectorRows} />
         <BreakdownEditor title="Country breakdown" options={REGION_OPTIONS} placeholder="e.g. Canada" rows={countryRows} setRows={setCountryRows} />
 
-        {err && <div className="banner" style={{ margin: '16px 0 0' }}>Couldn’t save — {err}</div>}
+        {err && <div className="banner" style={{ margin: '16px 0 0' }}>{err}</div>}
       </div>
     </div>
   );

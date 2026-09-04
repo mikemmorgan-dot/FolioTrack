@@ -164,6 +164,7 @@ export default function App() {
       {classifying && (
         <ClassifyPanel
           instrument={classifying}
+          modelKey={model?.key}
           onClose={() => setClassifying(null)}
           onSaved={async () => { setClassifying(null); await loadModel(selected); }}
         />
