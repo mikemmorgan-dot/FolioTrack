@@ -397,6 +397,13 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 .rp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .rp-title { font-size: 16px; font-weight: 700; }
 .rp-run { width: 100%; background: var(--surface-3); border: none; color: var(--green); font-size: 15px; font-weight: 700; padding: 13px; border-radius: 12px; }
+
+.fetch-box { margin: 0 0 16px; }
+.fetch-factsheet {
+  width: 100%; background: var(--surface-3); border: none; color: var(--green);
+  font-size: 15px; font-weight: 700; padding: 13px; border-radius: 12px;
+}
+.fetch-factsheet:disabled { color: var(--text-3); }
 .rp-run:disabled { color: var(--text-3); }
 .rp-table { margin-top: 14px; }
 .rp-r { display: grid; grid-template-columns: 1.3fr 1fr 1fr 1fr; align-items: center; padding: 10px 2px; font-size: 14px; font-weight: 600; }

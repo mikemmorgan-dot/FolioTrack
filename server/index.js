@@ -10,6 +10,9 @@ import { listInUseManualInstruments } from './nav.js';
 import { runPerformance, gatherReturns, returnsForRefs, monthGrid, levelsOnGrid, monthlyReturnsFromLevels } from './perf.js';
 import { riskMetrics, staticPortfolioMonthly } from './risk.js';
 import { runOptimize } from './optimize.js';
+import { lookupSource } from './factsheet/sources.js';
+import { fetchBreakdownForSymbol, BreakdownFetchError } from './factsheet/fetchBreakdown.js';
+import { firstAddedToModel, filterSeriesByRange, periodReturnFromSeries, rangeBounds } from './holdingHistory.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -320,6 +323,114 @@ app.get('/api/instruments/:id/detail', async (req, res) => {
     }
 
     res.json({ instrument: inst, quote, series, stats, error });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Mapped? Cheap — no network. ClassifyPanel uses this to enable/disable Fetch.
+app.get('/api/instruments/:id/factsheet-source', async (req, res) => {
+  const inst = await store.getInstrument(req.params.id);
+  if (!inst) return res.status(404).json({ error: 'Instrument not found' });
+  const skip = inst.type === 'stock' || inst.type === 'alt' || inst.type === 'cash';
+  const source = skip ? null : lookupSource(inst.symbol);
+  res.json({
+    symbol: inst.symbol,
+    type: inst.type,
+    mapped: !!source,
+    source: source ? { issuer: source.issuer, parser: source.parser, url: source.url } : null,
+  });
+});
+
+// Propose a look-through from the issuer factsheet. Does not write the instrument.
+app.post('/api/instruments/:id/fetch-breakdown', async (req, res) => {
+  try {
+    const inst = await store.getInstrument(req.params.id);
+    if (!inst) return res.status(404).json({ error: 'Instrument not found' });
+    if (inst.type === 'stock' || inst.type === 'alt' || inst.type === 'cash') {
+      return res.status(422).json({
+        error: `${inst.symbol} is a ${inst.type} — look-through is for funds. Enter a breakdown manually if you still want one.`,
+      });
+    }
+    const payload = await fetchBreakdownForSymbol(inst.symbol);
+    res.json(payload);
+  } catch (e) {
+    if (e instanceof BreakdownFetchError) return res.status(e.status).json({ error: e.message, code: e.code });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Price series for a holding in a model: full available history, or since the
+// first model version that included this instrument. TSX auto history is only
+// as good as the free Yahoo/fallback chain (often thinner than US).
+app.get('/api/models/:key/instruments/:id/history', async (req, res) => {
+  try {
+    const m = await store.getModel(req.params.key);
+    if (!m) return res.status(404).json({ error: 'Model not found' });
+    const inst = await store.getInstrument(req.params.id);
+    if (!inst) return res.status(404).json({ error: 'Instrument not found' });
+    const mode = req.query.mode === 'full' ? 'full' : 'since-added';
+    const rf = parseRf(req.query.rf);
+    const added = firstAddedToModel(m.versions, inst.id);
+
+    let raw = [], quote = null, error = null;
+    const priceSource = inst.source === 'manual' ? 'nav_series' : 'auto';
+    if (inst.source === 'auto') {
+      try {
+        const h = await cachedHistory(inst.symbol, 'max');
+        raw = (h.series || []).map((p) => ({ date: p.date, price: p.close }));
+      } catch (e) {
+        error = e.message;
+        try {
+          const h = await cachedHistory(inst.symbol, '5y');
+          raw = (h.series || []).map((p) => ({ date: p.date, price: p.close }));
+          error = null;
+        } catch (e2) { error = e2.message; }
+      }
+      try { quote = await cachedQuote(inst.symbol); } catch (e) { if (!error) error = e.message; }
+    } else {
+      raw = (await store.getNavSeries(inst.id)).map((p) => ({ date: p.date, price: p.nav }));
+      const latest = await store.latestNav(inst.id);
+      quote = latest ? { price: latest.nav, asOf: latest.date, currency: inst.currency } : null;
+    }
+
+    const series = filterSeriesByRange(raw, { mode, addedAt: added?.addedAt });
+    const bounds = rangeBounds(series);
+    const periodReturn = periodReturnFromSeries(series);
+
+    let stats = null;
+    if (series.length >= 2) {
+      const grid = monthGrid(series[0].date.slice(0, 7), series[series.length - 1].date.slice(0, 7));
+      const levels = levelsOnGrid(series.map((p) => ({ date: p.date, value: p.price })), grid);
+      const rets = monthlyReturnsFromLevels(levels, grid);
+      const monthlyRets = grid.slice(1).map((ym) => rets[ym]).filter((r) => r != null);
+      if (monthlyRets.length >= 2) {
+        const mtr = riskMetrics(monthlyRets, monthlyRets.map(() => null), rf);
+        stats = {
+          periodReturn,
+          annualizedReturn: mtr.annualizedReturn,
+          volatility: mtr.volatility,
+          maxDrawdown: mtr.maxDrawdown,
+          months: mtr.n,
+          estimate: mtr.n < 24,
+        };
+      }
+    }
+    if (!stats && periodReturn != null) {
+      stats = { periodReturn, annualizedReturn: null, volatility: null, maxDrawdown: null, months: 0, estimate: true };
+    }
+
+    res.json({
+      instrument: inst,
+      quote,
+      series: series.map((p) => ({ date: p.date, value: p.price })),
+      stats,
+      addedAt: added?.addedAt || null,
+      firstVersionId: added?.versionId || null,
+      source: priceSource,
+      range: { mode, ...bounds, addedAt: added?.addedAt || null },
+      error,
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

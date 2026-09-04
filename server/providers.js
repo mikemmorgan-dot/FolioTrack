@@ -67,7 +67,7 @@ const twelvedata = {
   },
   async history(symbol, range) {
     const { symbol: sym, exchange } = twelvedataParams(symbol);
-    const outputsize = range === '1y' ? 260 : range === '2y' ? 520 : 1300; // ~5y trading days, capped by free-tier max
+    const outputsize = range === '1y' ? 260 : range === '2y' ? 520 : (range === 'max' || range === '10y') ? 5000 : 1300; // ~5y default; max is whatever the free tier will return
     const t = await twelvedataFetch('time_series', { symbol: sym, exchange, interval: '1day', outputsize });
     const values = t.values || [];
     const series = values
@@ -140,7 +140,7 @@ const finnhub = {
     };
   },
   async history(symbol, range) {
-    const days = range === '1y' ? 365 : range === '2y' ? 730 : 1825;
+    const days = range === '1y' ? 365 : range === '2y' ? 730 : (range === 'max' || range === '10y') ? 3650 : 1825;
     const to = Math.floor(Date.now() / 1000);
     const from = to - days * 86400;
     const c = await finnhubFetch('stock/candle', { symbol, resolution: 'D', from, to });

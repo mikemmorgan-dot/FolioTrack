@@ -34,6 +34,11 @@ export const api = {
     }),
   instrumentDetail: (id, { range = '1y', rf = 4 } = {}) =>
     j(`/api/instruments/${id}/detail?range=${range}&rf=${rf}`),
+  factsheetSource: (id) => j(`/api/instruments/${id}/factsheet-source`),
+  fetchBreakdown: (id) =>
+    j(`/api/instruments/${id}/fetch-breakdown`, { method: 'POST' }),
+  holdingHistory: (modelKey, id, { mode = 'since-added', rf = 4 } = {}) =>
+    j(`/api/models/${encodeURIComponent(modelKey)}/instruments/${id}/history?mode=${encodeURIComponent(mode)}&rf=${rf}`),
   // Manual names in any current model, with latest NAV + which models use them.
   manualInstruments: () => j('/api/instruments?source=manual&inUse=1'),
   addNavBatch: (body) =>
