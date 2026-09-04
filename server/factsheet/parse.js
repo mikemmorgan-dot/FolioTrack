@@ -80,10 +80,13 @@ function parseWeight(raw) {
 }
 
 function mergeRows(rows) {
+  // First label wins. Issuer pages often repeat the same allocation table
+  // (fund + benchmark, or a table plus a JSON clone). Summing those would
+  // double every weight. Alias collisions inside one table are rare.
   const map = new Map();
   for (const r of rows) {
     if (!r?.label || !Number.isFinite(r.weight) || r.weight <= 0) continue;
-    map.set(r.label, (map.get(r.label) || 0) + r.weight);
+    if (!map.has(r.label)) map.set(r.label, r.weight);
   }
   return [...map.entries()]
     .map(([label, weight]) => ({ label, weight: Math.round(weight * 10) / 10 }))

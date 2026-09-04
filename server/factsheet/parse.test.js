@@ -82,6 +82,13 @@ describe('SSGA SPY HTML fixture', () => {
     expect(parsed.sectorBreakdown.find((r) => r.label === 'Information Technology').weight).toBeCloseTo(37.8, 5);
     expect(parsed.countryBreakdown.find((r) => r.label === 'United States').weight).toBeCloseTo(99.2, 5);
   });
+
+  it('does not double weights when the same sector table is repeated (fund + clone)', () => {
+    const html = fixture('ssga-spy.html').toString('utf8');
+    const doubled = html.replace('</body>', `${html.match(/<table>[\s\S]*?<\/table>/)[0]}</body>`);
+    const parsed = parseFactsheetHtml(doubled);
+    expect(parsed.sectorBreakdown.find((r) => r.label === 'Information Technology').weight).toBeCloseTo(37.8, 5);
+  });
 });
 
 describe('BMO HTML fixture', () => {
