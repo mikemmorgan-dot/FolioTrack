@@ -49,3 +49,22 @@ describe('JsonStore look-through metadata', () => {
     })).rejects.toMatchObject({ status: 400 });
   });
 });
+
+describe('JsonStore price history', () => {
+  it('persists and reads a series keyed by symbol', async () => {
+    const store = await tmpStore();
+    expect(await store.getPriceHistory('CRWD')).toBeNull();
+    const series = [
+      { date: '2024-01-02', close: 100 },
+      { date: '2025-09-01', close: 220 },
+    ];
+    const saved = await store.putPriceHistory('crwd', {
+      series, provider: 'yahoo', range: 'max', fetchedAt: '2026-09-04T12:00:00.000Z',
+    });
+    expect(saved.symbol).toBe('CRWD');
+    const hit = await store.getPriceHistory('CRWD');
+    expect(hit.series).toEqual(series);
+    expect(hit.provider).toBe('yahoo');
+    expect(hit.fetchedAt).toBe('2026-09-04T12:00:00.000Z');
+  });
+});

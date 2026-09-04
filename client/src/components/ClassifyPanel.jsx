@@ -67,6 +67,13 @@ function SecurityInfo({ instrument, modelKey }) {
             <div className="data-warn" style={{ marginTop: 8 }}>No current price available{detail.error ? ` — ${detail.error}` : ''}.</div>
           )}
 
+          {detail.stale && detail.series.length >= 2 && (
+            <div className="data-warn" style={{ marginTop: 10 }}>
+              Showing cached prices{detail.fetchedAt ? ` from ${String(detail.fetchedAt).slice(0, 10)}` : ''} — live providers are unavailable right now. The chart may be behind.
+              <button type="button" className="classify-select-back" style={{ marginTop: 8 }} onClick={() => setReloadKey((k) => k + 1)}>Retry</button>
+            </div>
+          )}
+
           {detail.series.length >= 2 ? (
             <div style={{ marginTop: 10 }}><LineChart model={detail.series} benchmark={[]} height={140} /></div>
           ) : detail.error ? (
@@ -101,7 +108,11 @@ function SecurityInfo({ instrument, modelKey }) {
               : inModel && mode === 'full'
                 ? 'Full available price history for this security — not the model’s return. '
                 : 'This instrument’s own price history — not the model’s. '}
-            {instrument.source === 'auto' ? 'Live pricing via the provider chain (TSX history can be thin).' : 'From entered NAV points.'}
+            {instrument.source === 'auto'
+              ? (detail.stale
+                ? 'Cached market data — live providers did not answer this time.'
+                : 'Live pricing via the provider chain (TSX history can be thin).')
+              : 'From entered NAV points.'}
           </p>
         </>
       )}
