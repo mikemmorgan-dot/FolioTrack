@@ -68,9 +68,9 @@ function SecurityInfo({ instrument, modelKey }) {
               <span>Price</span>
               <span className="num">{money(detail.quote.price, detail.quote.currency || instrument.currency)}{detail.quote.asOf ? ` · ${String(detail.quote.asOf).slice(0, 10)}` : ''}</span>
             </div>
-          ) : (
+          ) : !detail.stale ? (
             <div className="data-warn" style={{ marginTop: 8 }}>No current price available{detail.error ? ` — ${detail.error}` : ''}.</div>
-          )}
+          ) : null}
 
           {detail.stale && detail.series.length >= 2 && (
             <div className="data-warn" style={{ marginTop: 10 }}>
