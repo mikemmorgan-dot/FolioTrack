@@ -353,7 +353,7 @@ function AddPanel({ onAdd, onCancel, hasCash }) {
               )}
 
               {!resolved.found && (
-                <div className="field-row">
+                <div className="field-row field-row-nav">
                   <label className="field"><span>NAV date (optional)</span><input type="date" value={form.navDate} onChange={set('navDate')} /></label>
                   <label className="field"><span>NAV (optional)</span><input type="number" inputMode="decimal" value={form.nav} onChange={set('nav')} placeholder="e.g. 42.15" /></label>
                 </div>

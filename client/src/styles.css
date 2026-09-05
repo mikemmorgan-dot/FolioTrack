@@ -285,8 +285,14 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   color-scheme: dark;
 }
 .field input:focus, .field-row > input:focus { outline: none; border-color: var(--green); }
-.field-row { display: flex; gap: 12px; }
-.field-row .field { flex: 1; }
+.field-row { display: flex; gap: 12px; min-width: 0; }
+.field-row .field { flex: 1 1 0; min-width: 0; }
+/* Native date inputs keep a large min-content width; let the column shrink. */
+.field input[type="date"] { min-width: 0; max-width: 100%; }
+/* NAV date + NAV labels are long; stack before they overlap on ~390px phones. */
+@media (max-width: 440px) {
+  .field-row-nav { flex-direction: column; gap: 0; }
+}
 
 .field select, .field-row select {
   background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
