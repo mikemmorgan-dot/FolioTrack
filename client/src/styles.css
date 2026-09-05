@@ -348,6 +348,48 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 .perf-figure { font-family: var(--display); font-size: 40px; font-weight: 700; letter-spacing: -0.03em; line-height: 1; }
 .perf-sub { font-size: 13px; color: var(--text-2); margin-top: 6px; font-weight: 500; }
 
+.period-returns {
+  display: flex;
+  gap: 0;
+  overflow-x: auto;
+  margin: 4px -6px 8px;
+  padding: 8px 2px 4px;
+  border-top: 1px solid var(--line);
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.period-returns::-webkit-scrollbar { display: none; }
+.period-cell {
+  flex: none;
+  min-width: 62px;
+  padding: 6px 8px 4px;
+  text-align: center;
+}
+.period-k {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.period-v {
+  font-size: 13px;
+  font-weight: 700;
+  margin-top: 4px;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+.period-est {
+  display: block;
+  margin-top: 2px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #E5A84B;
+}
+
 .linechart { width: 100%; height: auto; display: block; margin: 4px 0 6px; }
 .chart-empty { color: var(--text-2); font-size: 14px; padding: 28px 6px; background: var(--surface); border-radius: var(--r); text-align: center; }
 .chart-legend { display: flex; gap: 18px; padding: 4px 4px 6px; }

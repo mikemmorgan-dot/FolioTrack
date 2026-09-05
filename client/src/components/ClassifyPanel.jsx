@@ -11,6 +11,46 @@ const HISTORY_MODES = [
   { id: 'full', label: 'Full history' },
 ];
 
+const PERIOD_COLS = [
+  { key: 'mtd', label: 'MTD', need: 'need a prior month-end close' },
+  { key: 'qtd', label: 'QTD', need: 'need a prior quarter-end close' },
+  { key: 'ytd', label: 'YTD', need: 'need a prior year-end close' },
+  { key: 'y1', label: '1Y', need: 'need ≥1y history' },
+  { key: 'y3ann', label: '3Y ann.', need: 'need ≥3y history' },
+  { key: 'y5ann', label: '5Y ann.', need: 'need ≥5y history' },
+  { key: 'y10ann', label: '10Y ann.', need: 'need ≥10y history' },
+  { key: 'y15ann', label: '15Y ann.', need: 'need ≥15y history' },
+  { key: 'y20ann', label: '20Y ann.', need: 'need ≥20y history' },
+];
+
+function PeriodReturnsRow({ returns }) {
+  if (!returns) return null;
+  return (
+    <div className="period-returns" role="list" aria-label="Period returns">
+      {PERIOD_COLS.map((col) => {
+        const value = returns[col.key];
+        const cell = returns.meta?.[col.key];
+        const missing = value == null;
+        const cls = missing ? 'muted' : value >= 0 ? 'pos' : 'neg';
+        const title = missing
+          ? col.need
+          : cell?.estimate
+            ? `Thin sample — treat as estimate${cell.from && cell.to ? ` · ${cell.from} → ${cell.to}` : ''}`
+            : (cell?.from && cell?.to ? `${cell.from} → ${cell.to}` : col.label);
+        return (
+          <div key={col.key} className="period-cell" role="listitem" title={title}>
+            <div className="period-k">{col.label}</div>
+            <div className={`period-v num ${cls}`}>
+              {missing ? '—' : asPctSigned(value)}
+              {!missing && cell?.estimate ? <span className="period-est">est.</span> : null}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function SecurityInfo({ instrument, modelKey }) {
   const inModel = !!modelKey;
   const [range, setRange] = useState('1y');
@@ -90,6 +130,8 @@ function SecurityInfo({ instrument, modelKey }) {
             <div className="chart-empty" style={{ marginTop: 10 }}>Not enough history yet to chart.</div>
           )}
 
+          {detail.returns && <PeriodReturnsRow returns={detail.returns} />}
+
           {periodReturn != null && (
             <div className="rc-row">
               <span>Period return{s?.estimate ? ' (est.)' : ''}{rangeFrom && rangeTo ? ` · ${rangeFrom} → ${rangeTo}` : ''}</span>
@@ -109,15 +151,16 @@ function SecurityInfo({ instrument, modelKey }) {
           {smallSample && s?.months > 0 && <div className="data-warn" style={{ marginTop: 8 }}>Only {s.months} monthly observations — treat as indicative, not precise.</div>}
           <p className="note" style={{ marginTop: 10 }}>
             {inModel && mode === 'since-added' && detail.addedAt
-              ? `Since first added to this model (${detail.addedAt}). `
+              ? `Since first added to this model (${detail.addedAt}). Periods that start before that date show —. `
               : inModel && mode === 'full'
                 ? 'Full available price history for this security — not the model’s return. '
                 : 'This instrument’s own price history — not the model’s. '}
+            MTD / QTD / YTD / 1Y are total returns; 3Y+ are annualized from the actual date span. Each window uses the closest close on or before the start and the latest visible close.
             {instrument.source === 'auto'
               ? (detail.stale
-                ? 'Cached market data — live providers did not answer this time.'
-                : 'Live pricing via the provider chain (TSX history can be thin).')
-              : 'From entered NAV points.'}
+                ? ' Cached market data — live providers did not answer this time.'
+                : ' Live pricing via the provider chain (TSX history can be thin).')
+              : ' From entered NAV points.'}
           </p>
         </>
       )}

@@ -14,6 +14,7 @@ import { runOptimize } from './optimize.js';
 import { lookupSource } from './factsheet/sources.js';
 import { fetchBreakdownForSymbol, BreakdownFetchError } from './factsheet/fetchBreakdown.js';
 import { firstAddedToModel, filterSeriesByRange, periodReturnFromSeries, rangeBounds } from './holdingHistory.js';
+import { periodReturnsFromSeries } from './periodReturns.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -329,7 +330,9 @@ app.get('/api/instruments/:id/detail', async (req, res) => {
       }
     }
 
-    res.json({ instrument: inst, quote, series, stats, error, stale, fetchedAt, fromCache });
+    const returns = periodReturnsFromSeries(series);
+
+    res.json({ instrument: inst, quote, series, stats, returns, error, stale, fetchedAt, fromCache });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -403,6 +406,7 @@ app.get('/api/models/:key/instruments/:id/history', async (req, res) => {
     const series = filterSeriesByRange(raw, { mode, addedAt: added?.addedAt });
     const bounds = rangeBounds(series);
     const periodReturn = periodReturnFromSeries(series);
+    const returns = periodReturnsFromSeries(series);
 
     let stats = null;
     if (series.length >= 2) {
@@ -431,6 +435,7 @@ app.get('/api/models/:key/instruments/:id/history', async (req, res) => {
       quote,
       series: series.map((p) => ({ date: p.date, value: p.price })),
       stats,
+      returns,
       addedAt: added?.addedAt || null,
       firstVersionId: added?.versionId || null,
       source: priceSource,
