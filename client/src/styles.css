@@ -237,6 +237,10 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 .nav-btn.active .nav-ico { color: var(--green); }
 .nav-btn span { font-size: 10.5px; font-weight: 600; letter-spacing: -0.01em; }
 .nav-ico { width: 22px; height: 22px; }
+.bottom-nav.nav-wide { padding: 0 2px; }
+.bottom-nav.nav-wide .nav-btn { min-width: 0; padding: 0 1px; }
+.bottom-nav.nav-wide .nav-btn span { font-size: 9.5px; letter-spacing: -0.02em; }
+.bottom-nav.nav-wide .nav-ico { width: 20px; height: 20px; }
 
 .banner { margin: 14px 16px; padding: 13px 15px; border-radius: var(--r-sm); font-size: 14px; background: var(--red-dim); color: var(--red); }
 .loading { padding: 80px 20px; text-align: center; color: var(--text-2); }
@@ -504,3 +508,83 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   margin: 4px 0 4px;
 }
 .stale-line:active { filter: brightness(1.08); }
+
+/* ---------- compare ---------- */
+.compare-lead { padding: 0 2px; }
+.compare-dek, .compare-note {
+  font-size: 13px; color: var(--text-3); line-height: 1.5;
+  margin: -4px 4px 14px;
+}
+.compare-note { margin-top: -2px; }
+
+.compare-cards { display: flex; flex-direction: column; gap: 10px; }
+.compare-card {
+  background: var(--surface); border-radius: var(--r); padding: 14px 14px 12px;
+}
+.compare-card-top { display: flex; align-items: center; gap: 10px; }
+.compare-card-top .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--risk); flex: none; }
+.compare-card-name { font-size: 16px; font-weight: 700; letter-spacing: -0.01em; }
+.compare-card-sub { font-size: 12px; color: var(--text-3); font-weight: 600; margin-top: 2px; }
+.compare-card-stats {
+  display: grid; grid-template-columns: 1.2fr 0.8fr 0.8fr 0.8fr;
+  gap: 8px; margin-top: 14px;
+}
+.compare-card-stats .k { font-size: 11px; color: var(--text-3); font-weight: 600; }
+.compare-card-stats .v { font-size: 18px; font-weight: 700; letter-spacing: -0.02em; margin-top: 3px; }
+.compare-card-stats .est { font-size: 10px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; color: #E5A84B; margin-top: 3px; }
+
+.compare-split {
+  display: flex; height: 6px; border-radius: 999px; overflow: hidden;
+  margin-top: 12px; background: var(--bg);
+}
+.compare-split-shared { background: rgba(255, 255, 255, 0.22); }
+.compare-split-unique { background: var(--risk); }
+
+.compare-pair-label { width: 108px; font-size: 13px; }
+.compare-empty { padding: 16px; color: var(--text-2); font-size: 14px; }
+
+.compare-mini-w {
+  display: flex; gap: 6px; justify-content: flex-end;
+  font-size: 11px; font-weight: 700;
+}
+.compare-mini-w span { min-width: 34px; text-align: right; }
+.compare-shared-head { padding-top: 10px; padding-bottom: 10px; }
+.compare-shared-head .row-main { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+
+.compare-table-wrap {
+  overflow-x: auto; -webkit-overflow-scrolling: touch;
+  margin: 0 -16px; padding: 0 16px 8px;
+  scrollbar-width: thin;
+}
+.compare-table {
+  width: max-content; min-width: 100%;
+  border-collapse: separate; border-spacing: 0;
+  background: var(--surface); border-radius: var(--r);
+  overflow: hidden;
+}
+.compare-table th, .compare-table td {
+  padding: 11px 10px; font-size: 13px; font-weight: 700;
+  text-align: right; white-space: nowrap;
+  border-bottom: 1px solid var(--line);
+}
+.compare-table thead th {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--text-2); position: sticky; top: 0; background: var(--surface-2);
+}
+.compare-table .sticky {
+  position: sticky; left: 0; z-index: 1;
+  text-align: left; min-width: 88px; max-width: 110px;
+  background: var(--surface);
+}
+.compare-table thead .sticky { background: var(--surface-2); z-index: 2; }
+.compare-table tbody th.sticky { font-weight: 700; }
+.compare-table td { min-width: 58px; }
+.compare-table tbody tr:last-child th,
+.compare-table tbody tr:last-child td { border-bottom: none; }
+.cmp-sym { font-size: 14px; }
+.cmp-n { font-size: 11px; font-weight: 600; margin-top: 2px; }
+
+@media (max-width: 400px) {
+  .compare-card-stats { grid-template-columns: 1fr 1fr; }
+  .compare-pair-label { width: 92px; font-size: 12px; }
+}

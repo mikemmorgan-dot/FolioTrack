@@ -15,6 +15,7 @@ import { lookupSource } from './factsheet/sources.js';
 import { fetchBreakdownForSymbol, BreakdownFetchError } from './factsheet/fetchBreakdown.js';
 import { firstAddedToModel, filterSeriesByRange, periodReturnFromSeries, rangeBounds } from './holdingHistory.js';
 import { periodReturnsFromSeries } from './periodReturns.js';
+import { buildCompare } from './compare.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -42,6 +43,30 @@ app.get('/api/models', async (_req, res) => {
       holdingCount: cv?.holdings.length ?? 0,
     };
   }));
+});
+
+// Side-by-side of every model's *current* version: weights, overlap, MER, risk rank.
+// Cache-only enrich — no live quotes. Overlap math lives in compare.js.
+app.get('/api/compare', async (_req, res) => {
+  try {
+    const models = await store.listModels();
+    const snapshots = [];
+    for (const m of models) {
+      const cv = currentVersionOf(m);
+      const holdings = await enrichHoldings(cv, store, quotes, { liveQuotes: false });
+      snapshots.push({
+        key: m.key,
+        name: m.name,
+        riskRank: m.riskRank,
+        versionCount: m.versions.length,
+        currentVersion: cv ? { id: cv.id, effectiveDate: cv.effectiveDate } : null,
+        holdings,
+      });
+    }
+    res.json(buildCompare(snapshots));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get('/api/models/:key', async (req, res) => {

@@ -6,6 +6,7 @@ export const IconRisk = (p) => (<svg {...S} className="nav-ico" {...p}><path d="
 export const IconHoldings = (p) => (<svg {...S} className="nav-ico" {...p}><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="3.5" cy="6" r="1.3"/><circle cx="3.5" cy="12" r="1.3"/><circle cx="3.5" cy="18" r="1.3"/></svg>);
 export const IconGeo = (p) => (<svg {...S} className="nav-ico" {...p}><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.5 3.8 5.6 3.8 9S14.5 18.5 12 21c-2.5-2.5-3.8-5.6-3.8-9S9.5 5.5 12 3z"/></svg>);
 export const IconMix = (p) => (<svg {...S} className="nav-ico" {...p}><path d="M12 3v9l7 4"/><circle cx="12" cy="12" r="9"/></svg>);
+export const IconCompare = (p) => (<svg {...S} className="nav-ico" {...p}><rect x="3" y="4" width="7" height="16" rx="1.5"/><rect x="14" y="4" width="7" height="16" rx="1.5"/></svg>);
 export const IconSort = (p) => (<svg {...S} width="18" height="18" {...p}><path d="M4 7h13"/><path d="M4 12h9"/><path d="M4 17h5"/><circle cx="19" cy="16" r="2.4"/></svg>);
 export const IconMenu = (p) => (<svg {...S} {...p}><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>);
 export const IconSearch = (p) => (<svg {...S} {...p}><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>);
