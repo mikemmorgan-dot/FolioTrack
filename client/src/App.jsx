@@ -5,13 +5,14 @@ import EditModel from './components/EditModel.jsx';
 import ClassifyPanel from './components/ClassifyPanel.jsx';
 import SettingsPanel from './components/SettingsPanel.jsx';
 import PricesPanel from './components/PricesPanel.jsx';
-import { IconMenu, IconSearch, IconOverview, IconPerf, IconRisk, IconHoldings, IconGeo, IconMix } from './components/icons.jsx';
+import { IconMenu, IconSearch, IconOverview, IconPerf, IconRisk, IconHoldings, IconGeo, IconMix, IconCompare } from './components/icons.jsx';
 import OverviewTab from './components/tabs/OverviewTab.jsx';
 import PerformanceTab from './components/tabs/PerformanceTab.jsx';
 import RiskTab from './components/tabs/RiskTab.jsx';
 import HoldingsTab from './components/tabs/HoldingsTab.jsx';
 import GeoSectorTab from './components/tabs/GeoSectorTab.jsx';
 import AllocationTab from './components/tabs/AllocationTab.jsx';
+import CompareTab from './components/tabs/CompareTab.jsx';
 
 export const RISK_COLORS = { 1: '#4FC3F7', 2: '#35C9A8', 3: '#E5C044', 4: '#F0913E', 5: '#F0655B' };
 export const RISK_LABELS = { 1: 'Conservative', 2: 'Balanced', 3: 'Balanced Growth', 4: 'Growth', 5: 'Aggressive' };
@@ -23,6 +24,7 @@ const VIEWS = [
   { id: 'holdings', label: 'Holdings', Icon: IconHoldings, C: HoldingsTab },
   { id: 'geosector', label: 'Geo', Icon: IconGeo, C: GeoSectorTab },
   { id: 'allocation', label: 'Mix', Icon: IconMix, C: AllocationTab },
+  { id: 'compare', label: 'Compare', Icon: IconCompare, C: CompareTab },
 ];
 
 export default function App() {
@@ -83,6 +85,7 @@ export default function App() {
 
   const riskRank = models.find((m) => m.key === selected)?.riskRank;
   const Active = VIEWS.find((v) => v.id === view).C;
+  const isCompare = view === 'compare';
   // `model` updates asynchronously after `selected` changes — without this
   // guard, switching models and acting quickly (tapping the FAB before the
   // fetch resolves) rendered the PREVIOUS model's data inside a screen
@@ -91,7 +94,7 @@ export default function App() {
   const modelReady = model && model.key === selected;
 
   return (
-    <div className="app">
+    <div className={`app${isCompare ? ' compare-mode' : ''}`}>
       <header className="topbar">
         <button className="icon-btn" aria-label="Menu" aria-haspopup="menu" aria-expanded={menuOpen}
           onClick={() => setMenuOpen((o) => !o)}><IconMenu /></button>
@@ -99,18 +102,20 @@ export default function App() {
         <button className="icon-btn" aria-label="Search"><IconSearch /></button>
       </header>
 
-      <nav className="model-pills" aria-label="Select model">
-        {models.map((m) => (
-          <button
-            key={m.key}
-            className={`model-pill${m.key === selected ? ' active' : ''}`}
-            style={{ '--pill-c': RISK_COLORS[m.riskRank] }}
-            onClick={() => setSelected(m.key)}
-          >
-            <span className="dot" />{m.name}
-          </button>
-        ))}
-      </nav>
+      {!isCompare && (
+        <nav className="model-pills" aria-label="Select model">
+          {models.map((m) => (
+            <button
+              key={m.key}
+              className={`model-pill${m.key === selected ? ' active' : ''}`}
+              style={{ '--pill-c': RISK_COLORS[m.riskRank] }}
+              onClick={() => setSelected(m.key)}
+            >
+              <span className="dot" />{m.name}
+            </button>
+          ))}
+        </nav>
+      )}
 
       {menuOpen && (
         <>
@@ -122,10 +127,16 @@ export default function App() {
         </>
       )}
 
-      {err && <div className="banner">Couldn’t load — {err}</div>}
-      {(loading || !modelReady) && <div className="loading">Loading…</div>}
+      {err && !isCompare && <div className="banner">Couldn’t load — {err}</div>}
+      {!isCompare && (loading || !modelReady) && <div className="loading">Loading…</div>}
 
-      {modelReady && (
+      {isCompare && (
+        <div className="content">
+          <CompareTab />
+        </div>
+      )}
+
+      {!isCompare && modelReady && (
         <>
           <Hero model={model} riskRank={riskRank} />
           <div className="content">
@@ -140,7 +151,7 @@ export default function App() {
         </>
       )}
 
-      <nav className="bottom-nav" aria-label="Views">
+      <nav className="bottom-nav nav-wide" aria-label="Views">
         {VIEWS.map((v) => {
           const active = v.id === view;
           return (

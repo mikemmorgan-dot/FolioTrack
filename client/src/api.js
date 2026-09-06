@@ -9,6 +9,7 @@ async function j(url, opts) {
 
 export const api = {
   models: () => j('/api/models'),
+  compare: () => j('/api/compare'),
   model: (key) => j(`/api/models/${key}`),
   modelQuotes: (key) => j(`/api/models/${key}/quotes`),
   performance: (key) => j(`/api/models/${key}/performance`),
