@@ -544,10 +544,12 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 .compare-empty { padding: 16px; color: var(--text-2); font-size: 14px; }
 
 .compare-mini-w {
-  display: flex; gap: 8px; justify-content: flex-end;
-  font-size: 12px; font-weight: 700;
+  display: flex; gap: 6px; justify-content: flex-end;
+  font-size: 11px; font-weight: 700;
 }
-.compare-mini-w span { min-width: 28px; text-align: right; }
+.compare-mini-w span { min-width: 34px; text-align: right; }
+.compare-shared-head { padding-top: 10px; padding-bottom: 10px; }
+.compare-shared-head .row-main { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
 
 .compare-table-wrap {
   overflow-x: auto; -webkit-overflow-scrolling: touch;

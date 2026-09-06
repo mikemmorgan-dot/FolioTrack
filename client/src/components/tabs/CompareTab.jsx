@@ -110,6 +110,14 @@ export default function CompareTab() {
         <>
           <div className="section-title">Shared tickers</div>
           <div className="rows grouped">
+            <div className="row compare-shared-head">
+              <div className="row-main muted">Ticker</div>
+              <div className="compare-mini-w">
+                {models.map((m) => (
+                  <span key={m.key} style={{ color: RISK_COLORS[m.riskRank] }}>{m.shortName}</span>
+                ))}
+              </div>
+            </div>
             {sharedRows.map((r) => (
               <div className="row" key={r.id}>
                 <div className="row-main">

@@ -65,7 +65,16 @@ export function fixedIncomeWeight(holdings) {
   return w;
 }
 
+const SHORT_NAMES = {
+  Conservative: 'Cons',
+  Balanced: 'Bal',
+  'Balanced Growth': 'Bal Gr',
+  Growth: 'Gro',
+  'Aggressive Growth': 'Agg',
+};
+
 function shortName(name) {
+  if (SHORT_NAMES[name]) return SHORT_NAMES[name];
   const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return '';
   if (parts.length === 1) return parts[0].slice(0, 4);

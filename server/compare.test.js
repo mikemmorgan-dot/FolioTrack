@@ -97,6 +97,7 @@ describe('buildCompare', () => {
     ]);
     expect(out.models.map((m) => m.key)).toEqual(['conservative', 'balanced', 'growth']);
     expect(out.models[0].shortName).toBe('Cons');
+    expect(out.models.find((m) => m.name === 'Balanced')?.shortName || 'Bal').toBe('Bal');
     expect(out.models[0].holdingCount).toBe(3);
     expect(out.models[0].effectiveDate).toBe('2026-01-01');
   });
