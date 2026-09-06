@@ -149,12 +149,8 @@ function SecurityInfo({ instrument, modelKey }) {
               <div className="metric"><div className="k">Volatility</div><div className="v num">{asPct(s.volatility)}</div></div>
               <div className="metric"><div className="k">Max drawdown</div><div className="v num">{asPct(s.maxDrawdown)}</div></div>
             </div>
-          ) : !detail.error && periodReturn == null ? (
-            <p className="note" style={{ marginTop: 10 }}>
-              {detail.needMoreNav || detail.source === 'nav_series'
-                ? 'Need more NAV dates in Prices for period returns — a single point can’t measure a change.'
-                : 'Not enough price history yet to compute return/volatility.'}
-            </p>
+          ) : !detail.error && periodReturn == null && !detail.needMoreNav && detail.source !== 'nav_series' ? (
+            <p className="note" style={{ marginTop: 10 }}>Not enough price history yet to compute return/volatility.</p>
           ) : null}
           {smallSample && s?.months > 0 && <div className="data-warn" style={{ marginTop: 8 }}>Only {s.months} monthly observations — treat as indicative, not precise.</div>}
           <p className="note" style={{ marginTop: 10 }}>
