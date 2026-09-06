@@ -252,7 +252,11 @@ function AddPanel({ onAdd, onCancel, hasCash }) {
       mer: form.mer.trim() === '' ? null : Number(form.mer),
       weightPct: 0,
     };
-    if (!auto && form.nav && form.navDate) row.initialNav = { date: form.navDate, nav: Number(form.nav) };
+    const navNum = Number(form.nav);
+    if (form.nav && form.navDate && Number.isFinite(navNum)) {
+      row.initialNav = { date: form.navDate, nav: navNum };
+      row.source = 'manual';
+    }
     onAdd(row);
   }
 
@@ -352,12 +356,13 @@ function AddPanel({ onAdd, onCancel, hasCash }) {
                 </label>
               )}
 
-              {!resolved.found && (
-                <div className="field-row field-row-nav">
-                  <label className="field"><span>NAV date (optional)</span><input type="date" value={form.navDate} onChange={set('navDate')} /></label>
-                  <label className="field"><span>NAV (optional)</span><input type="number" inputMode="decimal" value={form.nav} onChange={set('nav')} placeholder="e.g. 42.15" /></label>
-                </div>
-              )}
+              <div className="field-row field-row-nav">
+                <label className="field"><span>NAV date (optional)</span><input type="date" value={form.navDate} onChange={set('navDate')} /></label>
+                <label className="field"><span>NAV (optional)</span><input type="number" inputMode="decimal" value={form.nav} onChange={set('nav')} placeholder="e.g. 42.15" /></label>
+              </div>
+              <p className="note" style={{ paddingTop: 0 }}>
+                Optional. If you enter a NAV, this name is priced from your numbers — use this when live TSX quotes fail.
+              </p>
 
               <div className="add-actions">
                 <button type="button" className="ed-cancel" onClick={onCancel}>Cancel</button>

@@ -9,7 +9,9 @@ export default function OverviewTab({ model, goto, onEdit, onUpdatePrices }) {
 
   const top = [...h].sort((a, b) => b.weight - a.weight).slice(0, 4);
   const byType = aggregateBy(h, 'type');
-  const staleCount = h.filter((x) => x.source === 'manual' && !isCashHolding(x) && isNavStale(x.type, x.priceAsOf)).length;
+  const staleCount = h.filter((x) =>
+    (x.source === 'manual' || x.priceSource === 'manual') && !isCashHolding(x) && isNavStale(x.type, x.priceAsOf)
+  ).length;
 
   return (
     <>

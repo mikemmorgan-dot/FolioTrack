@@ -139,13 +139,33 @@ describe('JsonStore.addNavBatch + in-use list', () => {
     expect(await store.getNavSeries(cash.id)).toEqual([]);
   });
 
-  it('lists unique in-use manuals with model names, excludes cash and old versions', async () => {
+  it('flips an auto instrument to manual when a NAV point is saved', async () => {
+    expect((await store.getInstrument('inst_ry')).source).toBe('auto');
+    await store.addNav('inst_ry', { date: '2026-09-04', nav: 178.2 });
+    expect((await store.getInstrument('inst_ry')).source).toBe('manual');
+    expect(await store.latestNav('inst_ry')).toEqual({ date: '2026-09-04', nav: 178.2 });
+
+    const enb = await store.addNavBatch({
+      asOf: '2026-09-04',
+      points: [{ instrumentId: 'inst_enb', nav: 55.1 }],
+    });
+    expect((await store.getInstrument('inst_enb')).source).toBe('manual');
+    expect(enb.latest).toEqual([{ instrumentId: 'inst_enb', date: '2026-09-04', nav: 55.1 }]);
+  });
+
+  it('lists unique in-use non-cash names with model names, excludes cash and old versions', async () => {
     const listed = await listInUseManualInstruments(store);
-    expect(listed.map((x) => x.symbol).sort()).toEqual(['CVC-EU', 'OCIC', 'RBF1005']);
+    expect(listed.map((x) => x.symbol).sort()).toEqual([
+      'CVC-EU', 'ENB.TO', 'OCIC', 'RBF1005', 'TOU.TO', 'VDY.TO', 'VFV.TO', 'XBB.TO', 'XEF.TO',
+    ]);
     const rbf = listed.find((x) => x.symbol === 'RBF1005');
     expect(rbf.latestNav).toBe(46.32);
     expect(rbf.latestDate).toBe('2025-12-31');
+    expect(rbf.source).toBe('manual');
     expect(rbf.models.map((m) => m.key).sort()).toEqual(['balanced', 'conservative']);
+    const xbb = listed.find((x) => x.symbol === 'XBB.TO');
+    expect(xbb.source).toBe('auto');
+    expect(xbb.latestNav).toBeNull();
 
     const cash = await store.addInstrument({ symbol: 'CASH', name: 'Cash', type: 'cash', source: 'manual', currency: 'CAD' });
     const ghost = await store.addInstrument({ symbol: 'GHOST', name: 'Ghost fund', type: 'mutualfund', source: 'manual', currency: 'CAD' });

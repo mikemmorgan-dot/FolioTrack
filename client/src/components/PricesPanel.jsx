@@ -16,6 +16,9 @@ export default function PricesPanel({ onClose, onSaved }) {
       .then((list) => {
         if (cancelled) return;
         const sorted = [...list].sort((a, b) => {
+          const group = (x) => (x.source === 'manual' || x.latestDate ? 0 : 1);
+          const g = group(a) - group(b);
+          if (g) return g;
           const r = navFreshnessRank(a.type, a.latestDate) - navFreshnessRank(b.type, b.latestDate);
           return r || a.symbol.localeCompare(b.symbol);
         });
@@ -68,6 +71,7 @@ export default function PricesPanel({ onClose, onSaved }) {
         <p className="ed-hint">
           One NAV update applies to every model that holds the name — instruments are shared, this is not an allocation change.
           Empty new-NAV rows are skipped; you don’t have to fill every name.
+          Entering a NAV prices that name from your numbers (and flips it to manual) so quotes don’t wait on the live feed.
           Stale means the last NAV is older than the calendar-day cadence for that type (stocks/ETFs 7, mutual funds 40, alts 100) — not trading days.
           Cash stays at $1 and isn’t listed.
         </p>
@@ -83,7 +87,7 @@ export default function PricesPanel({ onClose, onSaved }) {
         {loading && <div className="loading">Loading…</div>}
 
         {!loading && rows.length === 0 && (
-          <p className="ed-hint">No manual holdings in any current model. Auto names are priced by the provider chain.</p>
+          <p className="ed-hint">No holdings in any current model to price.</p>
         )}
 
         <div className="nav-list">
@@ -97,7 +101,12 @@ export default function PricesPanel({ onClose, onSaved }) {
                     <div className="row-sym">{r.symbol}</div>
                     <div className="row-sub">{r.name}</div>
                   </div>
-                  {stale && <span className="pill amber">Stale</span>}
+                  <div className="nav-pills">
+                    <span className={`pill ${r.source === 'manual' || r.latestDate ? 'neutral' : 'green'}`}>
+                      {r.source === 'manual' || r.latestDate ? 'Manual' : 'Live'}
+                    </span>
+                    {stale && <span className="pill amber">Stale</span>}
+                  </div>
                 </div>
                 <div className="nav-meta">
                   Last NAV {r.latestNav != null ? `${num(r.latestNav)} ${r.currency}` : '—'}

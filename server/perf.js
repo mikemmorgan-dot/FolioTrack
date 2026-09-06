@@ -4,6 +4,7 @@
 // network. runPerformance() wires live data (Yahoo history + manual NAVs) into it.
 
 import { currentVersionOf } from './util.js';
+import { decidePricePath } from './navPrice.js';
 
 // ---------- date / grid helpers ----------
 export const ymOf = (dateStr) => dateStr.slice(0, 7);
@@ -209,10 +210,12 @@ export async function gatherReturns(model, { getInstrument, getNavSeries, getHis
     instMeta[id] = { symbol: inst.symbol, name: inst.name, type: inst.type, source: inst.source };
     try {
       let obs;
-      if (inst.source === 'auto') {
-        obs = (await getHistory(inst.symbol, '5y')).series.map((p) => ({ date: p.date, value: p.close }));
+      const navPts = getNavSeries ? await getNavSeries(id) : [];
+      const decision = decidePricePath(inst, navPts);
+      if (decision.path === 'nav_series') {
+        obs = decision.series.map((p) => ({ date: p.date, value: p.price }));
       } else {
-        obs = (await getNavSeries(id)).map((p) => ({ date: p.date, value: p.nav }));
+        obs = (await getHistory(inst.symbol, '5y')).series.map((p) => ({ date: p.date, value: p.close }));
       }
       if (!obs.length) { missing.push({ id, symbol: inst.symbol, reason: 'no history' }); continue; }
       obsByInst[id] = obs;
@@ -270,10 +273,14 @@ export async function returnsForRefs(refs, { getNavSeries, getHistory }, grid) {
     if (out[r.ref]) continue;
     try {
       let obs;
-      if (r.source === 'auto') {
+      const navPts = r.instrumentId && getNavSeries ? await getNavSeries(r.instrumentId) : [];
+      const decision = decidePricePath({ source: r.source }, navPts);
+      if (decision.path === 'nav_series' && decision.series.length) {
+        obs = decision.series.map((p) => ({ date: p.date, value: p.price }));
+      } else if (r.source === 'auto') {
         obs = (await getHistory(r.symbol, '5y')).series.map((p) => ({ date: p.date, value: p.close }));
       } else if (r.instrumentId) {
-        obs = (await getNavSeries(r.instrumentId)).map((p) => ({ date: p.date, value: p.nav }));
+        obs = (navPts || []).map((p) => ({ date: p.date, value: p.nav }));
       } else {
         obs = [];
       }

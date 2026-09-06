@@ -2,8 +2,8 @@
 // commit message for how these expected values were checked: run once in a
 // real JS engine outside this repo before being written here, since no local
 // Node was available in the environment that wrote this suite).
-import { describe, it, expect } from 'vitest';
-import { monthGrid, levelsOnGrid, monthlyReturnsFromLevels, computeCore } from './perf.js';
+import { describe, it, expect, vi } from 'vitest';
+import { monthGrid, levelsOnGrid, monthlyReturnsFromLevels, computeCore, gatherReturns } from './perf.js';
 
 describe('monthGrid', () => {
   it('lists every YYYY-MM from start to end inclusive, across a year boundary', () => {
@@ -64,5 +64,40 @@ describe('computeCore', () => {
   it('computes contribution as weight-scaled arithmetic sum over the current window', () => {
     expect(core.contribution.total).toBeCloseTo(0.07, 9); // 1*0.05 + 1*0.02
     expect(core.contribution.items[0].ret).toBeCloseTo(1.05 * 1.02 - 1, 9); // compounded, not arithmetic
+  });
+});
+
+describe('gatherReturns NAV vs providers', () => {
+  const model = {
+    versions: [{ effectiveDate: '2026-01-01', holdings: [{ instrumentId: 'inst_ry', weight: 1 }] }],
+    benchmark: [],
+  };
+
+  it('uses nav_series for an auto instrument that has NAV points', async () => {
+    const getHistory = vi.fn(async () => { throw new Error('Yahoo 429; Twelve Data cooldown'); });
+    const result = await gatherReturns(model, {
+      getInstrument: async () => ({ id: 'inst_ry', symbol: 'RY.TO', source: 'auto', name: 'RBC', type: 'stock' }),
+      getNavSeries: async () => [
+        { date: '2026-01-02', nav: 100 },
+        { date: '2026-08-01', nav: 110 },
+      ],
+      getHistory,
+    });
+    expect(getHistory).not.toHaveBeenCalled();
+    expect(result.dataNotes.missingHoldings).toEqual([]);
+    expect(result.instReturns.inst_ry).toBeTruthy();
+  });
+
+  it('keeps a clear provider error when auto has no NAV', async () => {
+    const getHistory = vi.fn(async () => { throw new Error('Yahoo 429; Twelve Data cooldown'); });
+    const result = await gatherReturns(model, {
+      getInstrument: async () => ({ id: 'inst_ry', symbol: 'RY.TO', source: 'auto', name: 'RBC', type: 'stock' }),
+      getNavSeries: async () => [],
+      getHistory,
+    });
+    expect(getHistory).toHaveBeenCalled();
+    expect(result.dataNotes.missingHoldings).toEqual([
+      { id: 'inst_ry', symbol: 'RY.TO', reason: 'Yahoo 429; Twelve Data cooldown' },
+    ]);
   });
 });

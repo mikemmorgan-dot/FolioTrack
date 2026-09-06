@@ -495,6 +495,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   background: var(--surface); border-radius: var(--r); padding: 16px;
 }
 .nav-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.nav-pills { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .nav-meta { font-size: 13px; color: var(--text-2); margin-top: 8px; font-variant-numeric: tabular-nums; }
 .nav-models { font-size: 12.5px; color: var(--text-3); margin-top: 4px; line-height: 1.4; }
 .nav-inputs { display: flex; gap: 10px; margin-top: 12px; }

@@ -85,9 +85,10 @@ export function batchError(message) {
   return err;
 }
 
-// Unique manual instruments in any model's *current* version. Cash excluded.
-// Attaches latest NAV + which models use each name so the Prices panel
-// doesn't have to N+1 fetch five models.
+// Unique non-cash instruments in any model's *current* version — manuals
+// and autos. Autos belong here so a TSX name with dead providers can still
+// take a NAV. Attaches latest NAV + which models use each name so the
+// Prices panel doesn't have to N+1 fetch five models.
 export async function listInUseManualInstruments(store) {
   const models = await store.listModels();
   const usage = new Map();
@@ -104,7 +105,7 @@ export async function listInUseManualInstruments(store) {
   const out = [];
   for (const [id, modelsUsing] of usage) {
     const inst = await store.getInstrument(id);
-    if (!inst || inst.source !== 'manual' || isCashInstrument(inst)) continue;
+    if (!inst || isCashInstrument(inst)) continue;
     const latest = await store.latestNav(id);
     out.push({
       id: inst.id,
@@ -112,6 +113,7 @@ export async function listInUseManualInstruments(store) {
       name: inst.name,
       type: inst.type,
       currency: inst.currency,
+      source: inst.source,
       latestNav: latest?.nav ?? null,
       latestDate: latest?.date ?? null,
       models: modelsUsing,
