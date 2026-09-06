@@ -26,10 +26,11 @@ export default function HoldingsTab({ model, onEdit, onClassify, onUpdatePrices 
 
       <div className="rows grouped">
         {h.map((x) => {
-          const auto = x.source === 'auto';
+          const fromNav = x.priceSource === 'manual' || x.source === 'manual';
+          const auto = !fromNav && x.source === 'auto';
           const err = typeof x.priceSource === 'string' && x.priceSource.includes('error');
           const ltChip = lookThroughChip(x);
-          const stale = !auto && !isCashHolding(x) && isNavStale(x.type, x.priceAsOf);
+          const stale = fromNav && !isCashHolding(x) && isNavStale(x.type, x.priceAsOf);
           const priceLine = err || x.price == null
             ? 'price n/a'
             : `${num(x.price)} ${x.currency}`;
@@ -50,14 +51,14 @@ export default function HoldingsTab({ model, onEdit, onClassify, onUpdatePrices 
                 </div>
                 <div className="row-sub num" style={{ marginTop: 4 }}>
                   {priceLine}
-                  {!auto ? ` · ${x.priceAsOf || '—'}` : ''}
+                  {fromNav ? ` · ${x.priceAsOf || '—'}` : ''}
                 </div>
               </div>
             </button>
           );
         })}
       </div>
-      <p className="note">Values shown per {money(BASIS)} invested. Auto holdings price through the live provider chain; manual holdings use the NAV you last entered — the as-of date is what counts, and one update applies to every model that holds that name. Tap a holding to set its sector/geography or a fund look-through breakdown.</p>
+      <p className="note">Values shown per {money(BASIS)} invested. Live holdings price through the provider chain; a NAV you enter wins and labels the name Manual — the as-of date is what counts, and one update applies to every model that holds that name. Tap a holding for history and period returns.</p>
     </>
   );
 }

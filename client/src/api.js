@@ -40,8 +40,8 @@ export const api = {
     j(`/api/instruments/${id}/fetch-breakdown`, { method: 'POST' }),
   holdingHistory: (modelKey, id, { mode = 'since-added', rf = 4, refresh = false } = {}) =>
     j(`/api/models/${encodeURIComponent(modelKey)}/instruments/${id}/history?mode=${encodeURIComponent(mode)}&rf=${rf}${refresh ? '&refresh=1' : ''}`),
-  // Manual names in any current model, with latest NAV + which models use them.
-  manualInstruments: () => j('/api/instruments?source=manual&inUse=1'),
+  // In-use non-cash names (manual + auto) with latest NAV + which models use them.
+  manualInstruments: () => j('/api/instruments?inUse=1'),
   addNavBatch: (body) =>
     j('/api/nav/batch', {
       method: 'POST',

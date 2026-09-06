@@ -3,6 +3,10 @@
 // Live quotes are optional. GET /api/models/:key uses cache-only so the
 // current version (weights, names, version number) can paint without waiting
 // on the provider chain. A follow-up quotes request fills prices in.
+//
+// Non-empty nav_series wins over source=auto: a user-entered NAV is the
+// price, even if the instrument is still flagged auto (TSX provider miss).
+import { quoteFieldsFromLatestNav } from './navPrice.js';
 
 export function createQuoteCache({ getQuote, ttlMs = 60_000 } = {}) {
   const cache = new Map();
@@ -44,7 +48,10 @@ export async function enrichHoldings(version, store, quotes, { liveQuotes = fals
   return Promise.all(rows.map(async ({ holding, inst }) => {
     let price = null, priceAsOf = null, priceSource = inst.source;
     try {
-      if (inst.source === 'auto') {
+      const fromNav = quoteFieldsFromLatestNav(await store.latestNav(inst.id));
+      if (fromNav) {
+        ({ price, priceAsOf, priceSource } = fromNav);
+      } else if (inst.source === 'auto') {
         if (liveQuotes) {
           const q = await quotes.cachedQuote(inst.symbol);
           price = q.price; priceAsOf = q.asOf;
@@ -52,9 +59,6 @@ export async function enrichHoldings(version, store, quotes, { liveQuotes = fals
           const q = quotes.peek(inst.symbol);
           if (q) { price = q.price; priceAsOf = q.asOf; }
         }
-      } else {
-        const nav = await store.latestNav(inst.id);
-        price = nav?.nav ?? null; priceAsOf = nav?.date ?? null;
       }
     } catch (e) {
       priceSource = `${inst.source} (error: ${e.message})`;

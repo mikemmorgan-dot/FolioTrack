@@ -8,6 +8,7 @@ import { createHistoryCache } from './historyCache.js';
 import { createQuoteCache, enrichHoldings, quotePatch } from './enrich.js';
 import { currentVersionOf } from './util.js';
 import { listInUseManualInstruments } from './nav.js';
+import { loadNavMarket } from './navPrice.js';
 import { runPerformance, gatherReturns, returnsForRefs, monthGrid, levelsOnGrid, monthlyReturnsFromLevels } from './perf.js';
 import { riskMetrics, staticPortfolioMonthly } from './risk.js';
 import { runOptimize } from './optimize.js';
@@ -274,9 +275,10 @@ app.post('/api/models/:key/simulate', async (req, res) => {
 
 app.get('/api/instruments', async (req, res) => {
   try {
-    // Prices panel: unique manuals in any current version, with latest NAV and
-    // which models use them — one round-trip, cash excluded, no quote APIs.
-    if ((req.query.inUse === '1' || req.query.inUse === 'true') && req.query.source === 'manual') {
+    // Prices panel: unique non-cash names in any current version, with latest
+    // NAV and which models use them — one round-trip, no quote APIs. Autos
+    // are included so a TSX name can take a NAV when the provider chain dies.
+    if (req.query.inUse === '1' || req.query.inUse === 'true') {
       return res.json(await listInUseManualInstruments(store));
     }
     let list = await store.listInstruments();
@@ -327,7 +329,13 @@ app.get('/api/instruments/:id/detail', async (req, res) => {
     const rf = parseRf(req.query.rf);
 
     let series = [], quote = null, error = null, stale = false, fetchedAt = null, fromCache = false;
-    if (inst.source === 'auto') {
+    let priceSource = inst.source === 'manual' ? 'nav_series' : 'auto';
+    const navMarket = await loadNavMarket(store, inst);
+    if (navMarket.hasNav) {
+      priceSource = 'nav_series';
+      series = navMarket.series.map((p) => ({ date: p.date, value: p.price }));
+      quote = navMarket.quote;
+    } else if (inst.source === 'auto') {
       try {
         const h = await cachedHistory(inst.symbol, range, { force: refreshFlag(req.query.refresh) });
         series = (h.series || []).map((p) => ({ date: p.date, value: p.close }));
@@ -357,7 +365,11 @@ app.get('/api/instruments/:id/detail', async (req, res) => {
 
     const returns = periodReturnsFromSeries(series);
 
-    res.json({ instrument: inst, quote, series, stats, returns, error, stale, fetchedAt, fromCache });
+    res.json({
+      instrument: inst, quote, series, stats, returns, error, stale, fetchedAt, fromCache,
+      source: priceSource,
+      needMoreNav: priceSource === 'nav_series' && series.length < 2,
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -409,8 +421,13 @@ app.get('/api/models/:key/instruments/:id/history', async (req, res) => {
     const added = firstAddedToModel(m.versions, inst.id);
 
     let raw = [], quote = null, error = null, stale = false, fetchedAt = null, fromCache = false;
-    const priceSource = inst.source === 'manual' ? 'nav_series' : 'auto';
-    if (inst.source === 'auto') {
+    let priceSource = inst.source === 'manual' ? 'nav_series' : 'auto';
+    const navMarket = await loadNavMarket(store, inst);
+    if (navMarket.hasNav) {
+      priceSource = 'nav_series';
+      raw = navMarket.series;
+      quote = navMarket.quote;
+    } else if (inst.source === 'auto') {
       try {
         const h = await cachedHistory(inst.symbol, 'max', { force: refreshFlag(req.query.refresh) });
         raw = (h.series || []).map((p) => ({ date: p.date, price: p.close }));
@@ -464,6 +481,7 @@ app.get('/api/models/:key/instruments/:id/history', async (req, res) => {
       addedAt: added?.addedAt || null,
       firstVersionId: added?.versionId || null,
       source: priceSource,
+      needMoreNav: priceSource === 'nav_series' && series.length < 2,
       range: { mode, ...bounds, addedAt: added?.addedAt || null },
       error,
       stale,

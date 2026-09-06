@@ -64,12 +64,18 @@ export class JsonStore {
     return inst;
   }
 
+  _markSourceManual(instrumentId) {
+    const inst = this.db.instruments[instrumentId];
+    if (inst && inst.source !== 'manual') inst.source = 'manual';
+  }
+
   async addNav(instrumentId, { date, nav }) {
     if (!this.db.navSeries[instrumentId]) this.db.navSeries[instrumentId] = [];
     const arr = this.db.navSeries[instrumentId].filter((p) => p.date !== date);
     arr.push({ date, nav: Number(nav) });
     arr.sort((a, b) => a.date.localeCompare(b.date));
     this.db.navSeries[instrumentId] = arr;
+    this._markSourceManual(instrumentId);
     this._persist();
     return arr;
   }
@@ -91,6 +97,7 @@ export class JsonStore {
       arr.push({ date: w.date, nav: w.nav });
       arr.sort((a, b) => a.date.localeCompare(b.date));
       this.db.navSeries[w.instrumentId] = arr;
+      this._markSourceManual(w.instrumentId);
     }
     if (planned.writes.length) this._persist();
 

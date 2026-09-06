@@ -121,6 +121,10 @@ function SecurityInfo({ instrument, modelKey }) {
 
           {detail.series.length >= 2 ? (
             <div style={{ marginTop: 10 }}><LineChart model={detail.series} benchmark={[]} height={140} /></div>
+          ) : detail.needMoreNav || (detail.source === 'nav_series' && detail.quote) ? (
+            <div className="chart-empty" style={{ marginTop: 10 }}>
+              Need more NAV dates in Prices for period returns — one point is a price, not a series.
+            </div>
           ) : detail.error ? (
             <div className="data-warn" style={{ marginTop: 10 }}>
               Couldn’t load price history right now — {detail.error}
@@ -145,7 +149,7 @@ function SecurityInfo({ instrument, modelKey }) {
               <div className="metric"><div className="k">Volatility</div><div className="v num">{asPct(s.volatility)}</div></div>
               <div className="metric"><div className="k">Max drawdown</div><div className="v num">{asPct(s.maxDrawdown)}</div></div>
             </div>
-          ) : !detail.error && periodReturn == null ? (
+          ) : !detail.error && periodReturn == null && !detail.needMoreNav && detail.source !== 'nav_series' ? (
             <p className="note" style={{ marginTop: 10 }}>Not enough price history yet to compute return/volatility.</p>
           ) : null}
           {smallSample && s?.months > 0 && <div className="data-warn" style={{ marginTop: 8 }}>Only {s.months} monthly observations — treat as indicative, not precise.</div>}
@@ -156,11 +160,13 @@ function SecurityInfo({ instrument, modelKey }) {
                 ? 'Full available price history for this security — not the model’s return. '
                 : 'This instrument’s own price history — not the model’s. '}
             MTD / QTD / YTD / 1Y are total returns; 3Y+ are annualized from the actual date span. Each window uses the closest close on or before the start and the latest visible close.
-            {instrument.source === 'auto'
-              ? (detail.stale
+            {detail.source === 'nav_series'
+              ? (detail.needMoreNav || (detail.series?.length || 0) < 2
+                ? ' From entered NAV points — add more dates in Prices for period returns.'
+                : ' From entered NAV points.')
+              : (detail.stale
                 ? ' Cached market data — live providers did not answer this time.'
-                : ' Live pricing via the provider chain (TSX history can be thin).')
-              : ' From entered NAV points.'}
+                : ' Live pricing via the provider chain (TSX history can be thin).')}
           </p>
         </>
       )}

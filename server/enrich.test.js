@@ -41,6 +41,23 @@ describe('enrichHoldings cache-only (model GET)', () => {
     expect(holdings[1].price).toBeNull();
     expect(holdings[2].price).toBe(1);
     expect(holdings[2].priceAsOf).toBe('2020-01-01');
+    expect(holdings[2].priceSource).toBe('manual');
+  });
+
+  it('shows NAV on the cache-only path for auto+nav without waiting on quotes', async () => {
+    const getQuote = vi.fn(async () => ({ price: 500, asOf: '2026-09-01' }));
+    const quotes = createQuoteCache({ getQuote });
+    const instruments = {
+      inst_ry: { id: 'inst_ry', symbol: 'RY.TO', name: 'Royal Bank', type: 'stock', source: 'auto', currency: 'CAD' },
+    };
+    const version = { id: 'ver_ry', holdings: [{ instrumentId: 'inst_ry', weight: 1 }] };
+    const holdings = await enrichHoldings(version, fakeStore(instruments, {
+      inst_ry: { nav: 178.2, date: '2026-09-04' },
+    }), quotes, { liveQuotes: false });
+
+    expect(getQuote).not.toHaveBeenCalled();
+    expect(holdings[0].price).toBe(178.2);
+    expect(holdings[0].priceSource).toBe('manual');
   });
 
   it('uses a warm cache hit on the fast path without a new fetch', async () => {
@@ -77,6 +94,28 @@ describe('enrichHoldings live quotes (follow-up)', () => {
     expect(holdings[0].price).toBe(500);
     expect(holdings[1].price).toBe(100);
     expect(holdings[2].price).toBe(1);
+  });
+
+  it('uses latest NAV for an auto instrument and does not call providers', async () => {
+    const getQuote = vi.fn(async () => {
+      throw new Error('Yahoo 429; Twelve Data cooldown');
+    });
+    const quotes = createQuoteCache({ getQuote });
+    const instruments = {
+      ...AUTO,
+      inst_ry: { id: 'inst_ry', symbol: 'RY.TO', name: 'Royal Bank', type: 'stock', source: 'auto', currency: 'CAD' },
+    };
+    const version = { id: 'ver_ry', holdings: [{ instrumentId: 'inst_ry', weight: 1 }] };
+    const holdings = await enrichHoldings(version, fakeStore(instruments, {
+      inst_ry: { nav: 178.2, date: '2026-09-04' },
+    }), quotes, { liveQuotes: true });
+
+    expect(getQuote).not.toHaveBeenCalled();
+    expect(holdings).toHaveLength(1);
+    expect(holdings[0].price).toBe(178.2);
+    expect(holdings[0].priceAsOf).toBe('2026-09-04');
+    expect(holdings[0].priceSource).toBe('manual');
+    expect(holdings[0].source).toBe('auto');
   });
 
   it('records a failed quote as price n/a without dropping the holding', async () => {

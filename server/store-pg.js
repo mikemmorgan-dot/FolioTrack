@@ -94,6 +94,10 @@ export class PgStore {
        ON CONFLICT (instrument_id,date) DO UPDATE SET nav=EXCLUDED.nav`,
       [instrumentId, date, Number(nav)]
     );
+    await this.pool.query(
+      `UPDATE instruments SET source='manual' WHERE id=$1 AND source IS DISTINCT FROM 'manual'`,
+      [instrumentId]
+    );
     return this.getNavSeries(instrumentId);
   }
 
@@ -119,6 +123,11 @@ export class PgStore {
           [w.instrumentId, w.date, w.nav]
         );
       }
+      const writtenIds = [...new Set(planned.writes.map((w) => w.instrumentId))];
+      await client.query(
+        `UPDATE instruments SET source='manual' WHERE id = ANY($1) AND source IS DISTINCT FROM 'manual'`,
+        [writtenIds]
+      );
       await client.query('COMMIT');
     } catch (e) {
       await client.query('ROLLBACK');
