@@ -29,10 +29,27 @@ describe('lookupSource', () => {
     expect(lookupSource('OCIC')).toBeNull();
   });
 
+  it('maps Fundserv FID5982 / 5982 / FID-5982 to Fidelity Series F Fund Facts', () => {
+    const a = lookupSource('FID5982');
+    const b = lookupSource('fid5982');
+    const c = lookupSource('5982');
+    const d = lookupSource('FID-5982');
+    expect(a.issuer).toBe('Fidelity Canada');
+    expect(a.series).toBe('F');
+    expect(a.fundserv).toBe('5982');
+    expect(a.url).toMatch(/FF_UET_F_en\.pdf$/);
+    expect(a.fundPulseUrl).toMatch(/fp_fgic\.pdf$/);
+    expect(a.url).toBe(b.url);
+    expect(c.symbol).toBe('FID5982');
+    expect(d.symbol).toBe('FID5982');
+    expect(lookupSource('RBF1005')).toBeNull();
+  });
+
   it('lists only mapped symbols', () => {
     const list = listMappedSymbols();
     expect(list).toContain('VFV.TO');
     expect(list).toContain('SPY');
+    expect(list).toContain('FID5982');
     expect(list.every((s) => FACTSHEET_SOURCES[s])).toBe(true);
   });
 });
@@ -97,5 +114,34 @@ describe('fetchBreakdownForSymbol (mocked network)', () => {
       arrayBuffer: async () => Buffer.from('<html><body>no tables</body></html>'),
     });
     await expect(fetchBreakdownForSymbol('SPY', { fetchImpl: empty })).rejects.toMatchObject({ code: 'parse' });
+  });
+
+  it('fetches FID5982 Fund Facts + FundPulse from fixtures (no live network)', async () => {
+    const facts = fixture('fidelity-uet-f-fund-facts.txt');
+    const pulse = fixture('fidelity-uet-f-fundpulse.txt');
+    const fetchImpl = async (url) => {
+      const body = /fp_fgic|fund-pulse/i.test(url) ? pulse : facts;
+      return {
+        ok: true,
+        status: 200,
+        url,
+        headers: { get: () => 'application/pdf' },
+        arrayBuffer: async () => body,
+      };
+    };
+    const out = await fetchBreakdownForSymbol('FID5982', { fetchImpl, now: new Date('2026-09-07T12:00:00Z') });
+    expect(out.proposed.breakdownAsOf).toBe('2026-02-28');
+    expect(out.proposed.breakdownNote).toBe('Issuer Fund Facts · Fidelity Canada · scraped 2026-09-07');
+    expect(out.proposed.sectorBreakdown.find((r) => r.label === 'Information Technology').weight).toBeCloseTo(44.5, 5);
+    expect(out.proposed.countryBreakdown.find((r) => r.label === 'United States').weight).toBeCloseTo(64.7, 5);
+    expect(out.proposed.mer).toBeCloseTo(1.10, 5);
+    expect(out.proposed.publishedReturns.y1).toBeCloseTo(0.5464, 5);
+    expect(out.proposed.publishedReturns.y3ann).toBeCloseTo(0.4428, 5);
+    expect(out.proposed.publishedReturns.source).toMatch(/FundPulse/);
+    expect(out.proposed.publishedReturns.series).toBe('F');
+    expect(out.proposed.publishedPeriodReturns.mtd).toBeNull();
+    expect(out.proposed.publishedPeriodReturns.y1).toBeCloseTo(0.5464, 5);
+    expect(out.proposed.navPoint).toMatchObject({ date: '2026-08-31', nav: 69.75 });
+    expect(out.proposed.publishedReturns.navSeries).toBeUndefined();
   });
 });

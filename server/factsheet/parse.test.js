@@ -30,6 +30,11 @@ describe('extractAsOf', () => {
     expect(r.asOf).toBe('2026-07-31');
     expect(r.estimated).toBe(false);
   });
+
+  it('reads CSA Fund Facts mix date and FundPulse as-at', () => {
+    expect(extractAsOf('TOP TEN INVESTMENTS (FEBRUARY 28, 2026)\nAPRIL 24, 2026').asOf).toBe('2026-02-28');
+    expect(extractAsOf('Performance (Class F)\nAS AT AUGUST 31, 2026').asOf).toBe('2026-08-31');
+  });
 });
 
 describe('Vanguard PDF text fixture', () => {

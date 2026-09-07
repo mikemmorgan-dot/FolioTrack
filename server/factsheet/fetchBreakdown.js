@@ -12,7 +12,10 @@ import {
   findFactsheetPdfUrl,
   hasBreakdownRows,
   emptyParse,
+  pdfBufferToText,
 } from './parse.js';
+import { parseFundFactsText, parseFundPulseText } from './parseFundDocs.js';
+import { hasPublishedReturns, mergePublishedReturns, publishedToPeriodRow } from './publishedReturns.js';
 
 const FETCH_MS = 12000;
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15';
@@ -30,8 +33,8 @@ function todayISO(now) {
   return new Date(now).toISOString().slice(0, 10);
 }
 
-export function buildNote({ issuer, scrapedAt, asOfEstimated, estimates }) {
-  const bits = [`Issuer factsheet · ${issuer} · scraped ${scrapedAt}`];
+export function buildNote({ issuer, scrapedAt, asOfEstimated, estimates, documentLabel = 'factsheet' }) {
+  const bits = [`Issuer ${documentLabel} · ${issuer} · scraped ${scrapedAt}`];
   if (asOfEstimated) bits.push('as-of estimated');
   if (estimates) bits.push('estimates');
   return bits.join(' · ');
@@ -39,12 +42,18 @@ export function buildNote({ issuer, scrapedAt, asOfEstimated, estimates }) {
 
 export function sourceSummary(source) {
   if (!source) return null;
-  return {
+  const out = {
     symbol: source.symbol,
     issuer: source.issuer,
     parser: source.parser,
     url: source.url,
   };
+  if (source.series) out.series = source.series;
+  if (source.fundserv) out.fundserv = source.fundserv;
+  if (source.fundPulseUrl) out.fundPulseUrl = source.fundPulseUrl;
+  if (source.productUrl) out.productUrl = source.productUrl;
+  if (source.documentLabel) out.documentLabel = source.documentLabel;
+  return out;
 }
 
 async function httpGet(url, fetchImpl) {
@@ -76,6 +85,28 @@ function looksLikePdf(url, ctype) {
   return /\.pdf(\?|$)/i.test(url) || ctype.includes('pdf');
 }
 
+async function optionalGet(url, fetchImpl) {
+  if (!url) return null;
+  try {
+    return await httpGet(url, fetchImpl);
+  } catch {
+    // Secondary docs (FundPulse) must not fail a Fund Facts parse that already worked.
+    return null;
+  }
+}
+
+function attachPublishedMeta(pub, { source, scrapedAt, document, label }) {
+  if (!pub) return null;
+  return {
+    ...pub,
+    kind: 'published',
+    scrapedAt,
+    source: `${label} · ${source.issuer}`,
+    document: document || pub.document || source.url,
+    series: pub.series || source.series || null,
+  };
+}
+
 export async function fetchBreakdownForSymbol(symbol, { fetchImpl = fetch, now = new Date() } = {}) {
   const source = lookupSource(symbol);
   if (!source) {
@@ -87,9 +118,31 @@ export async function fetchBreakdownForSymbol(symbol, { fetchImpl = fetch, now =
 
   const first = await httpGet(source.url, fetchImpl);
   let parsed = emptyParse();
+  let mer = null;
+  let factsPublished = null;
+  let pulse = null;
+  let documentLabel = source.documentLabel || 'factsheet';
 
-  if (looksLikePdf(first.finalUrl, first.ctype) || source.parser === 'pdf') {
-    try { parsed = await parseFactsheetPdf(first.buf); } catch (e) {
+  const isPdf = looksLikePdf(first.finalUrl, first.ctype) || source.parser === 'pdf';
+
+  if (isPdf) {
+    try {
+      if (source.kind === 'mutualfund' || source.fundPulseUrl || source.documentLabel === 'Fund Facts') {
+        const text = await pdfBufferToText(first.buf);
+        const facts = parseFundFactsText(text);
+        parsed = {
+          sectorBreakdown: facts.sectorBreakdown,
+          countryBreakdown: facts.countryBreakdown,
+          asOf: facts.asOf,
+          asOfEstimated: facts.asOfEstimated,
+        };
+        mer = facts.mer;
+        factsPublished = facts.published;
+        documentLabel = source.documentLabel || 'Fund Facts';
+      } else {
+        parsed = await parseFactsheetPdf(first.buf);
+      }
+    } catch (e) {
       throw new BreakdownFetchError(
         `Couldn’t read the issuer PDF (${e.message}). Enter the breakdown manually below.`,
         { status: 502, code: 'pdf' }
@@ -107,21 +160,74 @@ export async function fetchBreakdownForSymbol(symbol, { fetchImpl = fetch, now =
     }
   }
 
-  if (!hasBreakdownRows(parsed)) {
+  if (source.fundPulseUrl) {
+    const pulseGot = await optionalGet(source.fundPulseUrl, fetchImpl);
+    if (pulseGot) {
+      try {
+        pulse = parseFundPulseText(await pdfBufferToText(pulseGot.buf));
+      } catch {
+        pulse = null;
+      }
+    }
+  }
+
+  if (!hasBreakdownRows(parsed) && pulse && (pulse.sectorBreakdown?.length || pulse.countryBreakdown?.length)) {
+    parsed = {
+      sectorBreakdown: pulse.sectorBreakdown || [],
+      countryBreakdown: pulse.countryBreakdown || [],
+      asOf: pulse.allocationAsOf || pulse.asOf,
+      asOfEstimated: false,
+    };
+    documentLabel = 'FundPulse';
+  }
+
+  const scrapedAt = todayISO(now);
+  const published = mergePublishedReturns(
+    attachPublishedMeta(pulse?.published, {
+      source, scrapedAt, document: source.fundPulseUrl, label: 'FundPulse',
+    }),
+    attachPublishedMeta(factsPublished, {
+      source, scrapedAt, document: source.url, label: 'Fund Facts',
+    })
+  );
+
+  if (!hasBreakdownRows(parsed) && !hasPublishedReturns(published)) {
     throw new BreakdownFetchError(
       `Couldn’t parse sector or country weights from the ${source.issuer} page. Enter the breakdown manually below.`,
       { status: 422, code: 'parse' }
     );
   }
 
-  const scrapedAt = todayISO(now);
   const estimates = !parsed.asOf;
-  const note = buildNote({
-    issuer: source.issuer,
-    scrapedAt,
-    asOfEstimated: !!parsed.asOfEstimated,
-    estimates,
-  });
+  const note = hasBreakdownRows(parsed)
+    ? buildNote({
+      issuer: source.issuer,
+      scrapedAt,
+      asOfEstimated: !!parsed.asOfEstimated,
+      estimates,
+      documentLabel,
+    })
+    : null;
+
+  if (mer == null && pulse?.mer != null) mer = pulse.mer;
+
+  const proposed = {
+    sectorBreakdown: parsed.sectorBreakdown?.length ? parsed.sectorBreakdown : null,
+    countryBreakdown: parsed.countryBreakdown?.length ? parsed.countryBreakdown : null,
+    breakdownAsOf: parsed.asOf || null,
+    breakdownNote: note,
+  };
+  if (mer != null) proposed.mer = mer;
+  if (published) {
+    proposed.publishedReturns = {
+      ...published,
+      scrapedAt,
+      source: published.source || `${documentLabel} · ${source.issuer}`,
+      series: published.series || source.series || null,
+    };
+    proposed.publishedPeriodReturns = publishedToPeriodRow(proposed.publishedReturns);
+  }
+  if (pulse?.navPoint) proposed.navPoint = { ...pulse.navPoint, source: `FundPulse · ${source.issuer}` };
 
   return {
     mapped: true,
@@ -129,11 +235,6 @@ export async function fetchBreakdownForSymbol(symbol, { fetchImpl = fetch, now =
     scrapedAt,
     asOfEstimated: !!parsed.asOfEstimated,
     estimates,
-    proposed: {
-      sectorBreakdown: parsed.sectorBreakdown.length ? parsed.sectorBreakdown : null,
-      countryBreakdown: parsed.countryBreakdown.length ? parsed.countryBreakdown : null,
-      breakdownAsOf: parsed.asOf,
-      breakdownNote: note,
-    },
+    proposed,
   };
 }

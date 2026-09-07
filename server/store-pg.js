@@ -2,6 +2,7 @@
 import { makePool, initSchema, seedIfEmpty } from './db.js';
 import { uid, instrumentFromSpec, currentVersionOf, holdingsEqual, breakdownPatchPresent, nextBreakdownFields } from './util.js';
 import { planNavBatch, todayToronto, batchError } from './nav.js';
+import { normalizePublishedReturns } from './factsheet/publishedReturns.js';
 
 const numOrNull = (x) => (x == null ? null : Number(x));
 const d = (x) => (x instanceof Date ? x.toISOString().slice(0, 10) : String(x).slice(0, 10));
@@ -16,6 +17,7 @@ function rowToInstrument(r) {
     breakdownUpdatedAt: r.breakdown_updated_at,
     breakdownAsOf: r.breakdown_as_of ? d(r.breakdown_as_of) : null,
     breakdownNote: r.breakdown_note || null,
+    publishedReturns: r.published_returns || null,
   };
 }
 
@@ -65,6 +67,11 @@ export class PgStore {
     if (patch.mer !== undefined) {
       sets.push(`mer=$${n++}`);
       vals.push(patch.mer === null || patch.mer === '' ? null : Number(patch.mer));
+    }
+    if (patch.publishedReturns !== undefined) {
+      sets.push(`published_returns=$${n++}`);
+      const pub = normalizePublishedReturns(patch.publishedReturns);
+      vals.push(pub ? JSON.stringify(pub) : null);
     }
     if (breakdownPatchPresent(patch)) {
       const current = await this.getInstrument(id);

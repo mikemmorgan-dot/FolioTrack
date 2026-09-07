@@ -16,6 +16,7 @@ import { lookupSource } from './factsheet/sources.js';
 import { fetchBreakdownForSymbol, BreakdownFetchError } from './factsheet/fetchBreakdown.js';
 import { firstAddedToModel, filterSeriesByRange, periodReturnFromSeries, rangeBounds } from './holdingHistory.js';
 import { periodReturnsFromSeries } from './periodReturns.js';
+import { publishedToPeriodRow } from './factsheet/publishedReturns.js';
 import { buildCompare } from './compare.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -369,6 +370,8 @@ app.get('/api/instruments/:id/detail', async (req, res) => {
       instrument: inst, quote, series, stats, returns, error, stale, fetchedAt, fromCache,
       source: priceSource,
       needMoreNav: priceSource === 'nav_series' && series.length < 2,
+      publishedReturns: inst.publishedReturns || null,
+      publishedPeriodReturns: publishedToPeriodRow(inst.publishedReturns),
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -385,7 +388,14 @@ app.get('/api/instruments/:id/factsheet-source', async (req, res) => {
     symbol: inst.symbol,
     type: inst.type,
     mapped: !!source,
-    source: source ? { issuer: source.issuer, parser: source.parser, url: source.url } : null,
+    source: source ? {
+      issuer: source.issuer,
+      parser: source.parser,
+      url: source.url,
+      series: source.series || null,
+      fundserv: source.fundserv || null,
+      documentLabel: source.documentLabel || null,
+    } : null,
   });
 });
 
@@ -482,6 +492,8 @@ app.get('/api/models/:key/instruments/:id/history', async (req, res) => {
       firstVersionId: added?.versionId || null,
       source: priceSource,
       needMoreNav: priceSource === 'nav_series' && series.length < 2,
+      publishedReturns: inst.publishedReturns || null,
+      publishedPeriodReturns: publishedToPeriodRow(inst.publishedReturns),
       range: { mode, ...bounds, addedAt: added?.addedAt || null },
       error,
       stale,

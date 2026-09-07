@@ -23,20 +23,22 @@ const PERIOD_COLS = [
   { key: 'y20ann', label: '20Y ann.', need: 'need ≥20y history' },
 ];
 
-function PeriodReturnsRow({ returns }) {
+function PeriodReturnsRow({ returns, published = false }) {
   if (!returns) return null;
   return (
-    <div className="period-returns" role="list" aria-label="Period returns">
+    <div className={`period-returns${published ? ' published' : ''}`} role="list" aria-label={published ? 'Published manufacturer returns' : 'Period returns'}>
       {PERIOD_COLS.map((col) => {
         const value = returns[col.key];
         const cell = returns.meta?.[col.key];
         const missing = value == null;
         const cls = missing ? 'muted' : value >= 0 ? 'pos' : 'neg';
         const title = missing
-          ? col.need
-          : cell?.estimate
-            ? `Thin sample — treat as estimate${cell.from && cell.to ? ` · ${cell.from} → ${cell.to}` : ''}`
-            : (cell?.from && cell?.to ? `${cell.from} → ${cell.to}` : col.label);
+          ? (published ? 'Not in the manufacturer table' : col.need)
+          : published
+            ? `Manufacturer published${cell?.to ? ` as of ${cell.to}` : ''}`
+            : cell?.estimate
+              ? `Thin sample — treat as estimate${cell.from && cell.to ? ` · ${cell.from} → ${cell.to}` : ''}`
+              : (cell?.from && cell?.to ? `${cell.from} → ${cell.to}` : col.label);
         return (
           <div key={col.key} className="period-cell" role="listitem" title={title}>
             <div className="period-k">{col.label}</div>
@@ -51,7 +53,56 @@ function PeriodReturnsRow({ returns }) {
   );
 }
 
-function SecurityInfo({ instrument, modelKey }) {
+function publishedLabel(pub) {
+  if (!pub) return 'Fund Facts';
+  const src = String(pub.source || '');
+  if (/fundpulse/i.test(src)) return 'FundPulse';
+  if (/fund facts/i.test(src)) return 'Fund Facts';
+  return src.split('·')[0].trim() || 'Fund Facts';
+}
+
+function CalendarYearsRow({ years }) {
+  if (!years?.length) return null;
+  return (
+    <div className="period-returns calendar-years" role="list" aria-label="Calendar-year published returns">
+      {years.map((row) => {
+        const missing = row.value == null;
+        const cls = missing ? 'muted' : row.value >= 0 ? 'pos' : 'neg';
+        return (
+          <div key={`${row.year}-${row.ytd ? 'ytd' : 'cy'}`} className="period-cell" role="listitem">
+            <div className="period-k">{row.ytd ? `${row.year} YTD` : row.year}</div>
+            <div className={`period-v num ${cls}`}>{missing ? '—' : asPctSigned(row.value)}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function PublishedReturnsBlock({ published, periodRow }) {
+  if (!published && !periodRow) return null;
+  const label = publishedLabel(published);
+  return (
+    <div className="published-block">
+      <div className="published-kicker">Published ({label})</div>
+      {periodRow && <PeriodReturnsRow returns={periodRow} published />}
+      <CalendarYearsRow years={published?.calendarYears} />
+      {published?.inceptionAnn != null && (
+        <div className="rc-row">
+          <span>Since inception (published{published.asOf ? ` · as of ${published.asOf}` : ''})</span>
+          <span className={`num ${published.inceptionAnn >= 0 ? 'pos' : 'neg'}`}>{asPctSigned(published.inceptionAnn)}</span>
+        </div>
+      )}
+      <p className="note" style={{ marginTop: 8 }}>
+        Manufacturer figures{published?.asOf ? ` as of ${published.asOf}` : ''}
+        {published?.series ? ` · Series ${published.series}` : ''}
+        — not reconstructed from NAV, not an estimate from one price point.
+      </p>
+    </div>
+  );
+}
+
+function SecurityInfo({ instrument, modelKey, factsheetMapped, pendingPublished, pendingPeriodRow }) {
   const inModel = !!modelKey;
   const [range, setRange] = useState('1y');
   const [mode, setMode] = useState('since-added');
@@ -78,6 +129,10 @@ function SecurityInfo({ instrument, modelKey }) {
   const periodReturn = s?.periodReturn;
   const rangeFrom = detail?.range?.from || detail?.series?.[0]?.date;
   const rangeTo = detail?.range?.to || detail?.series?.at?.(-1)?.date;
+  const published = pendingPublished || detail?.publishedReturns || instrument.publishedReturns || null;
+  const publishedRow = pendingPeriodRow || detail?.publishedPeriodReturns || null;
+  const thinNav = !!(detail?.needMoreNav || (detail?.source === 'nav_series' && (detail?.series?.length || 0) < 2));
+  const fundLike = instrument.type === 'etf' || instrument.type === 'mutualfund';
 
   return (
     <div className="card pad" style={{ marginBottom: 18 }}>
@@ -123,7 +178,9 @@ function SecurityInfo({ instrument, modelKey }) {
             <div style={{ marginTop: 10 }}><LineChart model={detail.series} benchmark={[]} height={140} /></div>
           ) : detail.needMoreNav || (detail.source === 'nav_series' && detail.quote) ? (
             <div className="chart-empty" style={{ marginTop: 10 }}>
-              Need more NAV dates in Prices for period returns — one point is a price, not a series.
+              {fundLike && (factsheetMapped || published)
+                ? 'Need more NAV dates in Prices for period returns — one point is a price, not a series. Add more dates, or fetch Fund Facts for manufacturer published returns.'
+                : 'Need more NAV dates in Prices for period returns — one point is a price, not a series.'}
             </div>
           ) : detail.error ? (
             <div className="data-warn" style={{ marginTop: 10 }}>
@@ -135,6 +192,7 @@ function SecurityInfo({ instrument, modelKey }) {
           )}
 
           {detail.returns && <PeriodReturnsRow returns={detail.returns} />}
+          <PublishedReturnsBlock published={published} periodRow={publishedRow} />
 
           {periodReturn != null && (
             <div className="rc-row">
@@ -161,8 +219,10 @@ function SecurityInfo({ instrument, modelKey }) {
                 : 'This instrument’s own price history — not the model’s. '}
             MTD / QTD / YTD / 1Y are total returns; 3Y+ are annualized from the actual date span. Each window uses the closest close on or before the start and the latest visible close.
             {detail.source === 'nav_series'
-              ? (detail.needMoreNav || (detail.series?.length || 0) < 2
-                ? ' From entered NAV points — add more dates in Prices for period returns.'
+              ? (thinNav
+                ? (fundLike
+                  ? ' From entered NAV points — add more dates in Prices, or fetch Fund Facts for published returns.'
+                  : ' From entered NAV points — add more dates in Prices for period returns.')
                 : ' From entered NAV points.')
               : (detail.stale
                 ? ' Cached market data — live providers did not answer this time.'
@@ -220,6 +280,8 @@ export default function ClassifyPanel({ instrument, modelKey, onClose, onSaved }
   const [sourceInfo, setSourceInfo] = useState(null);
   const [fetching, setFetching] = useState(false);
   const [fetchMsg, setFetchMsg] = useState(null);
+  const [pendingPublished, setPendingPublished] = useState(null);
+  const [pendingPeriodRow, setPendingPeriodRow] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -253,8 +315,22 @@ export default function ClassifyPanel({ instrument, modelKey, onClose, onSaved }
       setCountryRows(rowify(p.countryBreakdown));
       if (p.breakdownAsOf) setAsOf(p.breakdownAsOf);
       if (p.breakdownNote) setNote(p.breakdownNote);
-      const bits = ['Filled from the issuer factsheet — review, then Save.'];
+      if (p.publishedReturns) setPendingPublished(p.publishedReturns);
+      if (p.publishedPeriodReturns) setPendingPeriodRow(p.publishedPeriodReturns);
+      const bits = ['Filled from the issuer document — review, then Save.'];
       if (out.asOfEstimated || out.estimates) bits.push('Treat weights / as-of as estimates.');
+      if (p.publishedReturns) bits.push('Published manufacturer returns are shown above (not reconstructed from NAV).');
+      if (p.mer != null) {
+        if (mer.trim() === '') {
+          setMer(String(p.mer));
+          bits.push(`MER ${p.mer}% filled from the document.`);
+        } else if (Number(mer) !== Number(p.mer)) {
+          bits.push(`Document MER is ${p.mer}% (yours is ${mer}% — not overwritten).`);
+        }
+      }
+      if (p.navPoint) {
+        bits.push(`${p.navPoint.source || 'Issuer'} NAV ${p.navPoint.nav} on ${p.navPoint.date} was not added automatically — enter it in Prices if you want that point.`);
+      }
       setFetchMsg(bits.join(' '));
     } catch (e) {
       setFetchMsg(null);
@@ -271,7 +347,7 @@ export default function ClassifyPanel({ instrument, modelKey, onClose, onSaved }
     }
     setSaving(true); setErr(null);
     try {
-      const updated = await api.updateInstrument(instrument.id, {
+      const patch = {
         sector: sector.trim() || null,
         country: country.trim() || null,
         mer: mer.trim() === '' ? null : Number(mer),
@@ -279,7 +355,9 @@ export default function ClassifyPanel({ instrument, modelKey, onClose, onSaved }
         countryBreakdown: validRows(countryRows).length ? validRows(countryRows) : null,
         breakdownAsOf: asOfOk ? asOf : null,
         breakdownNote: note.trim() || null,
-      });
+      };
+      if (pendingPublished) patch.publishedReturns = pendingPublished;
+      const updated = await api.updateInstrument(instrument.id, patch);
       onSaved(updated);
     } catch (e) {
       setErr(`Couldn’t save — ${e.message}`); setSaving(false);
@@ -295,7 +373,13 @@ export default function ClassifyPanel({ instrument, modelKey, onClose, onSaved }
       </header>
 
       <div className="editor-body">
-        <SecurityInfo instrument={instrument} modelKey={modelKey} />
+        <SecurityInfo
+          instrument={instrument}
+          modelKey={modelKey}
+          factsheetMapped={mapped}
+          pendingPublished={pendingPublished}
+          pendingPeriodRow={pendingPeriodRow}
+        />
 
         <div className="ed-section">MER</div>
         <label className="field"><span>Management expense ratio (optional, %)</span>
@@ -321,7 +405,10 @@ export default function ClassifyPanel({ instrument, modelKey, onClose, onSaved }
             )}
             {mapped && sourceInfo?.source && (
               <p className="note" style={{ paddingTop: 8 }}>
-                Mapped: {sourceInfo.source.issuer}. Fills the form only — Save still required.
+                Mapped: {sourceInfo.source.issuer}
+                {sourceInfo.source.series ? ` · Series ${sourceInfo.source.series}` : ''}
+                {sourceInfo.source.fundserv ? ` (${sourceInfo.source.fundserv})` : ''}
+                . Fills the form only — Save still required.
               </p>
             )}
             {fetchMsg && <div className="data-warn" style={{ marginTop: 8 }}>{fetchMsg}</div>}

@@ -50,6 +50,27 @@ describe('JsonStore look-through metadata', () => {
   });
 });
 
+describe('JsonStore published manufacturer returns', () => {
+  it('persists publishedReturns without inventing a NAV series', async () => {
+    const store = await tmpStore();
+    const pub = {
+      kind: 'published',
+      y1: 0.5464,
+      y3ann: 0.4428,
+      asOf: '2026-08-31',
+      source: 'FundPulse · Fidelity Canada',
+      series: 'F',
+      calendarYears: [{ year: 2025, value: 0.2135 }],
+    };
+    const saved = await store.updateInstrument('inst_rbf', { publishedReturns: pub });
+    expect(saved.publishedReturns.y1).toBeCloseTo(0.5464, 5);
+    expect(saved.publishedReturns.series).toBe('F');
+    expect(await store.getNavSeries('inst_rbf')).toHaveLength(3);
+    const cleared = await store.updateInstrument('inst_rbf', { publishedReturns: null });
+    expect(cleared.publishedReturns).toBeNull();
+  });
+});
+
 describe('JsonStore price history', () => {
   it('persists and reads a series keyed by symbol', async () => {
     const store = await tmpStore();

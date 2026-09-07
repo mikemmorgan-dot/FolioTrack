@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { seedData } from './seed.js';
 import { uid, instrumentFromSpec, currentVersionOf, holdingsEqual, breakdownPatchPresent, nextBreakdownFields } from './util.js';
 import { planNavBatch, todayToronto, batchError } from './nav.js';
+import { normalizePublishedReturns } from './factsheet/publishedReturns.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data', 'store.json');
@@ -53,6 +54,9 @@ export class JsonStore {
     if (patch.sector !== undefined) inst.sector = patch.sector || null;
     if (patch.country !== undefined) inst.country = patch.country || null;
     if (patch.mer !== undefined) inst.mer = patch.mer === null || patch.mer === '' ? null : Number(patch.mer);
+    if (patch.publishedReturns !== undefined) {
+      inst.publishedReturns = normalizePublishedReturns(patch.publishedReturns);
+    }
     if (next) {
       inst.sectorBreakdown = next.sectorBreakdown;
       inst.countryBreakdown = next.countryBreakdown;

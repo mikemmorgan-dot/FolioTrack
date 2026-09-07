@@ -400,6 +400,26 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   color: #E5A84B;
 }
 
+.period-returns.published {
+  border-top: none;
+  margin-top: 0;
+  padding-top: 2px;
+}
+.published-block {
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+.published-kicker {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #E5A84B;
+  padding: 0 8px 2px;
+}
+.calendar-years { margin-top: 0; }
+
 .linechart { width: 100%; height: auto; display: block; margin: 4px 0 6px; }
 .chart-empty { color: var(--text-2); font-size: 14px; padding: 28px 6px; background: var(--surface); border-radius: var(--r); text-align: center; }
 .chart-legend { display: flex; gap: 18px; padding: 4px 4px 6px; }
