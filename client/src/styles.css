@@ -302,6 +302,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   box-sizing: border-box;
   appearance: none;
   -webkit-appearance: none;
+  overflow: hidden;
 }
 .field input[type="date"]::-webkit-datetime-edit,
 .field input[type="date"]::-webkit-datetime-edit-fields-wrapper,
