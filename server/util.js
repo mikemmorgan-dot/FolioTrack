@@ -35,6 +35,7 @@ export function instrumentFromSpec(spec) {
     countryBreakdown: spec.countryBreakdown || null,
     breakdownAsOf: normalizeAsOf(spec.breakdownAsOf),
     breakdownNote: normalizeNote(spec.breakdownNote),
+    publishedReturns: spec.publishedReturns || null,
   };
 }
 

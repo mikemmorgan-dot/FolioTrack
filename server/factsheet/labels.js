@@ -7,6 +7,11 @@ const SKIP = new Set([
   'total', 'net', 'net other assets', 'liabilities', 'other assets',
   'cash and/or derivatives', 'cash and cash equivalents', 'derivatives',
   'unclassified', 'not classified', 'n/a', 'na',
+  'remaining countries and net other assets', 'remaining investments and net other assets',
+  'remaining countries', 'remaining investments', 'net other assets',
+  'foreign equities', 'canadian equities', 'convertibles', 'cash & other',
+  'other investments', 'total holdings', 'top 10 holdings aggregate',
+  'total percentage of top 10 investments', 'total number of investments',
 ]);
 
 const SECTOR_ALIASES = {
@@ -22,6 +27,8 @@ const SECTOR_ALIASES = {
   'healthcare': 'Health Care',
   'health': 'Health Care',
   'consumer discretionary': 'Consumer Discretionary',
+  'consumer disc.': 'Consumer Discretionary',
+  'consumer disc': 'Consumer Discretionary',
   'consumer cyclical': 'Consumer Discretionary',
   'consumer cyclicals': 'Consumer Discretionary',
   'consumer staples': 'Consumer Staples',
@@ -145,6 +152,7 @@ export function shouldSkipLabel(label) {
   if (SKIP.has(k)) return true;
   if (/^total\b/.test(k)) return true;
   if (k === 'cash' || k.startsWith('cash ')) return true;
+  if (/^remaining\b/.test(k)) return true;
   return false;
 }
 

@@ -1,17 +1,38 @@
-// sources.js — ticker → public issuer factsheet URL.
+// sources.js — ticker / Fundserv code → public issuer factsheet URL.
 //
 // How to add a mapping
 // --------------------
-// 1. Prefer the issuer's own product page (HTML allocation table) or, when
-//    the page is a JS shell, the public factsheet PDF.
-// 2. Add one entry to FACTSHEET_SOURCES keyed by the Yahoo-style symbol
-//    (TSX = TICKER.TO, US = bare ticker). lookupSource() also accepts the
-//    bare TSX ticker (VFV → VFV.TO).
-// 3. Set `parser` to one of: 'html' | 'pdf' | 'html-or-pdf'.
-//    html       — product page tables and/or embedded JS allocation arrays
-//    pdf        — issuer factsheet PDF (Vanguard Canada)
-//    html-or-pdf — try the page, then follow a Factsheet PDF link
-// 4. Skip stocks, alts, and cash. Do not add login-walled URLs.
+// ETFs (Yahoo-style tickers)
+//   1. Prefer the issuer's own product page (HTML allocation table) or, when
+//      the page is a JS shell, the public factsheet PDF.
+//   2. Add one entry to FACTSHEET_SOURCES keyed by the Yahoo-style symbol
+//      (TSX = TICKER.TO, US = bare ticker). lookupSource() also accepts the
+//      bare TSX ticker (VFV → VFV.TO).
+//   3. Set `parser` to one of: 'html' | 'pdf' | 'html-or-pdf'.
+//      html        — product page tables and/or embedded JS allocation arrays
+//      pdf         — issuer factsheet PDF (Vanguard Canada) or Fund Facts PDF
+//      html-or-pdf — try the page, then follow a Factsheet PDF link
+//
+// Canadian mutual funds (Fundserv)
+//   1. Key the entry by the code stored on the instrument, usually ISSUER +
+//      digits (FID5982, RBF1005, MFC1234). lookupSource() also accepts the
+//      bare digits when `fundserv` is set (5982 → FID5982), and strips spaces
+//      / hyphens (FID-5982).
+//   2. Series letter matters. 5982 is Series F (CAD NL), not A/B. Map the
+//      Fund Facts PDF for that exact series — do not reuse an A-series sheet.
+//   3. Set parser: 'pdf'. Put the Fund Facts PDF on `url` (look-through + MER
+//      + regulatory calendar years). Optionally add:
+//        fundPulseUrl — manufacturer period returns (preferred for 1y/3y/5y)
+//        productUrl   — issuer product page (reference only; series tabs on
+//                       fidelity.ca default to A/B, so we do not scrape it
+//                       for FID5982 performance)
+//        series, fundserv, documentLabel ('Fund Facts')
+//   4. To add RBC / Mackenzie / etc later: find that series' Fund Facts PDF
+//      (and FundPulse if the issuer publishes one), copy the FID5982 block,
+//      and add a parser in parseFundDocs.js only if their text layout differs
+//      from CSA Fund Facts. Public issuer PDFs only — no Morningstar/Fundata.
+//
+// 5. Skip stocks, alts, and cash. Do not add login-walled URLs.
 //
 // Fragility / ToS
 // ---------------
@@ -20,6 +41,7 @@
 // holdings feed and must never auto-save over a user's ClassifyPanel edits.
 // A parse miss or HTTP failure returns an error; existing instrument data
 // is left untouched. Manual entry stays the fallback.
+// Do not invent daily NAV history from published annual returns.
 
 export const FACTSHEET_SOURCES = {
   // ----- Vanguard Canada (factsheet PDFs — product pages are JS shells) -----
@@ -146,16 +168,39 @@ export const FACTSHEET_SOURCES = {
     parser: 'html',
     url: 'https://www.ishares.com/us/products/239726/ishares-core-sp-500-etf',
   },
+
+  // ----- Canadian mutual funds (Fundserv). Series letter is load-bearing. -----
+  FID5982: {
+    issuer: 'Fidelity Canada',
+    parser: 'pdf',
+    kind: 'mutualfund',
+    series: 'F',
+    fundserv: '5982',
+    documentLabel: 'Fund Facts',
+    url: 'https://www.fidelity.ca/content/dam/fidelity/en/documents/fund-facts/uet/FF_UET_F_en.pdf',
+    fundPulseUrl: 'https://www.fidelity.ca/content/dam/fidelity/en/documents/fund-pulse/uet/fp_fgic.pdf',
+    productUrl: 'https://www.fidelity.ca/en/products/funds/uet/',
+  },
 };
 
 export function canonicalSymbol(symbol) {
-  return String(symbol || '').trim().toUpperCase();
+  return String(symbol || '').trim().toUpperCase().replace(/[\s-]+/g, '');
+}
+
+function lookupByFundserv(digits) {
+  const hits = Object.entries(FACTSHEET_SOURCES).filter(([, src]) => src.fundserv === digits);
+  if (hits.length === 1) return { symbol: hits[0][0], ...hits[0][1] };
+  return null;
 }
 
 export function lookupSource(symbol) {
   const s = canonicalSymbol(symbol);
   if (!s) return null;
   if (FACTSHEET_SOURCES[s]) return { symbol: s, ...FACTSHEET_SOURCES[s] };
+  if (/^\d{3,5}$/.test(s)) {
+    const byCode = lookupByFundserv(s);
+    if (byCode) return byCode;
+  }
   const bare = s.replace(/\.TO$/, '');
   if (FACTSHEET_SOURCES[bare]) return { symbol: bare, ...FACTSHEET_SOURCES[bare] };
   if (FACTSHEET_SOURCES[`${bare}.TO`]) {

@@ -61,6 +61,21 @@ export function extractAsOf(text) {
     if (asOf) return { asOf, estimated: false };
   }
 
+  // CSA Fund Facts: "INVESTMENT MIX (FEBRUARY 28, 2026)" / "TOP TEN INVESTMENTS (…)"
+  const mix = s.match(
+    /(?:investment mix|top ten investments|top 10 investments|quarterly top ten)[^\n]{0,48}\(([A-Za-z]+\s+\d{1,2},?\s+20\d{2})\)/i
+  );
+  if (mix) {
+    const asOf = parseAsOfDate(mix[1]);
+    if (asOf) return { asOf, estimated: false };
+  }
+
+  const asAt = s.match(/\bas at\s+([A-Za-z]+\s+\d{1,2},?\s+20\d{2})/i);
+  if (asAt) {
+    const asOf = parseAsOfDate(asAt[1]);
+    if (asOf) return { asOf, estimated: false };
+  }
+
   const generic = s.match(/\bas of\s+([A-Za-z]+\s+\d{1,2},?\s+20\d{2})/i);
   if (generic) {
     const asOf = parseAsOfDate(generic[1]);
@@ -213,6 +228,47 @@ export function extractLabeledPercents(text) {
   return { sector, country };
 }
 
+// Parse "Label  12.3%" (optional %) with an explicit sector/country hint so
+// CSA Fund Facts / FundPulse blocks can include names not in KNOWN_FOR_TEXT.
+export function extractHintedPercents(text, hint) {
+  const sector = [];
+  const country = [];
+  if (!text || !hint) return { sector, country };
+  for (const line of String(text).split(/\n+/)) {
+    const trimmed = line.replace(/\s+/g, ' ').trim();
+    const m = trimmed.match(/^(.{2,60}?)\s+(-?\d+(?:\.\d+)?)\s*%?\s*$/);
+    if (!m) continue;
+    if (/^(by country|by sector|asset mix|sector mix|country mix|current month|%)\b/i.test(m[1])) continue;
+    pushClassified({ sector, country }, m[1], m[2], hint);
+  }
+  return { sector, country };
+}
+
+export function extractMer(text) {
+  if (!text) return null;
+  const s = String(text);
+  const quick = s.match(/management expense ratio\s*\(?\s*mer\s*\)?\s+(-?\d+(?:\.\d+)?)\s*%/i);
+  if (quick) {
+    const n = Number(quick[1]);
+    return Number.isFinite(n) && n > 0 && n < 10 ? n : null;
+  }
+  const pulse = s.match(/management expense ratio[\s\S]{0,120}?(\d+(?:\.\d+)?)\s*%/i);
+  if (pulse) {
+    const n = Number(pulse[1]);
+    return Number.isFinite(n) && n > 0 && n < 10 ? n : null;
+  }
+  return null;
+}
+
+export function sliceBetween(text, startRe, endRe) {
+  const s = String(text || '');
+  const start = s.search(startRe);
+  if (start < 0) return '';
+  const rest = s.slice(start);
+  const end = rest.slice(1).search(endRe);
+  return end >= 0 ? rest.slice(0, end + 1) : rest;
+}
+
 function combine(parts) {
   const sector = [];
   const country = [];
@@ -256,8 +312,17 @@ export async function extractPdfText(buffer) {
 }
 
 export async function parseFactsheetPdf(buffer) {
-  const text = await extractPdfText(buffer);
+  const text = await pdfBufferToText(buffer);
   return parseFactsheetText(text);
+}
+
+// Tests (and mislabeled HTTP bodies) may pass UTF-8 text instead of a PDF.
+export async function pdfBufferToText(buffer) {
+  const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+  if (buf.length >= 4 && buf.slice(0, 4).toString('latin1') !== '%PDF') {
+    return buf.toString('utf8');
+  }
+  return extractPdfText(buf);
 }
 
 export function findFactsheetPdfUrl(html, baseUrl) {
