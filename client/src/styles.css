@@ -291,8 +291,26 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 .field input:focus, .field-row > input:focus { outline: none; border-color: var(--green); }
 .field-row { display: flex; gap: 12px; min-width: 0; }
 .field-row .field { flex: 1 1 0; min-width: 0; }
-/* Native date inputs keep a large min-content width; let the column shrink. */
-.field input[type="date"] { min-width: 0; max-width: 100%; }
+/* Native date inputs keep a large min-content width; let the column shrink.
+   WebKit/iOS also sizes the control to the localized value ("Sep 4, 2026")
+   unless appearance is stripped and inner edit bits can shrink. */
+.field input[type="date"] {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  appearance: none;
+  -webkit-appearance: none;
+  overflow: hidden;
+}
+.field input[type="date"]::-webkit-datetime-edit,
+.field input[type="date"]::-webkit-datetime-edit-fields-wrapper,
+.field input[type="date"]::-webkit-date-and-time-value {
+  min-width: 0;
+  max-width: 100%;
+}
+.field input[type="date"]::-webkit-date-and-time-value { text-align: left; }
 /* NAV date + NAV labels are long; stack before they overlap on ~390px phones. */
 @media (max-width: 440px) {
   .field-row-nav { flex-direction: column; gap: 0; }
