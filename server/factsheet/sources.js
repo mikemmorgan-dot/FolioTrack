@@ -7,11 +7,24 @@
 //      the page is a JS shell, the public factsheet PDF.
 //   2. Add one entry to FACTSHEET_SOURCES keyed by the Yahoo-style symbol
 //      (TSX = TICKER.TO, US = bare ticker). lookupSource() also accepts the
-//      bare TSX ticker (VFV → VFV.TO).
+//      bare TSX ticker (VFV → VFV.TO) and class-share aliases (IDIV.B,
+//      IDIV.B.TO, IDIVB, IDIVB.TO).
 //   3. Set `parser` to one of: 'html' | 'pdf' | 'html-or-pdf'.
 //      html        — product page tables and/or embedded JS allocation arrays
-//      pdf         — issuer factsheet PDF (Vanguard Canada) or Fund Facts PDF
+//      pdf         — issuer factsheet PDF (Vanguard / Manulife) or Fund Facts PDF
 //      html-or-pdf — try the page, then follow a Factsheet PDF link
+//
+// Manulife ETFs (public factsheet PDFs)
+//   URL pattern: https://funds.manulife.ca/en-us/etfs/{TICKER}/pdf
+//   Example: IDIV.B → https://funds.manulife.ca/en-us/etfs/IDIV.B/pdf
+//   1. Confirm the ticker on funds.manulife.ca. The class suffix is
+//      load-bearing (IDIV.B unhedged CAD ≠ IDIV.U).
+//   2. Add one entry keyed by the TSX class ticker (IDIV.B). lookupSource()
+//      also accepts IDIV.B.TO, IDIVB, and IDIVB.TO.
+//   3. Set parser: 'pdf', kind: 'manulife-etf', issuer: 'Manulife'.
+//      parseManulifeEtf.js reads look-through, compound + calendar returns,
+//      MER, and the sheet NAV point. Do not invent a daily NAV series.
+//   4. Commit a text fixture of the pdf-parse output — no live network in CI.
 //
 // Canadian mutual funds (Fundserv)
 //   1. Key the entry by the code stored on the instrument, usually ISSUER +
@@ -169,6 +182,17 @@ export const FACTSHEET_SOURCES = {
     url: 'https://www.ishares.com/us/products/239726/ishares-core-sp-500-etf',
   },
 
+  // ----- Manulife ETFs (public factsheet PDFs) -----
+  // Add another ticker: copy this block and point url at
+  // https://funds.manulife.ca/en-us/etfs/{TICKER}/pdf
+  'IDIV.B': {
+    issuer: 'Manulife',
+    parser: 'pdf',
+    kind: 'manulife-etf',
+    documentLabel: 'factsheet',
+    url: 'https://funds.manulife.ca/en-us/etfs/IDIV.B/pdf',
+  },
+
   // ----- Canadian mutual funds (Fundserv). Series letter is load-bearing. -----
   FID5982: {
     issuer: 'Fidelity Canada',
@@ -187,8 +211,20 @@ export function canonicalSymbol(symbol) {
   return String(symbol || '').trim().toUpperCase().replace(/[\s-]+/g, '');
 }
 
+// Class-share ETFs: IDIV.B / IDIV.B.TO / IDIVB / IDIVB.TO → IDIVB
+export function tickerLookupKey(symbol) {
+  return canonicalSymbol(symbol).replace(/\.TO$/, '').replace(/\./g, '');
+}
+
 function lookupByFundserv(digits) {
   const hits = Object.entries(FACTSHEET_SOURCES).filter(([, src]) => src.fundserv === digits);
+  if (hits.length === 1) return { symbol: hits[0][0], ...hits[0][1] };
+  return null;
+}
+
+function lookupByTickerKey(want) {
+  if (!want) return null;
+  const hits = Object.entries(FACTSHEET_SOURCES).filter(([key]) => tickerLookupKey(key) === want);
   if (hits.length === 1) return { symbol: hits[0][0], ...hits[0][1] };
   return null;
 }
@@ -206,7 +242,7 @@ export function lookupSource(symbol) {
   if (FACTSHEET_SOURCES[`${bare}.TO`]) {
     return { symbol: `${bare}.TO`, ...FACTSHEET_SOURCES[`${bare}.TO`] };
   }
-  return null;
+  return lookupByTickerKey(tickerLookupKey(s));
 }
 
 export function listMappedSymbols() {

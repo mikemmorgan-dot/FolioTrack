@@ -410,6 +410,11 @@ app.post('/api/instruments/:id/fetch-breakdown', async (req, res) => {
       });
     }
     const payload = await fetchBreakdownForSymbol(inst.symbol);
+    // MER is proposed only when the instrument does not already have one
+    // (same rule as FID5982 — ClassifyPanel will not overwrite a filled MER).
+    if (payload?.proposed?.mer != null && inst.mer != null && inst.mer !== '') {
+      delete payload.proposed.mer;
+    }
     res.json(payload);
   } catch (e) {
     if (e instanceof BreakdownFetchError) return res.status(e.status).json({ error: e.message, code: e.code });

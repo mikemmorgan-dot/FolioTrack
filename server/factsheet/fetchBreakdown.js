@@ -9,12 +9,14 @@ import { lookupSource } from './sources.js';
 import {
   parseFactsheetHtml,
   parseFactsheetPdf,
+  parseFactsheetText,
   findFactsheetPdfUrl,
   hasBreakdownRows,
   emptyParse,
   pdfBufferToText,
 } from './parse.js';
 import { parseFundFactsText, parseFundPulseText } from './parseFundDocs.js';
+import { parseManulifeEtfText, isManulifeEtfText } from './parseManulifeEtf.js';
 import { hasPublishedReturns, mergePublishedReturns, publishedToPeriodRow } from './publishedReturns.js';
 
 const FETCH_MS = 12000;
@@ -121,6 +123,7 @@ export async function fetchBreakdownForSymbol(symbol, { fetchImpl = fetch, now =
   let mer = null;
   let factsPublished = null;
   let pulse = null;
+  let navPoint = null;
   let documentLabel = source.documentLabel || 'factsheet';
 
   const isPdf = looksLikePdf(first.finalUrl, first.ctype) || source.parser === 'pdf';
@@ -140,7 +143,22 @@ export async function fetchBreakdownForSymbol(symbol, { fetchImpl = fetch, now =
         factsPublished = facts.published;
         documentLabel = source.documentLabel || 'Fund Facts';
       } else {
-        parsed = await parseFactsheetPdf(first.buf);
+        const text = await pdfBufferToText(first.buf);
+        if (source.kind === 'manulife-etf' || isManulifeEtfText(text)) {
+          const manulife = parseManulifeEtfText(text);
+          parsed = {
+            sectorBreakdown: manulife.sectorBreakdown,
+            countryBreakdown: manulife.countryBreakdown,
+            asOf: manulife.asOf,
+            asOfEstimated: manulife.asOfEstimated,
+          };
+          mer = manulife.mer;
+          factsPublished = manulife.published;
+          navPoint = manulife.navPoint;
+          documentLabel = source.documentLabel || 'factsheet';
+        } else {
+          parsed = parseFactsheetText(text);
+        }
       }
     } catch (e) {
       throw new BreakdownFetchError(
@@ -187,7 +205,7 @@ export async function fetchBreakdownForSymbol(symbol, { fetchImpl = fetch, now =
       source, scrapedAt, document: source.fundPulseUrl, label: 'FundPulse',
     }),
     attachPublishedMeta(factsPublished, {
-      source, scrapedAt, document: source.url, label: 'Fund Facts',
+      source, scrapedAt, document: source.url, label: documentLabel,
     })
   );
 
@@ -227,7 +245,13 @@ export async function fetchBreakdownForSymbol(symbol, { fetchImpl = fetch, now =
     };
     proposed.publishedPeriodReturns = publishedToPeriodRow(proposed.publishedReturns);
   }
-  if (pulse?.navPoint) proposed.navPoint = { ...pulse.navPoint, source: `FundPulse · ${source.issuer}` };
+  if (!navPoint && pulse?.navPoint) navPoint = pulse.navPoint;
+  if (navPoint) {
+    proposed.navPoint = {
+      ...navPoint,
+      source: navPoint.source || `${documentLabel} · ${source.issuer}`,
+    };
+  }
 
   return {
     mapped: true,

@@ -54,7 +54,7 @@ export function extractAsOf(text) {
   }
 
   const holdings = s.match(
-    /(?:holdings|portfolio|sector|geographic|exposure|allocation)[^\n.]{0,40}as of\s+([A-Za-z]+\s+\d{1,2},?\s+20\d{2})/i
+    /(?:holdings|portfolio|sector|geographic|exposure|allocation)[^\n.]{0,40}as (?:of|at)\s+([A-Za-z]+\s+\d{1,2},?\s+20\d{2})/i
   );
   if (holdings) {
     const asOf = parseAsOfDate(holdings[1]);
@@ -255,6 +255,12 @@ export function extractMer(text) {
   const pulse = s.match(/management expense ratio[\s\S]{0,120}?(\d+(?:\.\d+)?)\s*%/i);
   if (pulse) {
     const n = Number(pulse[1]);
+    return Number.isFinite(n) && n > 0 && n < 10 ? n : null;
+  }
+  // Manulife ETF factsheets: "MER: 0.40% (as at 2025-12-31, includes HST)"
+  const merColon = s.match(/\bMER\s*:\s*(\d+(?:\.\d+)?)\s*%/i);
+  if (merColon) {
+    const n = Number(merColon[1]);
     return Number.isFinite(n) && n > 0 && n < 10 ? n : null;
   }
   return null;

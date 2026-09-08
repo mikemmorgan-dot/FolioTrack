@@ -35,6 +35,12 @@ describe('extractAsOf', () => {
     expect(extractAsOf('TOP TEN INVESTMENTS (FEBRUARY 28, 2026)\nAPRIL 24, 2026').asOf).toBe('2026-02-28');
     expect(extractAsOf('Performance (Class F)\nAS AT AUGUST 31, 2026').asOf).toBe('2026-08-31');
   });
+
+  it('prefers Holdings as-at over a later NAV as-at', () => {
+    expect(extractAsOf(
+      'Performance as at July 31, 2026 • Holdings as at July 31, 2026\nNAV per unit $21.07 as at September 4, 2026'
+    ).asOf).toBe('2026-07-31');
+  });
 });
 
 describe('Vanguard PDF text fixture', () => {

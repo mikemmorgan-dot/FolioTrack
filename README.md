@@ -57,6 +57,7 @@ is what feeds the Performance change-timeline (and, next, attribution).
 | TSX / US stocks & ETFs | Yahoo (auto) |
 | US mutual funds | Yahoo (mostly auto) |
 | Canadian MF (FundServ code) | Manual NAV; mapped funds can fetch Fund Facts / FundPulse for look-through and **published** manufacturer returns (not reconstructed from NAV) |
+| Manual ETFs (e.g. Manulife `IDIV.B`) | Manual NAV; mapped tickers can fetch the issuer factsheet PDF for look-through and **published** multi-period returns (same Persist-on-Save path as FID5982). Add another Manulife ETF at `https://funds.manulife.ca/en-us/etfs/{TICKER}/pdf` — see `server/factsheet/sources.js`. |
 | Private alts (OCIC, CVC, pooled) | Manual NAV |
 | CUSIP-only instruments | Manual |
 
@@ -92,8 +93,10 @@ year-fraction between the two observation dates (day count / 365.25). A dash
 means the visible series does not cover that window — never a fabricated 0%.
 Thin samples (under ~90% of expected trading days) are labeled **est.**
 
-Mapped Canadian mutual funds can also show a **Published (Fund Facts / FundPulse)**
-row: manufacturer calendar-year and annualized figures copied from the issuer
-document for that series. Those are not reconstructed from NAV and are not
-invented from a single price point. Series letter is load-bearing (FID5982 = F).
+Mapped Canadian mutual funds and Manulife ETFs can also show a **Published
+(Fund Facts / FundPulse / Manulife)** row: manufacturer calendar-year and
+annualized figures copied from the issuer document. Those are not reconstructed
+from NAV and are not invented from a single price point. Series letter is
+load-bearing for Fundserv (FID5982 = F); Manulife class suffixes are too
+(`IDIV.B` ≠ `IDIV.U`).
 ```
