@@ -38,6 +38,15 @@ export const api = {
   factsheetSource: (id) => j(`/api/instruments/${id}/factsheet-source`),
   fetchBreakdown: (id) =>
     j(`/api/instruments/${id}/fetch-breakdown`, { method: 'POST' }),
+  yahooSource: (id) => j(`/api/instruments/${id}/yahoo-source`),
+  fetchYahooHistory: (id) =>
+    j(`/api/instruments/${id}/fetch-yahoo-history`, { method: 'POST' }),
+  applyYahooHistory: (id, body) =>
+    j(`/api/instruments/${id}/apply-yahoo-history`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    }),
   holdingHistory: (modelKey, id, { mode = 'since-added', rf = 4, refresh = false } = {}) =>
     j(`/api/models/${encodeURIComponent(modelKey)}/instruments/${id}/history?mode=${encodeURIComponent(mode)}&rf=${rf}${refresh ? '&refresh=1' : ''}`),
   // In-use non-cash names (manual + auto) with latest NAV + which models use them.

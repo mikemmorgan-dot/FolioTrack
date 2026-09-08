@@ -1,5 +1,5 @@
 import { pct, money, BASIS, aggregateBy, typeColor, typeLabel } from '../../api.js';
-import { isNavStale, isCashHolding } from '../../nav.js';
+import { isNavStale, isCashHolding, isSeriesPrice } from '../../nav.js';
 import AssetIcon from '../AssetIcon.jsx';
 import EmptyState from '../EmptyState.jsx';
 
@@ -10,7 +10,7 @@ export default function OverviewTab({ model, goto, onEdit, onUpdatePrices }) {
   const top = [...h].sort((a, b) => b.weight - a.weight).slice(0, 4);
   const byType = aggregateBy(h, 'type');
   const staleCount = h.filter((x) =>
-    (x.source === 'manual' || x.priceSource === 'manual') && !isCashHolding(x) && isNavStale(x.type, x.priceAsOf)
+    isSeriesPrice(x) && !isCashHolding(x) && isNavStale(x.type, x.priceAsOf)
   ).length;
 
   return (

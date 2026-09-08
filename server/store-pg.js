@@ -18,6 +18,7 @@ function rowToInstrument(r) {
     breakdownAsOf: r.breakdown_as_of ? d(r.breakdown_as_of) : null,
     breakdownNote: r.breakdown_note || null,
     publishedReturns: r.published_returns || null,
+    navSource: r.nav_source || null,
   };
 }
 
@@ -73,6 +74,10 @@ export class PgStore {
       const pub = normalizePublishedReturns(patch.publishedReturns);
       vals.push(pub ? JSON.stringify(pub) : null);
     }
+    if (patch.navSource !== undefined) {
+      sets.push(`nav_source=$${n++}`);
+      vals.push(patch.navSource ? String(patch.navSource).slice(0, 40) : null);
+    }
     if (breakdownPatchPresent(patch)) {
       const current = await this.getInstrument(id);
       if (!current) return null;
@@ -109,7 +114,7 @@ export class PgStore {
   }
 
   // One transaction for the whole payload — not a model version.
-  async addNavBatch({ asOf, points } = {}) {
+  async addNavBatch({ asOf, points, navSource } = {}) {
     const ids = [...new Set((points || []).map((p) => p?.instrumentId).filter(Boolean))];
     const instrumentsById = new Map();
     if (ids.length) {
@@ -135,6 +140,12 @@ export class PgStore {
         `UPDATE instruments SET source='manual' WHERE id = ANY($1) AND source IS DISTINCT FROM 'manual'`,
         [writtenIds]
       );
+      if (navSource !== undefined) {
+        await client.query(
+          `UPDATE instruments SET nav_source=$2 WHERE id = ANY($1)`,
+          [writtenIds, navSource ? String(navSource).slice(0, 40) : null]
+        );
+      }
       await client.query('COMMIT');
     } catch (e) {
       await client.query('ROLLBACK');

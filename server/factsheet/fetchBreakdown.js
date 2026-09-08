@@ -15,7 +15,7 @@ import {
   emptyParse,
   pdfBufferToText,
 } from './parse.js';
-import { parseFundFactsText, parseFundPulseText } from './parseFundDocs.js';
+import { parseFundFactsText, parseFundPulseText, parseRbcMonthlyText, isRbcMonthlyText } from './parseFundDocs.js';
 import { parseManulifeEtfText, isManulifeEtfText } from './parseManulifeEtf.js';
 import { hasPublishedReturns, mergePublishedReturns, publishedToPeriodRow } from './publishedReturns.js';
 
@@ -53,6 +53,7 @@ export function sourceSummary(source) {
   if (source.series) out.series = source.series;
   if (source.fundserv) out.fundserv = source.fundserv;
   if (source.fundPulseUrl) out.fundPulseUrl = source.fundPulseUrl;
+  if (source.monthlyUrl) out.monthlyUrl = source.monthlyUrl;
   if (source.productUrl) out.productUrl = source.productUrl;
   if (source.documentLabel) out.documentLabel = source.documentLabel;
   return out;
@@ -178,18 +179,35 @@ export async function fetchBreakdownForSymbol(symbol, { fetchImpl = fetch, now =
     }
   }
 
-  if (source.fundPulseUrl) {
-    const pulseGot = await optionalGet(source.fundPulseUrl, fetchImpl);
+  const secondaryUrl = source.fundPulseUrl || source.monthlyUrl;
+  let monthly = null;
+  if (secondaryUrl) {
+    const pulseGot = await optionalGet(secondaryUrl, fetchImpl);
     if (pulseGot) {
       try {
-        pulse = parseFundPulseText(await pdfBufferToText(pulseGot.buf));
+        const pulseText = await pdfBufferToText(pulseGot.buf);
+        if (source.monthlyUrl && (source.issuer === 'RBC GAM' || isRbcMonthlyText(pulseText))) {
+          monthly = parseRbcMonthlyText(pulseText);
+        } else {
+          pulse = parseFundPulseText(pulseText);
+        }
       } catch {
         pulse = null;
+        monthly = null;
       }
     }
   }
 
-  if (!hasBreakdownRows(parsed) && pulse && (pulse.sectorBreakdown?.length || pulse.countryBreakdown?.length)) {
+  const secondary = monthly || pulse;
+  if (monthly && (monthly.sectorBreakdown?.length || monthly.countryBreakdown?.length)) {
+    parsed = {
+      sectorBreakdown: monthly.sectorBreakdown?.length ? monthly.sectorBreakdown : parsed.sectorBreakdown,
+      countryBreakdown: monthly.countryBreakdown?.length ? monthly.countryBreakdown : parsed.countryBreakdown,
+      asOf: monthly.allocationAsOf || monthly.asOf || parsed.asOf,
+      asOfEstimated: false,
+    };
+    documentLabel = 'Monthly update';
+  } else if (!hasBreakdownRows(parsed) && pulse && (pulse.sectorBreakdown?.length || pulse.countryBreakdown?.length)) {
     parsed = {
       sectorBreakdown: pulse.sectorBreakdown || [],
       countryBreakdown: pulse.countryBreakdown || [],
@@ -201,11 +219,14 @@ export async function fetchBreakdownForSymbol(symbol, { fetchImpl = fetch, now =
 
   const scrapedAt = todayISO(now);
   const published = mergePublishedReturns(
-    attachPublishedMeta(pulse?.published, {
-      source, scrapedAt, document: source.fundPulseUrl, label: 'FundPulse',
+    attachPublishedMeta(secondary?.published, {
+      source,
+      scrapedAt,
+      document: secondaryUrl,
+      label: monthly ? 'Monthly update' : 'FundPulse',
     }),
     attachPublishedMeta(factsPublished, {
-      source, scrapedAt, document: source.url, label: documentLabel,
+      source, scrapedAt, document: source.url, label: source.documentLabel || 'Fund Facts',
     })
   );
 
@@ -227,7 +248,7 @@ export async function fetchBreakdownForSymbol(symbol, { fetchImpl = fetch, now =
     })
     : null;
 
-  if (mer == null && pulse?.mer != null) mer = pulse.mer;
+  if (mer == null && secondary?.mer != null) mer = secondary.mer;
 
   const proposed = {
     sectorBreakdown: parsed.sectorBreakdown?.length ? parsed.sectorBreakdown : null,
@@ -245,7 +266,7 @@ export async function fetchBreakdownForSymbol(symbol, { fetchImpl = fetch, now =
     };
     proposed.publishedPeriodReturns = publishedToPeriodRow(proposed.publishedReturns);
   }
-  if (!navPoint && pulse?.navPoint) navPoint = pulse.navPoint;
+  if (!navPoint && secondary?.navPoint) navPoint = secondary.navPoint;
   if (navPoint) {
     proposed.navPoint = {
       ...navPoint,

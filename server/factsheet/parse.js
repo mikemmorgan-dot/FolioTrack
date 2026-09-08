@@ -244,6 +244,20 @@ export function extractHintedPercents(text, hint) {
   return { sector, country };
 }
 
+// RBC Fund Facts investment mix: "26.1% Financials" (percent first).
+export function extractLeadingPercents(text, hint) {
+  const sector = [];
+  const country = [];
+  if (!text || !hint) return { sector, country };
+  for (const line of String(text).split(/\n+/)) {
+    const trimmed = line.replace(/\s+/g, ' ').trim();
+    const m = trimmed.match(/^(-?\d+(?:\.\d+)?)\s*%\s+(.{2,80})$/);
+    if (!m) continue;
+    pushClassified({ sector, country }, m[2], m[1], hint);
+  }
+  return { sector, country };
+}
+
 export function extractMer(text) {
   if (!text) return null;
   const s = String(text);

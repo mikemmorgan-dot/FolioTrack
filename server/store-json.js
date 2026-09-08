@@ -57,6 +57,9 @@ export class JsonStore {
     if (patch.publishedReturns !== undefined) {
       inst.publishedReturns = normalizePublishedReturns(patch.publishedReturns);
     }
+    if (patch.navSource !== undefined) {
+      inst.navSource = patch.navSource ? String(patch.navSource).slice(0, 40) : null;
+    }
     if (next) {
       inst.sectorBreakdown = next.sectorBreakdown;
       inst.countryBreakdown = next.countryBreakdown;
@@ -85,7 +88,7 @@ export class JsonStore {
   }
 
   // One persist for the whole payload — not a model version.
-  async addNavBatch({ asOf, points } = {}) {
+  async addNavBatch({ asOf, points, navSource } = {}) {
     const instrumentsById = new Map();
     for (const p of points || []) {
       if (!p?.instrumentId || instrumentsById.has(p.instrumentId)) continue;
@@ -102,6 +105,10 @@ export class JsonStore {
       arr.sort((a, b) => a.date.localeCompare(b.date));
       this.db.navSeries[w.instrumentId] = arr;
       this._markSourceManual(w.instrumentId);
+      if (navSource !== undefined) {
+        const inst = this.db.instruments[w.instrumentId];
+        if (inst) inst.navSource = navSource ? String(navSource).slice(0, 40) : null;
+      }
     }
     if (planned.writes.length) this._persist();
 

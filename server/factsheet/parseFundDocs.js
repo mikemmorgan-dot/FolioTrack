@@ -8,6 +8,7 @@ import {
   extractAsOf,
   extractHintedPercents,
   extractLabeledPercents,
+  extractLeadingPercents,
   extractMer,
   parseAsOfDate,
   parseFactsheetText,
@@ -148,22 +149,40 @@ function documentDate(text) {
   return parseAsOfDate(String(text).slice(0, 400));
 }
 
+function calendarFromYearChart(text) {
+  const m = String(text).match(
+    /((?:20\d{2}\s+){4,}20\d{2})\s+((?:-?\d+(?:\.\d+)?\s*%\s*){4,})/i
+  );
+  if (!m) return [];
+  const years = m[1].trim().split(/\s+/).map(Number).filter((y) => y >= 1990 && y <= 2100);
+  const pcts = [...m[2].matchAll(/(-?\d+(?:\.\d+)?)\s*%/g)].map((x) => Number(x[1]));
+  if (!years.length || pcts.length < years.length) return [];
+  return years.map((year, i) => ({ year, value: pctToDecimal(pcts[i]), ytd: false }))
+    .filter((r) => r.value != null);
+}
+
 export function parseFundFactsText(text) {
   const generic = parseFactsheetText(text);
   const countryBlock = sliceBetween(text, /BY COUNTRY/i, /BY SECTOR|HOW RISKY/i);
   const sectorBlock = sliceBetween(text, /BY SECTOR/i, /HOW RISKY|HOW HAS THE FUND PERFORMED/i);
+  const investMix = sliceBetween(text, /investment mix/i, /how risky|how has the fund performed/i);
   const fromMix = combineHinted([
     extractHintedPercents(countryBlock, 'country'),
     extractHintedPercents(sectorBlock, 'sector'),
+    extractLeadingPercents(investMix, 'sector'),
     extractLabeledPercents(text),
   ]);
   const mixAsOf = extractAsOf(text);
   const mer = extractMer(text);
   const calendarYears = calendarFromFundFacts(text);
-  const inception = String(text).match(/annual compound return of\s*(-?\d+(?:\.\d+)?)\s*%/i);
+  const chartYears = calendarYears.length ? [] : calendarFromYearChart(text);
+  // CSA "ten years ago … annual compound return" is 10Y, not since-inception.
+  const tenYear = String(text).match(/ten years ago[\s\S]{0,240}?annual compound return of\s*(-?\d+(?:\.\d+)?)\s*%/i);
+  const inception = !tenYear && String(text).match(/annual compound return of\s*(-?\d+(?:\.\d+)?)\s*%/i);
   const published = normalizePublishedReturns({
+    ...(tenYear ? { y10ann: pctToDecimal(tenYear[1]) } : {}),
     ...(inception ? { inceptionAnn: pctToDecimal(inception[1]) } : {}),
-    calendarYears,
+    calendarYears: calendarYears.length ? calendarYears : chartYears,
     asOf: documentDate(text) || mixAsOf.asOf,
     source: 'Fund Facts',
     series: (String(text).match(/series\s+([A-Z0-9]+)/i) || [])[1] || null,
@@ -209,5 +228,104 @@ export function parseFundPulseText(text) {
     mer: extractMer(text),
     published,
     navPoint: extractNavPoint(text),
+  };
+}
+
+export function isRbcMonthlyText(text) {
+  const s = String(text || '');
+  return /RBC Global Asset Management/i.test(s) && /Performance analysis for Series/i.test(s);
+}
+
+function seriesMer(text) {
+  const m = String(text).match(/series\s+[A-Z0-9]+\s+MER\s*%?\s+(-?\d+(?:\.\d+)?)/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 && n < 10 ? n : null;
+}
+
+function calendarFromRbcMonthly(text, performanceAsOf) {
+  const header = String(text).match(/calendar returns\s*%\s+((?:20\d{2}\s+)+)YTD/i);
+  if (!header) return [];
+  const years = header[1].trim().split(/\s+/).map(Number).filter((y) => y >= 1990 && y <= 2100);
+  const after = String(text).slice(header.index + header[0].length);
+  const numsLine = after.match(/^\s*((?:-?\d+(?:\.\d+)?\s+)+)-?\d+(?:\.\d+)?\s+Fund/im)
+    || after.match(/((?:-?\d+(?:\.\d+)?\s+){4,}-?\d+(?:\.\d+)?)\s+Fund/i);
+  if (!numsLine) return [];
+  const nums = numsLine[1].trim().split(/\s+/).map(Number).filter((n) => Number.isFinite(n));
+  // Last number before "Fund" is YTD; the capture above may drop it. Re-read full run.
+  const full = after.match(/((?:-?\d+(?:\.\d+)?\s+){5,}-?\d+(?:\.\d+)?)\s+Fund/i);
+  const all = (full ? full[1] : numsLine[1]).trim().split(/\s+/).map(Number).filter((n) => Number.isFinite(n));
+  if (all.length < years.length) return [];
+  const rows = years.map((year, i) => ({ year, value: pctToDecimal(all[i]), ytd: false }));
+  const ytd = all[years.length];
+  const ytdYear = performanceAsOf ? Number(String(performanceAsOf).slice(0, 4)) : null;
+  if (ytd != null && ytdYear) rows.push({ year: ytdYear, value: pctToDecimal(ytd), ytd: true });
+  return rows.filter((r) => r.value != null);
+}
+
+function trailingFromRbcMonthly(text) {
+  const block = String(text).match(
+    /1\s*Mth\s+3\s*Mth\s+6\s*Mth\s+1\s*Yr\s+3\s*Yr\s+5\s*Yr\s+10\s*Yr\s+Since incep\.?\s+Trailing return\s*%?\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)/i
+  );
+  if (!block) return {};
+  const keys = ['m1', 'm3', 'm6', 'y1', 'y3ann', 'y5ann', 'y10ann', 'inceptionAnn'];
+  const out = {};
+  keys.forEach((k, i) => {
+    const v = pctToDecimal(block[i + 1]);
+    if (v != null) out[k] = v;
+  });
+  return out;
+}
+
+function rbcNavPoint(text, asOf) {
+  const m = String(text).match(/Series\s+([A-Z0-9]+)\s+NAV\s*\$?\s*([\d.]+)/i);
+  if (!m) return null;
+  const nav = Number(m[2]);
+  if (!Number.isFinite(nav) || nav <= 0 || !asOf) return null;
+  return { date: asOf, nav, source: 'Monthly update' };
+}
+
+export function parseRbcMonthlyText(text) {
+  const performanceAsOf = asOfAfter(text, /performance analysis for series/i)
+    || asOfAfter(text, /portfolio analysis as of/i);
+  const allocationAsOf = asOfAfter(text, /portfolio analysis as of/i)
+    || asOfAfter(text, /equity sector allocation/i)
+    || performanceAsOf;
+  const sectorBlock = sliceBetween(
+    text,
+    /equity sector allocation/i,
+    /highest\/lowest|disclosure|portfolio manager|these pages are not complete/i
+  );
+  const assetBlock = sliceBetween(text, /asset mix/i, /value\s+blend|equity style|equity characteristics|dividend yield/i);
+  const rows = combineHinted([
+    extractHintedPercents(sectorBlock, 'sector'),
+    extractHintedPercents(assetBlock, 'country'),
+  ]);
+  const geo = (rows.countryBreakdown || []).filter((r) => (
+    r.label === 'Canada' || r.label === 'United States' || r.label === 'International'
+    || r.label === 'Emerging Markets' || r.label === 'Global'
+  ));
+  const periods = trailingFromRbcMonthly(text);
+  const calendarYears = calendarFromRbcMonthly(text, performanceAsOf);
+  const ytdFromCal = calendarYears.find((r) => r.ytd);
+  const published = normalizePublishedReturns({
+    ...periods,
+    ytd: ytdFromCal?.value ?? periods.ytd,
+    calendarYears,
+    asOf: performanceAsOf,
+    source: 'Monthly update',
+    series: (String(text).match(/Performance analysis for Series\s+([A-Z0-9]+)/i)
+      || String(text).match(/Series\s+([A-Z0-9]+)\s+NAV/i)
+      || [])[1] || 'F',
+  });
+  return {
+    sectorBreakdown: rows.sectorBreakdown,
+    countryBreakdown: geo,
+    asOf: allocationAsOf || performanceAsOf,
+    allocationAsOf,
+    performanceAsOf,
+    mer: extractMer(text) || seriesMer(text),
+    published,
+    navPoint: rbcNavPoint(text, performanceAsOf || allocationAsOf),
   };
 }

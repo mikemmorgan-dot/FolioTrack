@@ -32,6 +32,18 @@ export function isCashHolding(h) {
   return h?.type === 'cash' || String(h?.symbol || '').toUpperCase() === 'CASH';
 }
 
+// NAV / applied Yahoo series — not a live provider quote.
+export const YAHOO_PRICE_SOURCE = 'Yahoo Finance';
+export function isSeriesPrice(h) {
+  const src = h?.priceSource;
+  return src === 'manual' || src === YAHOO_PRICE_SOURCE || h?.source === 'manual';
+}
+export function priceSourceLabel(h) {
+  if (h?.priceSource === YAHOO_PRICE_SOURCE || h?.navSource === YAHOO_PRICE_SOURCE) return 'Yahoo Finance';
+  if (isSeriesPrice(h)) return 'Manual';
+  return 'Live';
+}
+
 export function cadenceLabel(type) {
   const d = NAV_CADENCE_DAYS[type] ?? 7;
   if (!Number.isFinite(d)) return 'never stale';

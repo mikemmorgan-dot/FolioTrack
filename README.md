@@ -54,9 +54,9 @@ is what feeds the Performance change-timeline (and, next, attribution).
 ## Data coverage (honest)
 | Instrument | Source |
 |---|---|
-| TSX / US stocks & ETFs | Yahoo (auto) |
+| TSX / US stocks & ETFs | Yahoo (auto). **Stocks** (and TSX ETFs without a mapped issuer sheet) can **Fetch from Yahoo** on Classify / Prices — review, then Apply series into `nav_series` (merge by date). Source label: `Yahoo Finance`. On Render 429, paste Date / Close from [ca.finance.yahoo.com](https://ca.finance.yahoo.com/) or type them in Prices. Add another `.TO` stock: no mapping needed; add a bare-ticker alias in `server/yahooSeries.js` (`YAHOO_ALIASES`) only if the instrument is stored without `.TO` (e.g. `RY` → `RY.TO`). |
 | US mutual funds | Yahoo (mostly auto) |
-| Canadian MF (FundServ code) | Manual NAV; mapped funds can fetch Fund Facts / FundPulse for look-through and **published** manufacturer returns (not reconstructed from NAV) |
+| Canadian MF (FundServ code) | Manual NAV; mapped funds can fetch Fund Facts / FundPulse / RBC monthly update for look-through and **published** manufacturer returns (not reconstructed from NAV). Add another `RBF####`: copy the `RBF608` block in `server/factsheet/sources.js` (Fund Facts + monthly PDF for that series). |
 | Manual ETFs (e.g. Manulife `IDIV.B`) | Manual NAV; mapped tickers can fetch the issuer factsheet PDF for look-through and **published** multi-period returns (same Persist-on-Save path as FID5982). Add another Manulife ETF at `https://funds.manulife.ca/en-us/etfs/{TICKER}/pdf` — see `server/factsheet/sources.js`. |
 | Private alts (OCIC, CVC, pooled) | Manual NAV |
 | CUSIP-only instruments | Manual |
@@ -94,9 +94,12 @@ means the visible series does not cover that window — never a fabricated 0%.
 Thin samples (under ~90% of expected trading days) are labeled **est.**
 
 Mapped Canadian mutual funds and Manulife ETFs can also show a **Published
-(Fund Facts / FundPulse / Manulife)** row: manufacturer calendar-year and
+(Fund Facts / FundPulse / RBC monthly / Manulife)** row: manufacturer calendar-year and
 annualized figures copied from the issuer document. Those are not reconstructed
 from NAV and are not invented from a single price point. Series letter is
-load-bearing for Fundserv (FID5982 = F); Manulife class suffixes are too
+load-bearing for Fundserv (FID5982 = F, RBF608 = F); Manulife class suffixes are too
 (`IDIV.B` ≠ `IDIV.U`).
+
+TSX stocks (starting with `RY.TO`) compute the same period-return row from an
+applied Yahoo EOD series. That path is `nav_series`, not Published Fund Facts.
 ```

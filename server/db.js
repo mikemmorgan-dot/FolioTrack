@@ -40,6 +40,8 @@ ALTER TABLE instruments ADD COLUMN IF NOT EXISTS breakdown_as_of date;
 ALTER TABLE instruments ADD COLUMN IF NOT EXISTS breakdown_note text;
 -- Manufacturer published returns (Fund Facts / FundPulse / issuer factsheet). Not NAV-derived.
 ALTER TABLE instruments ADD COLUMN IF NOT EXISTS published_returns jsonb;
+-- Where the current nav_series came from: 'Yahoo Finance' | 'manual' | null.
+ALTER TABLE instruments ADD COLUMN IF NOT EXISTS nav_source text;
 
 CREATE TABLE IF NOT EXISTS models (
   key text PRIMARY KEY,

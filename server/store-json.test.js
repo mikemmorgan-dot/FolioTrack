@@ -71,6 +71,27 @@ describe('JsonStore published manufacturer returns', () => {
   });
 });
 
+describe('JsonStore navSource + Yahoo apply', () => {
+  it('labels an applied Yahoo series without dropping merge-by-date points', async () => {
+    const store = await tmpStore();
+    await store.addNav('inst_ry', { date: '2026-09-04', nav: 178.2 });
+    const result = await store.addNavBatch({
+      navSource: 'Yahoo Finance',
+      points: [
+        { instrumentId: 'inst_ry', date: '2024-01-02', nav: 128 },
+        { instrumentId: 'inst_ry', date: '2026-09-04', nav: 180 },
+      ],
+    });
+    const series = await store.getNavSeries('inst_ry');
+    expect(series).toHaveLength(2);
+    expect(series.find((p) => p.date === '2026-09-04').nav).toBe(180);
+    expect(result.latest[0].nav).toBe(180);
+    const inst = await store.getInstrument('inst_ry');
+    expect(inst.navSource).toBe('Yahoo Finance');
+    expect(inst.source).toBe('manual');
+  });
+});
+
 describe('JsonStore price history', () => {
   it('persists and reads a series keyed by symbol', async () => {
     const store = await tmpStore();

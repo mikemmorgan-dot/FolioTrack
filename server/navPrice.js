@@ -26,12 +26,12 @@ export function quoteFromNav(inst, latest) {
   return { price, asOf, currency: inst.currency || null };
 }
 
-export function quoteFieldsFromLatestNav(latest) {
+export function quoteFieldsFromLatestNav(latest, navSource) {
   if (!latest || !Number.isFinite(Number(latest.nav))) return null;
   return {
     price: Number(latest.nav),
     priceAsOf: latest.date ? String(latest.date).slice(0, 10) : null,
-    priceSource: 'manual',
+    priceSource: navSource || 'manual',
   };
 }
 
