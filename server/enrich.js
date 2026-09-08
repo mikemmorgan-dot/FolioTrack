@@ -48,7 +48,7 @@ export async function enrichHoldings(version, store, quotes, { liveQuotes = fals
   return Promise.all(rows.map(async ({ holding, inst }) => {
     let price = null, priceAsOf = null, priceSource = inst.source;
     try {
-      const fromNav = quoteFieldsFromLatestNav(await store.latestNav(inst.id));
+      const fromNav = quoteFieldsFromLatestNav(await store.latestNav(inst.id), inst.navSource);
       if (fromNav) {
         ({ price, priceAsOf, priceSource } = fromNav);
       } else if (inst.source === 'auto') {

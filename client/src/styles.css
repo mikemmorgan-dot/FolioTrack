@@ -494,6 +494,13 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   font-size: 15px; font-weight: 700; padding: 13px; border-radius: 12px;
 }
 .fetch-factsheet:disabled { color: var(--text-3); }
+.yahoo-preview { margin-top: 8px; }
+.yahoo-paste {
+  width: 100%; min-height: 110px; resize: vertical;
+  background: var(--surface-3); border: 1px solid var(--line); color: var(--text);
+  border-radius: 12px; padding: 10px 12px; font: inherit; font-size: 13px;
+}
+a.ext { color: var(--green); text-decoration: none; }
 .rp-run:disabled { color: var(--text-3); }
 .rp-table { margin-top: 14px; }
 .rp-r { display: grid; grid-template-columns: 1.3fr 1fr 1fr 1fr; align-items: center; padding: 10px 2px; font-size: 14px; font-weight: 600; }

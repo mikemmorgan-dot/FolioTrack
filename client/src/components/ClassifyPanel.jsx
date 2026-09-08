@@ -104,7 +104,7 @@ function PublishedReturnsBlock({ published, periodRow }) {
   );
 }
 
-function SecurityInfo({ instrument, modelKey, factsheetMapped, pendingPublished, pendingPeriodRow }) {
+function SecurityInfo({ instrument, modelKey, factsheetMapped, pendingPublished, pendingPeriodRow, historyRev = 0 }) {
   const inModel = !!modelKey;
   const [range, setRange] = useState('1y');
   const [mode, setMode] = useState('since-added');
@@ -122,7 +122,7 @@ function SecurityInfo({ instrument, modelKey, factsheetMapped, pendingPublished,
       ? api.holdingHistory(modelKey, instrument.id, { mode, refresh })
       : api.instrumentDetail(instrument.id, { range, refresh });
     req.then(setDetail).catch((e) => setErr(e.message)).finally(() => setLoading(false));
-  }, [instrument.id, range, mode, modelKey, inModel, reloadKey]);
+  }, [instrument.id, range, mode, modelKey, inModel, reloadKey, historyRev]);
 
   const retry = () => { forceRefresh.current = true; setReloadKey((k) => k + 1); };
 
@@ -221,11 +221,15 @@ function SecurityInfo({ instrument, modelKey, factsheetMapped, pendingPublished,
                 : 'This instrument’s own price history — not the model’s. '}
             MTD / QTD / YTD / 1Y are total returns; 3Y+ are annualized from the actual date span. Each window uses the closest close on or before the start and the latest visible close.
             {detail.source === 'nav_series'
-              ? (thinNav
-                ? (fundLike
-                  ? ' From entered NAV points — add more dates in Prices, or fetch the issuer factsheet for published returns.'
-                  : ' From entered NAV points — add more dates in Prices for period returns.')
-                : ' From entered NAV points.')
+              ? (detail.priceLabel === 'Yahoo Finance' || detail.navSource === 'Yahoo Finance'
+                ? (thinNav
+                  ? ' From a Yahoo Finance series (nav_series) — apply more dates or paste from ca.finance.yahoo.com.'
+                  : ' From an applied Yahoo Finance series (nav_series) — not Published Fund Facts.')
+                : (thinNav
+                  ? (fundLike
+                    ? ' From entered NAV points — add more dates in Prices, or fetch the issuer factsheet for published returns.'
+                    : ' From entered NAV points — add more dates in Prices for period returns.')
+                  : ' From entered NAV points.'))
               : (detail.stale
                 ? ' Cached market data — live providers did not answer this time.'
                 : ' Live pricing via the provider chain (TSX history can be thin).')}
@@ -269,6 +273,141 @@ function BreakdownEditor({ title, options, placeholder, rows, setRows }) {
   );
 }
 
+function YahooHistoryBox({ instrument, onApplied }) {
+  const [info, setInfo] = useState(null);
+  const [fetching, setFetching] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [proposed, setProposed] = useState(null);
+  const [msg, setMsg] = useState(null);
+  const [err, setErr] = useState(null);
+  const [needsConfirm, setNeedsConfirm] = useState(false);
+  const [paste, setPaste] = useState('');
+  const [showPaste, setShowPaste] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.yahooSource(instrument.id)
+      .then((s) => { if (!cancelled) setInfo(s); })
+      .catch(() => { if (!cancelled) setInfo({ eligible: false }); });
+    return () => { cancelled = true; };
+  }, [instrument.id]);
+
+  if (!info?.eligible) return null;
+
+  async function fetchYahoo() {
+    setFetching(true); setErr(null); setMsg(null); setNeedsConfirm(false);
+    try {
+      const out = await api.fetchYahooHistory(instrument.id);
+      setProposed(out);
+      setNeedsConfirm(!!out.needsConfirm);
+      const bits = [
+        `Yahoo Finance · ${out.count} daily closes · ${out.from} → ${out.to}.`,
+        'Review, then Apply series. Merge is by date (same date → Yahoo close).',
+      ];
+      if (out.stale) bits.push(out.error || 'Showing a cached series — live Yahoo did not answer.');
+      if (out.needsConfirm) bits.push('This will overwrite dates on a long manual series — confirm to apply.');
+      setMsg(bits.join(' '));
+    } catch (e) {
+      setProposed(null);
+      setErr(e.message || 'Yahoo fetch failed. Enter Date / Close in Prices.');
+    } finally {
+      setFetching(false);
+    }
+  }
+
+  async function apply(confirm = false) {
+    setApplying(true); setErr(null);
+    try {
+      const body = proposed?.series?.length
+        ? { series: proposed.series, confirm }
+        : { pasted: paste, confirm };
+      const out = await api.applyYahooHistory(instrument.id, body);
+      setNeedsConfirm(false);
+      setMsg(`Applied ${out.count} Yahoo Finance closes (${out.from} → ${out.to}). Period returns now come from this series — not Fund Facts.`);
+      setProposed(out);
+      onApplied?.(out);
+    } catch (e) {
+      if (e.message && /overwrite|Confirm to merge/i.test(e.message)) {
+        setNeedsConfirm(true);
+        setErr(e.message);
+      } else {
+        setErr(e.message || 'Couldn’t apply the series. Prices (manual) still works.');
+      }
+    } finally {
+      setApplying(false);
+    }
+  }
+
+  async function applyPaste() {
+    if (!paste.trim()) return;
+    setApplying(true); setErr(null);
+    try {
+      const out = await api.applyYahooHistory(instrument.id, { pasted: paste, confirm: needsConfirm });
+      setNeedsConfirm(false);
+      setMsg(`Applied ${out.count} pasted closes (${out.from} → ${out.to}) as Yahoo Finance.`);
+      onApplied?.(out);
+    } catch (e) {
+      if (e.message && /overwrite|Confirm to merge/i.test(e.message)) {
+        setNeedsConfirm(true);
+        setErr(e.message);
+      } else {
+        setErr(e.message || 'Couldn’t parse that paste. Use Date, Close from Yahoo History.');
+      }
+    } finally {
+      setApplying(false);
+    }
+  }
+
+  return (
+    <div className="fetch-box">
+      <button type="button" className="fetch-factsheet" disabled={fetching} onClick={fetchYahoo}>
+        {fetching ? 'Fetching Yahoo…' : 'Fetch from Yahoo'}
+      </button>
+      <p className="note" style={{ paddingTop: 8 }}>
+        Source: Yahoo Finance{info.yahooSymbol ? ` · ${info.yahooSymbol}` : ''}.
+        Proposes an EOD series for nav_series (quotes + Performance). Apply is required — nothing is overwritten silently.
+        {info.pageUrl ? <> {' '}<a className="ext" href={info.pageUrl} target="_blank" rel="noreferrer">Yahoo quote</a></> : null}
+      </p>
+      {proposed && (
+        <div className="yahoo-preview">
+          <div className="rc-row">
+            <span>Proposed series</span>
+            <span className="num">{proposed.count} · {proposed.from} → {proposed.to}</span>
+          </div>
+          {proposed.lastClose != null && (
+            <div className="rc-row">
+              <span>Last close</span>
+              <span className="num">{proposed.lastClose}</span>
+            </div>
+          )}
+        </div>
+      )}
+      {proposed?.series?.length > 0 && (
+        <button type="button" className="fetch-factsheet" disabled={applying} onClick={() => apply(needsConfirm)} style={{ marginTop: 8 }}>
+          {applying ? 'Applying…' : (needsConfirm ? 'Confirm merge & apply series' : 'Apply series')}
+        </button>
+      )}
+      <button type="button" className="classify-select-back" style={{ marginTop: 8 }} onClick={() => setShowPaste((v) => !v)}>
+        {showPaste ? 'Hide paste' : 'Paste Yahoo Date, Close'}
+      </button>
+      {showPaste && (
+        <>
+          <label className="field" style={{ marginTop: 8 }}>
+            <span>Yahoo History rows (Date, Close or full CSV)</span>
+            <textarea className="yahoo-paste" rows={5} value={paste} onChange={(e) => setPaste(e.target.value)}
+              placeholder={'Date,Close\n2024-01-02,128.00'} />
+          </label>
+          <button type="button" className="fetch-factsheet" disabled={applying || !paste.trim()} onClick={applyPaste}>
+            {applying ? 'Applying…' : 'Apply pasted series'}
+          </button>
+        </>
+      )}
+      {msg && <div className="data-warn" style={{ marginTop: 8 }}>{msg}</div>}
+      {err && <div className="banner" style={{ margin: '8px 0 0' }}>{err}</div>}
+    </div>
+  );
+}
+
 export default function ClassifyPanel({ instrument, modelKey, onClose, onSaved }) {
   const [sector, setSector] = useState(instrument.sector || '');
   const [country, setCountry] = useState(instrument.country || '');
@@ -284,6 +423,8 @@ export default function ClassifyPanel({ instrument, modelKey, onClose, onSaved }
   const [fetchMsg, setFetchMsg] = useState(null);
   const [pendingPublished, setPendingPublished] = useState(null);
   const [pendingPeriodRow, setPendingPeriodRow] = useState(null);
+  const [historyRev, setHistoryRev] = useState(0);
+  const [liveInstrument, setLiveInstrument] = useState(instrument);
 
   useEffect(() => {
     let cancelled = false;
@@ -376,11 +517,20 @@ export default function ClassifyPanel({ instrument, modelKey, onClose, onSaved }
 
       <div className="editor-body">
         <SecurityInfo
-          instrument={instrument}
+          instrument={liveInstrument}
           modelKey={modelKey}
           factsheetMapped={mapped}
           pendingPublished={pendingPublished}
           pendingPeriodRow={pendingPeriodRow}
+          historyRev={historyRev}
+        />
+
+        <YahooHistoryBox
+          instrument={instrument}
+          onApplied={(out) => {
+            if (out?.instrument) setLiveInstrument(out.instrument);
+            setHistoryRev((n) => n + 1);
+          }}
         />
 
         <div className="ed-section">MER</div>
@@ -402,7 +552,10 @@ export default function ClassifyPanel({ instrument, modelKey, onClose, onSaved }
             </button>
             {!mapped && sourceInfo && (
               <p className="note" style={{ paddingTop: 8 }}>
-                No issuer factsheet mapped for {instrument.symbol}. Enter the breakdown manually below.
+                No issuer factsheet mapped for {instrument.symbol}.
+                {instrument.symbol?.toUpperCase().endsWith('.TO')
+                  ? ' A TSX ETF without a mapped sheet can still Fetch from Yahoo above for prices.'
+                  : ' Enter the breakdown manually below.'}
               </p>
             )}
             {mapped && sourceInfo?.source && (
@@ -428,21 +581,30 @@ export default function ClassifyPanel({ instrument, modelKey, onClose, onSaved }
           </label>
         </div>
 
-        <div className="ed-section">Fund look-through</div>
-        <label className="field">
-          <span>Factsheet as-of <span className="muted">(required when a breakdown is set)</span></span>
-          <input type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)} required={hasBreakdown} />
-        </label>
-        {hasBreakdown && !asOfOk && (
-          <div className="data-warn">Factsheet as-of is required — without it Geo/Sector looks more precise than the data behind it.</div>
+        {instrument.type === 'stock' ? (
+          <>
+            <div className="ed-section">Fund look-through</div>
+            <p className="note">Look-through is for funds. A single stock is its own sector/region — Geo/Sector uses the fallback classification above. N/A for look-through weights.</p>
+          </>
+        ) : (
+          <>
+            <div className="ed-section">Fund look-through</div>
+            <label className="field">
+              <span>Factsheet as-of <span className="muted">(required when a breakdown is set)</span></span>
+              <input type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)} required={hasBreakdown} />
+            </label>
+            {hasBreakdown && !asOfOk && (
+              <div className="data-warn">Factsheet as-of is required — without it Geo/Sector looks more precise than the data behind it.</div>
+            )}
+            <label className="field">
+              <span>Note <span className="muted">(optional)</span></span>
+              <input type="text" maxLength={200} value={note} onChange={(e) => setNote(e.target.value)}
+                placeholder="e.g. VFV factsheet Aug 2026" />
+            </label>
+            <BreakdownEditor title="Sector breakdown" options={SECTOR_OPTIONS} placeholder="e.g. Financials" rows={sectorRows} setRows={setSectorRows} />
+            <BreakdownEditor title="Country breakdown" options={REGION_OPTIONS} placeholder="e.g. Canada" rows={countryRows} setRows={setCountryRows} />
+          </>
         )}
-        <label className="field">
-          <span>Note <span className="muted">(optional)</span></span>
-          <input type="text" maxLength={200} value={note} onChange={(e) => setNote(e.target.value)}
-            placeholder="e.g. VFV factsheet Aug 2026" />
-        </label>
-        <BreakdownEditor title="Sector breakdown" options={SECTOR_OPTIONS} placeholder="e.g. Financials" rows={sectorRows} setRows={setSectorRows} />
-        <BreakdownEditor title="Country breakdown" options={REGION_OPTIONS} placeholder="e.g. Canada" rows={countryRows} setRows={setCountryRows} />
 
         {err && <div className="banner" style={{ margin: '16px 0 0' }}>{err}</div>}
       </div>

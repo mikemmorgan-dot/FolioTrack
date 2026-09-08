@@ -4,6 +4,17 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getStore } from './store.js';
 import { getQuote, getHistory, lookup, probeAll } from './providers.js';
+import { getHistory as yahooHistory } from './yahoo.js';
+import {
+  isYahooHistoryEligible,
+  yahooSymbolFor,
+  yahooPageUrl,
+  fetchYahooHistoryForSymbol,
+  planApplySeries,
+  parseYahooPaste,
+  YahooSeriesError,
+  YAHOO_PRICE_SOURCE,
+} from './yahooSeries.js';
 import { createHistoryCache } from './historyCache.js';
 import { createQuoteCache, enrichHoldings, quotePatch } from './enrich.js';
 import { currentVersionOf } from './util.js';
@@ -296,7 +307,7 @@ app.post('/api/nav/batch', async (req, res) => {
   try {
     const { asOf, points } = req.body || {};
     if (!Array.isArray(points)) return res.status(400).json({ error: 'points must be an array' });
-    const result = await store.addNavBatch({ asOf, points });
+    const result = await store.addNavBatch({ asOf, points, navSource: 'manual' });
     res.json(result);
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
@@ -369,6 +380,8 @@ app.get('/api/instruments/:id/detail', async (req, res) => {
     res.json({
       instrument: inst, quote, series, stats, returns, error, stale, fetchedAt, fromCache,
       source: priceSource,
+      navSource: inst.navSource || null,
+      priceLabel: priceSource === 'nav_series' ? (inst.navSource || 'manual') : null,
       needMoreNav: priceSource === 'nav_series' && series.length < 2,
       publishedReturns: inst.publishedReturns || null,
       publishedPeriodReturns: publishedToPeriodRow(inst.publishedReturns),
@@ -419,6 +432,131 @@ app.post('/api/instruments/:id/fetch-breakdown', async (req, res) => {
   } catch (e) {
     if (e instanceof BreakdownFetchError) return res.status(e.status).json({ error: e.message, code: e.code });
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Eligible for Yahoo EOD fetch? Cheap — no network.
+app.get('/api/instruments/:id/yahoo-source', async (req, res) => {
+  const inst = await store.getInstrument(req.params.id);
+  if (!inst) return res.status(404).json({ error: 'Instrument not found' });
+  const eligible = isYahooHistoryEligible(inst);
+  const yahooSymbol = yahooSymbolFor(inst.symbol);
+  res.json({
+    symbol: inst.symbol,
+    type: inst.type,
+    eligible,
+    yahooSymbol,
+    pageUrl: yahooPageUrl(yahooSymbol),
+    historyUrl: yahooSymbol ? `https://ca.finance.yahoo.com/quote/${encodeURIComponent(yahooSymbol)}/history` : null,
+    navSource: inst.navSource || null,
+    priceSource: YAHOO_PRICE_SOURCE,
+  });
+});
+
+// Propose an EOD series from Yahoo (or the PR #6 cache on 429). Does not write.
+app.post('/api/instruments/:id/fetch-yahoo-history', async (req, res) => {
+  try {
+    const inst = await store.getInstrument(req.params.id);
+    if (!inst) return res.status(404).json({ error: 'Instrument not found' });
+    if (!isYahooHistoryEligible(inst)) {
+      return res.status(422).json({
+        error: `${inst.symbol} is not fetched from Yahoo — use Prices or a mapped issuer factsheet.`,
+        code: 'ineligible',
+        manualFallback: true,
+      });
+    }
+    const existing = await store.getNavSeries(inst.id);
+    const proposed = await fetchYahooHistoryForSymbol(inst.symbol, {
+      getHistoryImpl: yahooHistory,
+      getCached: (symbol) => store.getPriceHistory(symbol),
+      putCached: (symbol, rec) => store.putPriceHistory(symbol, rec),
+    });
+    const plan = planApplySeries(existing, proposed.series, { existingSource: inst.navSource });
+    res.json({
+      ...proposed,
+      existingCount: existing.length,
+      needsConfirm: plan.needsConfirm,
+      apply: plan.summary,
+    });
+  } catch (e) {
+    if (e instanceof YahooSeriesError) {
+      return res.status(e.status).json({
+        error: e.message,
+        code: e.code,
+        manualFallback: e.manualFallback,
+      });
+    }
+    res.status(502).json({
+      error: e.message || 'Yahoo history failed. Enter prices manually in Prices.',
+      code: 'blocked',
+      manualFallback: true,
+    });
+  }
+});
+
+// Write a proposed (or pasted) series into nav_series. Merge by date.
+app.post('/api/instruments/:id/apply-yahoo-history', async (req, res) => {
+  try {
+    const inst = await store.getInstrument(req.params.id);
+    if (!inst) return res.status(404).json({ error: 'Instrument not found' });
+    if (!isYahooHistoryEligible(inst)) {
+      return res.status(422).json({
+        error: `${inst.symbol} is not fetched from Yahoo — use Prices or a mapped issuer factsheet.`,
+        code: 'ineligible',
+        manualFallback: true,
+      });
+    }
+    let series = [];
+    if (Array.isArray(req.body?.series) && req.body.series.length) {
+      series = req.body.series;
+    } else if (req.body?.pasted) {
+      series = parseYahooPaste(req.body.pasted);
+    }
+    if (!series.length) {
+      return res.status(400).json({ error: 'Provide series rows or a Yahoo Date/Close paste.' });
+    }
+    const existing = await store.getNavSeries(inst.id);
+    const plan = planApplySeries(existing, series, {
+      confirm: !!req.body?.confirm,
+      existingSource: inst.navSource,
+    });
+    if (plan.needsConfirm) {
+      return res.status(409).json({
+        needsConfirm: true,
+        error: plan.error,
+        ...plan.summary,
+        source: YAHOO_PRICE_SOURCE,
+      });
+    }
+
+    const result = await store.addNavBatch({
+      navSource: YAHOO_PRICE_SOURCE,
+      points: plan.series.map((p) => ({ instrumentId: inst.id, date: p.date, nav: p.close })),
+    });
+    const yahooSymbol = yahooSymbolFor(inst.symbol);
+    await store.putPriceHistory(yahooSymbol, {
+      series: plan.merged || plan.series,
+      provider: 'yahoo',
+      range: 'max',
+      fetchedAt: new Date().toISOString(),
+    });
+    const updated = await store.getInstrument(inst.id);
+    const navMarket = await loadNavMarket(store, updated);
+    const chart = navMarket.series.map((p) => ({ date: p.date, value: p.price }));
+    res.json({
+      applied: true,
+      source: YAHOO_PRICE_SOURCE,
+      instrument: updated,
+      latest: result.latest,
+      count: chart.length,
+      from: chart[0]?.date || null,
+      to: chart.at(-1)?.date || null,
+      quote: navMarket.quote,
+      returns: periodReturnsFromSeries(chart),
+      merge: 'by date — incoming close wins on a shared date; other existing dates are kept',
+    });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
   }
 });
 
@@ -496,6 +634,8 @@ app.get('/api/models/:key/instruments/:id/history', async (req, res) => {
       addedAt: added?.addedAt || null,
       firstVersionId: added?.versionId || null,
       source: priceSource,
+      navSource: inst.navSource || null,
+      priceLabel: priceSource === 'nav_series' ? (inst.navSource || 'manual') : null,
       needMoreNav: priceSource === 'nav_series' && series.length < 2,
       publishedReturns: inst.publishedReturns || null,
       publishedPeriodReturns: publishedToPeriodRow(inst.publishedReturns),
