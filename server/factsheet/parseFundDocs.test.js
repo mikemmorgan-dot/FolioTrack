@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { parseFundFactsText, parseFundPulseText } from './parseFundDocs.js';
+import { parseFundFactsText, parseFundPulseText, parseRbcMonthlyText } from './parseFundDocs.js';
 import { extractAsOf } from './parse.js';
 import { mergePublishedReturns, publishedToPeriodRow, hasPublishedReturns } from './publishedReturns.js';
 
@@ -75,6 +75,60 @@ describe('Fidelity Global Innovators Series F — FundPulse', () => {
     expect(parsed.countryBreakdown.find((r) => r.label === 'United States').weight).toBeCloseTo(83.0, 5);
     expect(parsed.navPoint).toEqual({ date: '2026-08-31', nav: 69.75, source: 'FundPulse' });
     expect(parsed.mer).toBeCloseTo(1.10, 5);
+  });
+});
+
+describe('RBC North American Value Series F — Fund Facts', () => {
+  const text = fixture('rbc-rbf608-fund-facts.txt');
+  const parsed = parseFundFactsText(text);
+
+  it('reads Series F MER 0.79% and May 31 mix date', () => {
+    expect(parsed.mer).toBeCloseTo(0.79, 5);
+    expect(parsed.asOf).toBe('2026-05-31');
+  });
+
+  it('reads leading-percent investment mix', () => {
+    expect(parsed.sectorBreakdown.find((r) => r.label === 'Financials').weight).toBeCloseTo(26.1, 5);
+    expect(parsed.sectorBreakdown.find((r) => r.label === 'Information Technology').weight).toBeCloseTo(11.2, 5);
+    expect(parsed.sectorBreakdown.find((r) => r.label === 'Energy').weight).toBeCloseTo(10.6, 5);
+    expect(parsed.sectorBreakdown.every((r) => !/cash|underlying/i.test(r.label))).toBe(true);
+  });
+
+  it('reads year-by-year chart and 10Y compound — not as inception', () => {
+    const byYear = Object.fromEntries((parsed.published.calendarYears || []).map((r) => [r.year, r.value]));
+    expect(byYear[2016]).toBeCloseTo(0.139, 5);
+    expect(byYear[2018]).toBeCloseTo(-0.079, 5);
+    expect(byYear[2025]).toBeCloseTo(0.198, 5);
+    expect(parsed.published.y10ann).toBeCloseTo(0.13, 5);
+    expect(parsed.published.inceptionAnn).toBeUndefined();
+    expect(parsed.published.series).toBe('F');
+  });
+});
+
+describe('RBC North American Value Series F — monthly update', () => {
+  const text = fixture('rbc-rbf608-monthly.txt');
+  const parsed = parseRbcMonthlyText(text);
+
+  it('reads trailing and calendar returns as of July 31', () => {
+    expect(parsed.performanceAsOf).toBe('2026-07-31');
+    expect(parsed.published.asOf).toBe('2026-07-31');
+    expect(parsed.published.y1).toBeCloseTo(0.238, 5);
+    expect(parsed.published.y3ann).toBeCloseTo(0.196, 5);
+    expect(parsed.published.y5ann).toBeCloseTo(0.147, 5);
+    expect(parsed.published.y10ann).toBeCloseTo(0.129, 5);
+    expect(parsed.published.inceptionAnn).toBeCloseTo(0.107, 5);
+    expect(parsed.published.ytd).toBeCloseTo(0.12, 5);
+    expect(parsed.published.calendarYears.find((r) => r.year === 2018 && !r.ytd).value).toBeCloseTo(-0.079, 5);
+    expect(parsed.published.series).toBe('F');
+  });
+
+  it('reads sector / geo look-through and Series F NAV without inventing a series', () => {
+    expect(parsed.sectorBreakdown.find((r) => r.label === 'Financials').weight).toBeCloseTo(31.3, 5);
+    expect(parsed.countryBreakdown.find((r) => r.label === 'Canada').weight).toBeCloseTo(53.8, 5);
+    expect(parsed.countryBreakdown.find((r) => r.label === 'United States').weight).toBeCloseTo(34.8, 5);
+    expect(parsed.navPoint).toEqual({ date: '2026-07-31', nav: 53.66, source: 'Monthly update' });
+    expect(parsed.mer).toBeCloseTo(0.79, 5);
+    expect(parsed.published.navSeries).toBeUndefined();
   });
 });
 

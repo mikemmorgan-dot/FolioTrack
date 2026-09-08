@@ -36,16 +36,25 @@
 //   3. Set parser: 'pdf'. Put the Fund Facts PDF on `url` (look-through + MER
 //      + regulatory calendar years). Optionally add:
 //        fundPulseUrl — manufacturer period returns (preferred for 1y/3y/5y)
+//        monthlyUrl   — issuer monthly update PDF (RBC: trailing + calendar
+//                       returns + sector/geo). Preferred over Fund Facts
+//                       for published periods when present.
 //        productUrl   — issuer product page (reference only; series tabs on
 //                       fidelity.ca default to A/B, so we do not scrape it
 //                       for FID5982 performance)
 //        series, fundserv, documentLabel ('Fund Facts')
-//   4. To add RBC / Mackenzie / etc later: find that series' Fund Facts PDF
-//      (and FundPulse if the issuer publishes one), copy the FID5982 block,
-//      and add a parser in parseFundDocs.js only if their text layout differs
-//      from CSA Fund Facts. Public issuer PDFs only — no Morningstar/Fundata.
+//   4. To add another RBC fund (RBF####): copy the RBF608 block, point
+//      url at https://funds.rbcgam.com/pdf/fund-facts/funds/rbf####_e.pdf
+//      and monthlyUrl at https://www.rbcgam.com/documents/fund-pages/monthly/rbf####_e.pdf
+//      (Series F code is load-bearing — do not reuse an A-series sheet).
+//      parseFundDocs.js already reads CSA Fund Facts + RBC monthly layout.
+//      Commit a text fixture — no live network in CI.
+//      Mackenzie / others: copy FID5982 or RBF608 and add a parser only if
+//      the text layout differs. Public issuer PDFs only — no Morningstar.
 //
 // 5. Skip stocks, alts, and cash. Do not add login-walled URLs.
+//    Stocks (and unmapped TSX ETFs) fetch EOD history from Yahoo — see
+//    server/yahooSeries.js — not this table.
 //
 // Fragility / ToS
 // ---------------
@@ -204,6 +213,17 @@ export const FACTSHEET_SOURCES = {
     url: 'https://www.fidelity.ca/content/dam/fidelity/en/documents/fund-facts/uet/FF_UET_F_en.pdf',
     fundPulseUrl: 'https://www.fidelity.ca/content/dam/fidelity/en/documents/fund-pulse/uet/fp_fgic.pdf',
     productUrl: 'https://www.fidelity.ca/en/products/funds/uet/',
+  },
+  RBF608: {
+    issuer: 'RBC GAM',
+    parser: 'pdf',
+    kind: 'mutualfund',
+    series: 'F',
+    fundserv: '608',
+    documentLabel: 'Fund Facts',
+    url: 'https://funds.rbcgam.com/pdf/fund-facts/funds/rbf608_e.pdf',
+    monthlyUrl: 'https://www.rbcgam.com/documents/fund-pages/monthly/rbf608_e.pdf',
+    productUrl: 'https://www.rbcgam.com/en/ca/products/mutual-funds/RBF608/detail',
   },
 };
 

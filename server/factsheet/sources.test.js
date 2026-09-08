@@ -45,6 +45,21 @@ describe('lookupSource', () => {
     expect(lookupSource('RBF1005')).toBeNull();
   });
 
+  it('maps Fundserv RBF608 / 608 / RBF-608 to RBC Series F Fund Facts', () => {
+    const a = lookupSource('RBF608');
+    const b = lookupSource('rbf608');
+    const c = lookupSource('608');
+    const d = lookupSource('RBF-608');
+    expect(a.issuer).toBe('RBC GAM');
+    expect(a.series).toBe('F');
+    expect(a.fundserv).toBe('608');
+    expect(a.url).toMatch(/rbf608_e\.pdf$/);
+    expect(a.monthlyUrl).toMatch(/monthly\/rbf608_e\.pdf$/);
+    expect(a.url).toBe(b.url);
+    expect(c.symbol).toBe('RBF608');
+    expect(d.symbol).toBe('RBF608');
+  });
+
   it('maps IDIV.B / IDIV.B.TO / IDIVB / IDIVB.TO to the Manulife ETF PDF', () => {
     const a = lookupSource('IDIV.B');
     const b = lookupSource('IDIV.B.TO');
@@ -70,6 +85,7 @@ describe('lookupSource', () => {
     expect(list).toContain('SPY');
     expect(list).toContain('FID5982');
     expect(list).toContain('IDIV.B');
+    expect(list).toContain('RBF608');
     expect(list.every((s) => FACTSHEET_SOURCES[s])).toBe(true);
   });
 });
@@ -192,6 +208,37 @@ describe('fetchBreakdownForSymbol (mocked network)', () => {
     expect(out.proposed.publishedPeriodReturns.mtd).toBeNull();
     expect(out.proposed.publishedPeriodReturns.y1).toBeCloseTo(0.3386, 5);
     expect(out.proposed.navPoint).toMatchObject({ date: '2026-09-04', nav: 21.07 });
+    expect(out.proposed.publishedReturns.navSeries).toBeUndefined();
+  });
+
+  it('fetches RBF608 Fund Facts + monthly update from fixtures (no live network)', async () => {
+    const facts = fixture('rbc-rbf608-fund-facts.txt');
+    const monthly = fixture('rbc-rbf608-monthly.txt');
+    const fetchImpl = async (url) => {
+      const body = /monthly/i.test(url) ? monthly : facts;
+      return {
+        ok: true,
+        status: 200,
+        url,
+        headers: { get: () => 'application/pdf' },
+        arrayBuffer: async () => body,
+      };
+    };
+    const out = await fetchBreakdownForSymbol('RBF608', { fetchImpl, now: new Date('2026-09-08T12:00:00Z') });
+    expect(out.mapped).toBe(true);
+    expect(out.source.issuer).toBe('RBC GAM');
+    expect(out.proposed.breakdownAsOf).toBe('2026-07-31');
+    expect(out.proposed.breakdownNote).toMatch(/Monthly update · RBC GAM · scraped 2026-09-08/);
+    expect(out.proposed.sectorBreakdown.find((r) => r.label === 'Financials').weight).toBeCloseTo(31.3, 5);
+    expect(out.proposed.countryBreakdown.find((r) => r.label === 'Canada').weight).toBeCloseTo(53.8, 5);
+    expect(out.proposed.mer).toBeCloseTo(0.79, 5);
+    expect(out.proposed.publishedReturns.y1).toBeCloseTo(0.238, 5);
+    expect(out.proposed.publishedReturns.y3ann).toBeCloseTo(0.196, 5);
+    expect(out.proposed.publishedReturns.source).toMatch(/Monthly update/);
+    expect(out.proposed.publishedReturns.series).toBe('F');
+    expect(out.proposed.publishedPeriodReturns.mtd).toBeNull();
+    expect(out.proposed.publishedPeriodReturns.y1).toBeCloseTo(0.238, 5);
+    expect(out.proposed.navPoint).toMatchObject({ date: '2026-07-31', nav: 53.66 });
     expect(out.proposed.publishedReturns.navSeries).toBeUndefined();
   });
 });
