@@ -45,11 +45,31 @@ describe('lookupSource', () => {
     expect(lookupSource('RBF1005')).toBeNull();
   });
 
+  it('maps IDIV.B / IDIV.B.TO / IDIVB / IDIVB.TO to the Manulife ETF PDF', () => {
+    const a = lookupSource('IDIV.B');
+    const b = lookupSource('IDIV.B.TO');
+    const c = lookupSource('IDIVB');
+    const d = lookupSource('idivb.to');
+    const e = lookupSource('IDIV-B');
+    expect(a.issuer).toBe('Manulife');
+    expect(a.kind).toBe('manulife-etf');
+    expect(a.url).toBe('https://funds.manulife.ca/en-us/etfs/IDIV.B/pdf');
+    expect(a.parser).toBe('pdf');
+    expect(a.url).toBe(b.url);
+    expect(b.url).toBe(c.url);
+    expect(c.url).toBe(d.url);
+    expect(d.url).toBe(e.url);
+    expect(a.symbol).toBe('IDIV.B');
+    expect(b.symbol).toBe('IDIV.B');
+    expect(c.symbol).toBe('IDIV.B');
+  });
+
   it('lists only mapped symbols', () => {
     const list = listMappedSymbols();
     expect(list).toContain('VFV.TO');
     expect(list).toContain('SPY');
     expect(list).toContain('FID5982');
+    expect(list).toContain('IDIV.B');
     expect(list.every((s) => FACTSHEET_SOURCES[s])).toBe(true);
   });
 });
@@ -142,6 +162,36 @@ describe('fetchBreakdownForSymbol (mocked network)', () => {
     expect(out.proposed.publishedPeriodReturns.mtd).toBeNull();
     expect(out.proposed.publishedPeriodReturns.y1).toBeCloseTo(0.5464, 5);
     expect(out.proposed.navPoint).toMatchObject({ date: '2026-08-31', nav: 69.75 });
+    expect(out.proposed.publishedReturns.navSeries).toBeUndefined();
+  });
+
+  it('fetches IDIV.B Manulife factsheet from fixture (no live network)', async () => {
+    const body = fixture('manulife-idiv-b.txt');
+    const fetchImpl = async (url) => {
+      expect(url).toMatch(/funds\.manulife\.ca\/en-us\/etfs\/IDIV\.B\/pdf$/);
+      return {
+        ok: true,
+        status: 200,
+        url,
+        headers: { get: () => 'application/pdf' },
+        arrayBuffer: async () => body,
+      };
+    };
+    const out = await fetchBreakdownForSymbol('IDIV.B', { fetchImpl, now: new Date('2026-09-08T12:00:00Z') });
+    expect(out.mapped).toBe(true);
+    expect(out.source.issuer).toBe('Manulife');
+    expect(out.proposed.breakdownAsOf).toBe('2026-07-31');
+    expect(out.proposed.breakdownNote).toBe('Issuer factsheet · Manulife · scraped 2026-09-08');
+    expect(out.proposed.sectorBreakdown.find((r) => r.label === 'Financials').weight).toBeCloseTo(32.1, 5);
+    expect(out.proposed.countryBreakdown.find((r) => r.label === 'Japan').weight).toBeCloseTo(18.9, 5);
+    expect(out.proposed.mer).toBeCloseTo(0.40, 5);
+    expect(out.proposed.publishedReturns.ytd).toBeCloseTo(0.1847, 5);
+    expect(out.proposed.publishedReturns.y1).toBeCloseTo(0.3386, 5);
+    expect(out.proposed.publishedReturns.y3ann).toBeCloseTo(0.2386, 5);
+    expect(out.proposed.publishedReturns.source).toMatch(/Manulife/);
+    expect(out.proposed.publishedPeriodReturns.mtd).toBeNull();
+    expect(out.proposed.publishedPeriodReturns.y1).toBeCloseTo(0.3386, 5);
+    expect(out.proposed.navPoint).toMatchObject({ date: '2026-09-04', nav: 21.07 });
     expect(out.proposed.publishedReturns.navSeries).toBeUndefined();
   });
 });

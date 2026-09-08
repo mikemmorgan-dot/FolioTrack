@@ -58,6 +58,8 @@ function publishedLabel(pub) {
   const src = String(pub.source || '');
   if (/fundpulse/i.test(src)) return 'FundPulse';
   if (/fund facts/i.test(src)) return 'Fund Facts';
+  if (/manulife/i.test(src)) return 'Manulife';
+  if (/factsheet/i.test(src)) return 'factsheet';
   return src.split('·')[0].trim() || 'Fund Facts';
 }
 
@@ -179,7 +181,7 @@ function SecurityInfo({ instrument, modelKey, factsheetMapped, pendingPublished,
           ) : detail.needMoreNav || (detail.source === 'nav_series' && detail.quote) ? (
             <div className="chart-empty" style={{ marginTop: 10 }}>
               {fundLike && (factsheetMapped || published)
-                ? 'Need more NAV dates in Prices for period returns — one point is a price, not a series. Add more dates, or fetch Fund Facts for manufacturer published returns.'
+                ? 'Need more NAV dates in Prices for period returns — one point is a price, not a series. Add more dates, or fetch the issuer factsheet for manufacturer published returns.'
                 : 'Need more NAV dates in Prices for period returns — one point is a price, not a series.'}
             </div>
           ) : detail.error ? (
@@ -221,7 +223,7 @@ function SecurityInfo({ instrument, modelKey, factsheetMapped, pendingPublished,
             {detail.source === 'nav_series'
               ? (thinNav
                 ? (fundLike
-                  ? ' From entered NAV points — add more dates in Prices, or fetch Fund Facts for published returns.'
+                  ? ' From entered NAV points — add more dates in Prices, or fetch the issuer factsheet for published returns.'
                   : ' From entered NAV points — add more dates in Prices for period returns.')
                 : ' From entered NAV points.')
               : (detail.stale

@@ -38,7 +38,7 @@ ALTER TABLE instruments ADD COLUMN IF NOT EXISTS breakdown_updated_at timestampt
 -- Factsheet as-of (the date on the sheet) vs last-saved timestamp above.
 ALTER TABLE instruments ADD COLUMN IF NOT EXISTS breakdown_as_of date;
 ALTER TABLE instruments ADD COLUMN IF NOT EXISTS breakdown_note text;
--- Manufacturer published returns (Fund Facts / FundPulse). Not NAV-derived.
+-- Manufacturer published returns (Fund Facts / FundPulse / issuer factsheet). Not NAV-derived.
 ALTER TABLE instruments ADD COLUMN IF NOT EXISTS published_returns jsonb;
 
 CREATE TABLE IF NOT EXISTS models (
