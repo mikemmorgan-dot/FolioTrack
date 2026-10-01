@@ -662,18 +662,21 @@ app.get('/api/history/:symbol', async (req, res) => {
   catch (e) { res.status(502).json({ error: e.message }); }
 });
 
-// Price-drop alerts. The check reads the history cache (18h TTL, no force
-// refresh) and nav_series. It does not call the live quote endpoint. Provider
-// cooldown lives inside that cache; a total miss backs off for 6 hours.
+// Price-drop alerts. The check refreshes auto-priced stock/ETF history when
+// the last close is more than ~1 trading day old (oldest first, capped),
+// through the history cache (provider cooldown + fail window, no force).
+// Manual NAV / Cash / private holdings are never refreshed. A live quote may
+// be appended as today's point when candles lag.
 const alertEmail = createEmailSender();
 const alerts = createAlertService({
   store,
-  getHistory: (symbol, range) => cachedHistory(symbol, range || 'max', { force: false }),
+  getHistory: (symbol, range, opts) => cachedHistory(symbol, range || 'max', { ...(opts || {}), force: false }),
   email: alertEmail,
 });
 app.use('/api/alerts', createAlertRouter({
   store,
-  runCheck: () => alerts.runCheck(),
+  runCheck: () => alerts.runCheck({ refresh: true }),
+  refreshPrices: () => alerts.refreshPricesNow(),
   sendTestEmail: () => alerts.sendTestEmail(),
 }));
 

@@ -46,6 +46,9 @@ export default function SettingsPanel({ onClose, onSaved, onAlertCount }) {
   const [saveMsg, setSaveMsg] = useState(null);
   const [checking, setChecking] = useState(false);
   const [checkMsg, setCheckMsg] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshMsg, setRefreshMsg] = useState(null);
+  const [refreshResults, setRefreshResults] = useState(null);
   const [testing, setTesting] = useState(false);
   const [testMsg, setTestMsg] = useState(null);
 
@@ -68,6 +71,23 @@ export default function SettingsPanel({ onClose, onSaved, onAlertCount }) {
 
   function reload() {
     return api.alerts().then(applyPayload);
+  }
+
+  function formatRefreshSummary(summary) {
+    const r = summary?.refresh;
+    if (!r) return null;
+    const lines = (r.results || []).map((row) => {
+      const asOf = row.priceAsOf || row.lastClose || '—';
+      if (row.status === 'updated') return `${row.symbol}: updated (as of ${asOf})`;
+      if (row.status === 'unchanged') return `${row.symbol}: already current (as of ${asOf})`;
+      if (row.status === 'cooldown') return `${row.symbol}: cooldown — ${row.error || 'backed off'}`;
+      if (row.status === 'skipped') return `${row.symbol}: skipped — ${row.error || 'cap'}`;
+      return `${row.symbol}: failed — ${row.error || 'unknown'}`;
+    });
+    return {
+      headline: `Refreshed ${r.updated ?? 0} updated, ${r.failed ?? 0} failed, ${r.skipped ?? 0} skipped (cap ${r.cap ?? '—'}).`,
+      lines,
+    };
   }
 
   useEffect(() => {
@@ -106,19 +126,48 @@ export default function SettingsPanel({ onClose, onSaved, onAlertCount }) {
   }
 
   async function checkNow() {
-    if (checking) return;
+    if (checking || refreshing) return;
     setChecking(true);
     setCheckMsg(null);
+    setRefreshMsg(null);
+    setRefreshResults(null);
     try {
       if (alertValid) await persistAlerts();
       const summary = await api.runAlerts();
       await reload();
       const pending = summary.pending ? `, ${summary.pending} email pending` : '';
       setCheckMsg(`Checked ${summary.evaluated ?? 0} holdings. ${summary.active ?? 0} breached${pending}.`);
+      const formatted = formatRefreshSummary(summary);
+      if (formatted) {
+        setRefreshMsg(formatted.headline);
+        setRefreshResults(formatted.lines);
+      }
     } catch (e) {
       setCheckMsg(e.message);
     } finally {
       setChecking(false);
+    }
+  }
+
+  async function refreshPricesNow() {
+    if (checking || refreshing) return;
+    setRefreshing(true);
+    setRefreshMsg(null);
+    setRefreshResults(null);
+    setCheckMsg(null);
+    try {
+      if (alertValid) await persistAlerts();
+      const summary = await api.refreshAlertPrices();
+      await reload();
+      const formatted = formatRefreshSummary(summary);
+      setRefreshMsg(formatted?.headline || 'Refresh finished.');
+      setRefreshResults(formatted?.lines || []);
+      const pending = summary.pending ? `, ${summary.pending} email pending` : '';
+      setCheckMsg(`Checked ${summary.evaluated ?? 0} holdings. ${summary.active ?? 0} breached${pending}.`);
+    } catch (e) {
+      setRefreshMsg(e.message);
+    } finally {
+      setRefreshing(false);
     }
   }
 
@@ -201,14 +250,23 @@ export default function SettingsPanel({ onClose, onSaved, onAlertCount }) {
         {saveMsg && <p className={saveMsg === 'Saved' ? 'save-ok' : 'field-error'}>{saveMsg}</p>}
 
         <div className="alert-actions">
-          <button type="button" className="rp-run" disabled={checking} onClick={checkNow}>
+          <button type="button" className="rp-run" disabled={checking || refreshing} onClick={checkNow}>
             {checking ? 'Checking…' : 'Check now'}
+          </button>
+          <button type="button" className="rp-run alert-secondary" disabled={checking || refreshing} onClick={refreshPricesNow}>
+            {refreshing ? 'Refreshing…' : 'Refresh prices now'}
           </button>
           <button type="button" className="rp-run alert-secondary" disabled={testing || !alertValid} onClick={sendTest}>
             {testing ? 'Sending…' : 'Send test email'}
           </button>
         </div>
         {checkMsg && <p className="ed-hint">{checkMsg}</p>}
+        {refreshMsg && <p className="ed-hint">{refreshMsg}</p>}
+        {refreshResults?.length > 0 && (
+          <ul className="ed-hint" style={{ marginTop: 0, paddingLeft: '1.2rem' }}>
+            {refreshResults.map((line) => <li key={line}>{line}</li>)}
+          </ul>
+        )}
         {testMsg && (
           <div className={testMsg.ok ? 'save-ok' : 'data-warn'}>
             <span>{testMsg.ok ? testMsg.text : testMsg.text}</span>
@@ -235,6 +293,7 @@ export default function SettingsPanel({ onClose, onSaved, onAlertCount }) {
               <p className="nav-meta">
                 High {formatPx(a.referencePrice, a.currency)} on {a.referenceDate || '—'}
                 {' · '}now {formatPx(a.currentPrice, a.currency)}
+                {' · '}Price as of {a.priceAsOf || '—'}
               </p>
               <p className="nav-models">Held in {modelNames(a.models)}</p>
               <p className="nav-meta">
@@ -242,12 +301,17 @@ export default function SettingsPanel({ onClose, onSaved, onAlertCount }) {
                   ? `Notified ${formatWhen(a.lastNotifiedAt)}`
                   : `Email pending${a.notifyDetail ? ` — ${a.notifyDetail}` : ''}`}
               </p>
-              {a.stale && (
+              {(a.stale || a.lastEvalNote === 'Data stale' || a.notifyDetail === 'breach pending fresh data') && (
                 <div className="data-warn">
-                  <span>Price as of {a.priceAsOf} is more than 5 days old. Some TSX and manual NAVs update weeks apart — treat this drawdown as stale until a newer close is cached.</span>
+                  <span>
+                    Data stale — Price as of {a.priceAsOf || '—'} is more than 5 days old.
+                    {a.notifyDetail === 'breach pending fresh data'
+                      ? ' Breach pending fresh data; no new email until a newer close is cached.'
+                      : ' Drawdown will not trigger a new breach email until a newer close is cached.'}
+                  </span>
                 </div>
               )}
-              {a.lastEvalNote && <p className="nav-models">{a.lastEvalNote}</p>}
+              {a.lastEvalNote && a.lastEvalNote !== 'Data stale' && <p className="nav-models">{a.lastEvalNote}</p>}
             </article>
           ))}
         </div>

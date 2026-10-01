@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
+  lastCloseNeedsRefresh,
+  lastCloseDate,
+  appendQuotePoint,
   createHistoryCache,
   mergeSeries,
   sliceSeriesForRange,
@@ -53,17 +56,44 @@ describe('series helpers', () => {
   });
 });
 
+describe('lastCloseNeedsRefresh', () => {
+  it('treats today and yesterday as current', () => {
+    expect(lastCloseNeedsRefresh('2026-10-01', '2026-10-01')).toBe(false);
+    expect(lastCloseNeedsRefresh('2026-09-30', '2026-10-01')).toBe(false);
+  });
+
+  it('allows Friday close through the weekend and Monday', () => {
+    expect(lastCloseNeedsRefresh('2026-09-25', '2026-09-26')).toBe(false); // Fri→Sat
+    expect(lastCloseNeedsRefresh('2026-09-25', '2026-09-27')).toBe(false); // Fri→Sun
+    expect(lastCloseNeedsRefresh('2026-09-25', '2026-09-28')).toBe(false); // Fri→Mon
+    expect(lastCloseNeedsRefresh('2026-09-25', '2026-09-29')).toBe(true); // Fri→Tue
+  });
+
+  it('flags a four-week-old close (the PR #6 seed failure)', () => {
+    expect(lastCloseNeedsRefresh('2026-09-04', '2026-10-01')).toBe(true);
+    expect(lastCloseDate(SERIES)).toBe('2026-09-01');
+  });
+
+  it('appends a live quote as today\'s point', () => {
+    const out = appendQuotePoint(SERIES, { price: 99.5 }, '2026-10-01');
+    expect(out.at(-1)).toEqual({ date: '2026-10-01', close: 99.5 });
+    expect(out).toHaveLength(SERIES.length + 1);
+  });
+});
+
 describe('history cache', () => {
-  it('does not call providers on a second open within TTL', async () => {
+  it('does not call providers on a second open within TTL when last close is current', async () => {
     const store = memoryStore();
     let calls = 0;
     const cache = createHistoryCache({
       ...store,
-      now: () => Date.parse('2026-09-04T12:00:00.000Z'),
+      now: () => Date.parse('2026-09-01T12:00:00.000Z'),
+      today: () => '2026-09-01',
       fetchLive: async () => {
         calls += 1;
         return { symbol: 'CRWD', series: SERIES, provider: 'yahoo' };
       },
+      fetchQuote: async () => { throw new Error('unused'); },
     });
     const first = await cache.getHistory('CRWD', 'max');
     expect(first.fromCache).toBe(false);
@@ -83,6 +113,78 @@ describe('history cache', () => {
     expect(calls).toBe(1);
   });
 
+  it('refreshes when fetchedAt is inside TTL but last close is weeks old', async () => {
+    const store = memoryStore({
+      TSLA: {
+        symbol: 'TSLA',
+        series: [
+          { date: '2026-01-02', close: 250 },
+          { date: '2026-09-04', close: 220 },
+        ],
+        provider: 'yahoo',
+        range: 'max',
+        fetchedAt: '2026-10-01T10:00:00.000Z', // "fresh" by TTL alone
+      },
+    });
+    let histCalls = 0;
+    let quoteCalls = 0;
+    const cache = createHistoryCache({
+      ...store,
+      now: () => Date.parse('2026-10-01T12:00:00.000Z'),
+      today: () => '2026-10-01',
+      fetchLive: async () => {
+        histCalls += 1;
+        return {
+          symbol: 'TSLA',
+          series: [
+            { date: '2026-01-02', close: 250 },
+            { date: '2026-09-04', close: 220 },
+            { date: '2026-09-28', close: 240 }, // still older than ~1 trading day
+          ],
+          provider: 'yahoo',
+        };
+      },
+      fetchQuote: async () => {
+        quoteCalls += 1;
+        return { price: 241, provider: 'yahoo' };
+      },
+    });
+    const out = await cache.getHistory('TSLA', 'max');
+    expect(histCalls).toBe(1);
+    expect(out.stale).toBe(false);
+    expect(out.series.at(-1).date).toBe('2026-10-01');
+    expect(out.series.at(-1).close).toBe(241);
+    expect(quoteCalls).toBe(1);
+    expect(out.quoteAppended).toBe(true);
+  });
+
+  it('appends a live quote when history providers fail but quote works', async () => {
+    const store = memoryStore({
+      TSLA: {
+        symbol: 'TSLA',
+        series: [
+          { date: '2026-01-02', close: 250 },
+          { date: '2026-09-04', close: 220 },
+        ],
+        provider: 'yahoo',
+        range: 'max',
+        fetchedAt: '2026-09-04T00:00:00.000Z',
+      },
+    });
+    const cache = createHistoryCache({
+      ...store,
+      now: () => Date.parse('2026-10-01T12:00:00.000Z'),
+      today: () => '2026-10-01',
+      fetchLive: async () => { throw new Error('All providers failed for TSLA'); },
+      fetchQuote: async () => ({ price: 355, provider: 'twelvedata' }),
+    });
+    const out = await cache.getHistory('TSLA', 'max');
+    expect(out.stale).toBe(false);
+    expect(out.quoteAppended).toBe(true);
+    expect(out.series.at(-1)).toEqual({ date: '2026-10-01', close: 355 });
+    expect(store.db.TSLA.series.at(-1).date).toBe('2026-10-01');
+  });
+
   it('returns stale cache when live providers all fail', async () => {
     const store = memoryStore({
       CRWD: {
@@ -97,11 +199,13 @@ describe('history cache', () => {
     const cache = createHistoryCache({
       ...store,
       now: () => Date.parse('2026-09-04T12:00:00.000Z'),
+      today: () => '2026-09-04',
       ttlMs: HISTORY_TTL_MS,
       fetchLive: async () => {
         calls += 1;
         throw new Error('All providers failed for CRWD: yahoo (HTTP 429); twelvedata (API credits)');
       },
+      fetchQuote: async () => { throw new Error('quote also down'); },
     });
     const out = await cache.getHistory('CRWD', 'max');
     expect(out.stale).toBe(true);
@@ -125,6 +229,7 @@ describe('history cache', () => {
     const cache = createHistoryCache({
       ...store,
       fetchLive: async () => { throw new Error('All providers failed for XYZ'); },
+      fetchQuote: async () => { throw new Error('no quote'); },
     });
     await expect(cache.getHistory('XYZ', 'max')).rejects.toThrow(/All providers failed/);
   });

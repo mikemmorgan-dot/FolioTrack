@@ -32,18 +32,23 @@ async function withServer(app, fn) {
   }
 }
 
-function appWith(token, runCheck) {
+function appWith(token, runCheck, refreshPrices) {
   const app = express();
   app.use(express.json());
   const store = memoryStore();
   let tests = 0;
+  let refreshes = 0;
   app.use('/api/alerts', createAlertRouter({
     store,
     runCheck: runCheck || (async () => { tests += 1; return { ok: true, evaluated: 0, active: 0, emailed: 0, pending: 0 }; }),
+    refreshPrices: refreshPrices || (async () => {
+      refreshes += 1;
+      return { ok: true, evaluated: 0, active: 0, refresh: { updated: 1, failed: 0, skipped: 0, results: [{ symbol: 'TSLA', status: 'updated' }] } };
+    }),
     sendTestEmail: async () => ({ ok: false, reason: 'pending - email not configured' }),
     token: () => token,
   }));
-  return { app, store, get tests() { return tests; } };
+  return { app, store, get tests() { return tests; }, get refreshes() { return refreshes; } };
 }
 
 describe('alert check token guard', () => {
@@ -106,6 +111,17 @@ describe('alert check token guard', () => {
       expect(res.status).toBe(502);
       const body = await res.json();
       expect(body.error).toBe('pending - email not configured');
+    });
+  });
+
+  it('exposes refresh-prices without a cron token and reports per-holding results', async () => {
+    const ctx = appWith('s3cret');
+    await withServer(ctx.app, async (base) => {
+      const res = await fetch(`${base}/api/alerts/refresh-prices`, { method: 'POST' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.refresh.results[0].symbol).toBe('TSLA');
+      expect(ctx.refreshes).toBe(1);
     });
   });
 });

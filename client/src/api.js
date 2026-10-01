@@ -74,6 +74,7 @@ export const api = {
       body: JSON.stringify(body),
     }),
   runAlerts: () => j('/api/alerts/run', { method: 'POST' }),
+  refreshAlertPrices: () => j('/api/alerts/refresh-prices', { method: 'POST' }),
   testAlertEmail: async () => {
     const res = await fetch('/api/alerts/test-email', { method: 'POST' });
     const body = await res.json().catch(() => ({}));
