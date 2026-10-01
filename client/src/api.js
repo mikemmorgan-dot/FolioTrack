@@ -2,7 +2,13 @@
 import { getSettings, saveSettings } from './settings.js';
 
 async function j(url, opts) {
-  const res = await fetch(url, opts);
+  let res;
+  try {
+    res = await fetch(url, opts);
+  } catch (e) {
+    if (e?.name === 'AbortError') throw e;
+    throw new Error(e?.message || 'Network error');
+  }
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
   return res.json();
 }
@@ -16,8 +22,11 @@ export const api = {
   risk: (key, rf) => j(`/api/models/${key}/risk?rf=${rf}`),
   optimize: (key, { rf, maxWeight } = {}) =>
     j(`/api/models/${key}/optimize?rf=${rf}${maxWeight != null ? `&maxWeight=${maxWeight}` : ''}`),
-  simulate: (key, body) => j(`/api/models/${key}/simulate`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  simulate: (key, body, opts = {}) => j(`/api/models/${key}/simulate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: opts.signal,
   }),
   lookup: (symbol) => j(`/api/lookup/${encodeURIComponent(symbol)}`),
   history: (symbol, range = '1y') => j(`/api/history/${encodeURIComponent(symbol)}?range=${range}`),

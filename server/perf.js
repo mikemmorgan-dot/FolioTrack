@@ -5,6 +5,7 @@
 
 import { currentVersionOf } from './util.js';
 import { decidePricePath } from './navPrice.js';
+import { hasUsableReturns } from './risk.js';
 
 // ---------- date / grid helpers ----------
 export const ymOf = (dateStr) => dateStr.slice(0, 7);
@@ -264,27 +265,48 @@ export async function gatherReturns(model, { getInstrument, getNavSeries, getHis
   return { grid, instReturns, instMeta, benchMonthly, dataNotes };
 }
 
+// A NAV typed into the add form, before the holding exists. One point cannot
+// produce a monthly return — callers leave the ref uncovered and say so.
+function manualNavPoint(initialNav) {
+  if (!initialNav) return null;
+  const nav = Number(initialNav.nav);
+  const date = String(initialNav.date || '').slice(0, 10);
+  if (!Number.isFinite(nav) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  return { date, value: nav };
+}
+
 // Build monthly returns for arbitrary refs (used by the pre-trade simulator, which
-// may include brand-new tickers not yet saved). auto → Yahoo history by symbol,
-// manual → NAV series by instrumentId (new manual holdings have no series yet).
+// may include brand-new tickers not yet saved). auto → cached history by symbol
+// (the same getHistory the rest of the app uses: cache, then the provider chain,
+// with cooldown). manual → NAV series by instrumentId. A hypothetical holding
+// with initialNav is a single entered point and is NOT sent to the live chain.
+// Refs whose series can't produce a monthly return are omitted so they stay
+// "no usable history" in the projection.
 export async function returnsForRefs(refs, { getNavSeries, getHistory }, grid) {
   const out = {};
   for (const r of refs) {
     if (out[r.ref]) continue;
     try {
       let obs;
-      const navPts = r.instrumentId && getNavSeries ? await getNavSeries(r.instrumentId) : [];
-      const decision = decidePricePath({ source: r.source }, navPts);
-      if (decision.path === 'nav_series' && decision.series.length) {
-        obs = decision.series.map((p) => ({ date: p.date, value: p.price }));
-      } else if (r.source === 'auto') {
-        obs = (await getHistory(r.symbol, '5y')).series.map((p) => ({ date: p.date, value: p.close }));
-      } else if (r.instrumentId) {
-        obs = (navPts || []).map((p) => ({ date: p.date, value: p.nav }));
+      const manualPoint = !r.instrumentId ? manualNavPoint(r.initialNav) : null;
+      if (manualPoint) {
+        obs = [manualPoint];
       } else {
-        obs = [];
+        const navPts = r.instrumentId && getNavSeries ? await getNavSeries(r.instrumentId) : [];
+        const decision = decidePricePath({ source: r.source }, navPts);
+        if (decision.path === 'nav_series' && decision.series.length) {
+          obs = decision.series.map((p) => ({ date: p.date, value: p.price }));
+        } else if (r.source === 'auto') {
+          obs = (await getHistory(r.symbol, '5y')).series.map((p) => ({ date: p.date, value: p.close }));
+        } else if (r.instrumentId) {
+          obs = (navPts || []).map((p) => ({ date: p.date, value: p.nav }));
+        } else {
+          obs = [];
+        }
       }
-      if (obs.length) out[r.ref] = monthlyForObs(obs, grid);
+      if (!obs?.length) continue;
+      const monthly = monthlyForObs(obs, grid);
+      if (hasUsableReturns(monthly)) out[r.ref] = monthly;
     } catch { /* leave ref uncovered */ }
   }
   return out;

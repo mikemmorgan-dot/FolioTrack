@@ -37,6 +37,13 @@ function cov(x, y) {
   return s / (n - 1);
 }
 
+// True when a monthly-return map can actually move a projection.
+// A single price (or a single entered NAV) produces only nulls.
+export function hasUsableReturns(monthly) {
+  if (!monthly || typeof monthly !== 'object') return false;
+  return Object.values(monthly).some((r) => r != null && Number.isFinite(r));
+}
+
 export function riskMetrics(modelRets, benchRets, rfAnnual = 0.04) {
   const n = modelRets.length;
   const rfM = rfMonthlyFrom(rfAnnual);
