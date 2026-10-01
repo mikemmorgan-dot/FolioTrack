@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createAlertService } from './check.js';
+import { createAlertService, BREACH_PENDING_FRESH } from './check.js';
 import { applyAlertSettingsPatch, coerceAlertSettings } from './settings.js';
 import { EMAIL_NOT_CONFIGURED } from './email.js';
 
@@ -33,19 +33,23 @@ function memoryStore(initial) {
     async listModels() { return db.models; },
     async getInstrument(id) { return db.instruments[id] || null; },
     async getPriceHistory(symbol) { return db.historyBySymbol[String(symbol).toUpperCase()] || null; },
+    async putPriceHistory(symbol, rec) {
+      db.historyBySymbol[String(symbol).toUpperCase()] = rec;
+      return rec;
+    },
     async getNavSeries(id) { return db.nav[id] || []; },
     db,
   };
 }
 
-function nvdaSeries(current) {
+function nvdaSeries(current, asOf = TODAY) {
   return {
     symbol: 'NVDA',
     fetchedAt: new Date(NOW.getTime() - 60_000).toISOString(),
     series: [
       { date: '2024-01-01', close: 900 },
       { date: '2026-01-15', close: 200 },
-      { date: '2026-09-01', close: current },
+      { date: asOf, close: current },
     ],
   };
 }
@@ -73,7 +77,8 @@ function fixture(current = 140) {
       },
     ],
     historyBySymbol: { NVDA: nvdaSeries(current) },
-    nav: { inst_ocic: [{ date: '2026-01-01', nav: 10 }, { date: '2026-08-01', nav: 8 }] },
+    // NAV as-of today so the alt breach email is not blocked as stale.
+    nav: { inst_ocic: [{ date: '2026-01-01', nav: 10 }, { date: TODAY, nav: 8 }] },
   });
   return { store, nvda, cash, ocic };
 }
@@ -213,7 +218,7 @@ describe('alert check', () => {
     expect(email.calls.length).toBe(sent);
   });
 
-  it('does not call the history fetcher when the cache is fresh, and backs off after a total miss', async () => {
+  it('does not call the history fetcher when the last close is current, and backs off after a total miss', async () => {
     const { store } = fixture();
     let freshCalls = 0;
     const getHistory = async () => { freshCalls += 1; throw new Error('should not fetch a fresh cache'); };
@@ -266,7 +271,7 @@ describe('alert check', () => {
     expect(email.calls.some((c) => c.subject.includes('NVDA'))).toBe(false);
   });
 
-  it('flags a stale as-of on the stored event', async () => {
+  it('flags a stale as-of on the stored event and does not email', async () => {
     const { store } = fixture(140);
     store.db.historyBySymbol.NVDA = {
       symbol: 'NVDA',
@@ -276,9 +281,179 @@ describe('alert check', () => {
         { date: '2026-08-01', close: 140 },
       ],
     };
-    await service(store, mockEmail(), { today: () => '2026-09-01' }).runCheck();
+    const email = mockEmail();
+    // Refresh fails — leave the Aug close in place.
+    await service(store, email, {
+      today: () => '2026-09-01',
+      getHistory: async () => ({ series: store.db.historyBySymbol.NVDA.series, stale: true, error: '429' }),
+    }).runCheck();
     const event = await store.getAlertEvent('inst_nvda');
     expect(event.stale).toBe(true);
     expect(event.basisLabel).toContain('as of 2026-08-01');
+    expect(event.notifyDetail).toBe(BREACH_PENDING_FRESH);
+    expect(event.lastEvalNote).toBe('Data stale');
+    expect(event.lastNotifiedAt).toBeNull();
+    expect(email.calls.filter((c) => c.subject.includes('NVDA'))).toHaveLength(0);
+  });
+
+  it('refreshes oldest auto closes first, caps the run, and never touches manual/cash/alt', async () => {
+    const today = '2026-10-01';
+    const now = new Date('2026-10-01T15:00:00.000Z');
+    const { store } = fixture(200);
+    store.db.instruments.inst_tsla = {
+      id: 'inst_tsla', symbol: 'TSLA', name: 'Tesla', type: 'stock', source: 'auto', currency: 'USD',
+    };
+    store.db.instruments.inst_aapl = {
+      id: 'inst_aapl', symbol: 'AAPL', name: 'Apple', type: 'stock', source: 'auto', currency: 'USD',
+    };
+    store.db.instruments.inst_manual = {
+      id: 'inst_manual', symbol: 'XBB.TO', name: 'Bond', type: 'etf', source: 'manual', currency: 'CAD',
+    };
+    store.db.models[0].versions[0].holdings.push(
+      { instrumentId: 'inst_tsla', weight: 0.1 },
+      { instrumentId: 'inst_aapl', weight: 0.1 },
+      { instrumentId: 'inst_manual', weight: 0.05 },
+    );
+    store.db.historyBySymbol.NVDA = nvdaSeries(200, today);
+    store.db.historyBySymbol.TSLA = {
+      symbol: 'TSLA',
+      fetchedAt: '2026-09-04T00:00:00.000Z',
+      series: [
+        { date: '2026-01-15', close: 300 },
+        { date: '2026-09-04', close: 140 },
+      ],
+    };
+    store.db.historyBySymbol.AAPL = {
+      symbol: 'AAPL',
+      fetchedAt: '2026-09-20T00:00:00.000Z',
+      series: [
+        { date: '2026-01-15', close: 200 },
+        { date: '2026-09-20', close: 190 },
+      ],
+    };
+    store.db.nav.inst_manual = [{ date: today, nav: 30 }];
+    store.db.nav.inst_ocic = [{ date: '2026-01-01', nav: 10 }, { date: today, nav: 8 }];
+
+    const order = [];
+    const getHistory = async (symbol) => {
+      order.push(String(symbol).toUpperCase());
+      const todayClose = symbol.toUpperCase() === 'TSLA' ? 280 : 195;
+      return {
+        series: [
+          { date: '2026-01-15', close: 300 },
+          { date: today, close: todayClose },
+        ],
+        fetchedAt: now.toISOString(),
+        stale: false,
+        provider: 'yahoo',
+      };
+    };
+
+    const email = mockEmail();
+    const summary = await createAlertService({
+      store,
+      email,
+      now: () => now,
+      today: () => today,
+      getHistory,
+      refreshCap: 1,
+    }).runCheck();
+    expect(order).toEqual(['TSLA']);
+    expect(summary.refresh.updated).toBe(1);
+    expect(summary.refresh.skipped).toBeGreaterThanOrEqual(1);
+    expect(order).not.toContain('XBB.TO');
+    expect(order).not.toContain('CASH');
+    expect(order).not.toContain('OCIC');
+
+    const tsla = await store.getAlertEvent('inst_tsla');
+    expect(tsla == null || tsla.status === 'recovered').toBe(true);
+    expect(email.calls.some((c) => c.subject.includes('TSLA'))).toBe(false);
+  });
+
+  it('recovers a stale TSLA breach without email once fresh data clears the band', async () => {
+    const today = '2026-10-01';
+    const now = new Date('2026-10-01T15:00:00.000Z');
+    const { store } = fixture(200);
+    store.db.instruments.inst_tsla = {
+      id: 'inst_tsla', symbol: 'TSLA', name: 'Tesla', type: 'stock', source: 'auto', currency: 'USD',
+    };
+    store.db.models[0].versions[0].holdings.push({ instrumentId: 'inst_tsla', weight: 0.1 });
+    store.db.historyBySymbol.NVDA = nvdaSeries(200, today);
+    store.db.nav.inst_ocic = [{ date: '2026-01-01', nav: 10 }, { date: today, nav: 8 }];
+    store.db.historyBySymbol.TSLA = {
+      symbol: 'TSLA',
+      fetchedAt: '2026-09-04T00:00:00.000Z',
+      series: [
+        { date: '2026-01-15', close: 300 },
+        { date: '2026-09-04', close: 140 },
+      ],
+    };
+    await store.upsertAlertEvent({
+      instrumentId: 'inst_tsla',
+      symbol: 'TSLA',
+      name: 'Tesla',
+      status: 'active',
+      firstBreachedAt: '2026-09-05T00:00:00.000Z',
+      lastNotifiedAt: '2026-09-05T00:00:00.000Z',
+      notifyStatus: 'sent',
+      notifyDetail: null,
+      currentDrawdown: -0.53,
+      currentPrice: 140,
+      referencePrice: 300,
+      threshold: 20,
+      stale: true,
+      priceAsOf: '2026-09-04',
+      models: [{ key: 'growth', name: 'Growth', weight: 0.1 }],
+      updatedAt: '2026-09-05T00:00:00.000Z',
+    });
+
+    const email = mockEmail();
+    const getHistory = async () => ({
+      series: [
+        { date: '2026-01-15', close: 300 },
+        { date: today, close: 290 },
+      ],
+      fetchedAt: now.toISOString(),
+      stale: false,
+    });
+    await createAlertService({
+      store,
+      email,
+      now: () => now,
+      today: () => today,
+      getHistory,
+    }).runCheck();
+    const event = await store.getAlertEvent('inst_tsla');
+    expect(event.status).toBe('recovered');
+    expect(email.calls.some((c) => c.subject.includes('TSLA'))).toBe(false);
+  });
+
+  it('prefers nav_series over leftover price_history for NAV-backed autos', async () => {
+    const { store } = fixture(140);
+    store.db.instruments.inst_ry = {
+      id: 'inst_ry', symbol: 'RY.TO', name: 'Royal Bank', type: 'stock', source: 'auto', currency: 'CAD',
+    };
+    store.db.models[0].versions[0].holdings.push({ instrumentId: 'inst_ry', weight: 0.1 });
+    store.db.historyBySymbol['RY.TO'] = {
+      symbol: 'RY.TO',
+      fetchedAt: '2026-09-04T00:00:00.000Z',
+      series: [
+        { date: '2026-01-15', close: 200 },
+        { date: '2026-09-04', close: 100 },
+      ],
+    };
+    store.db.nav.inst_ry = [
+      { date: '2026-01-15', nav: 200 },
+      { date: TODAY, nav: 190 },
+    ];
+    let histCalls = 0;
+    const email = mockEmail();
+    await service(store, email, {
+      getHistory: async () => { histCalls += 1; throw new Error('should not refresh NAV-backed'); },
+    }).runCheck();
+    expect(histCalls).toBe(0);
+    const event = await store.getAlertEvent('inst_ry');
+    // 190/200 = -5% — not a breach at 20%
+    expect(event).toBeNull();
   });
 });

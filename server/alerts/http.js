@@ -30,6 +30,7 @@ export function cronAuthorized(req, expected) {
 export function createAlertRouter({
   store,
   runCheck,
+  refreshPrices,
   sendTestEmail,
   token = () => process.env.ALERT_CRON_TOKEN || '',
 } = {}) {
@@ -83,6 +84,15 @@ export function createAlertRouter({
   router.post('/run', async (_req, res) => {
     try {
       res.json(await runCheck());
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.post('/refresh-prices', async (_req, res) => {
+    try {
+      const run = typeof refreshPrices === 'function' ? refreshPrices : runCheck;
+      res.json(await run());
     } catch (e) {
       res.status(500).json({ error: e.message });
     }

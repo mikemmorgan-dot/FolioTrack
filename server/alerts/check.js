@@ -1,52 +1,32 @@
 // alerts/check.js — evaluate every current holding and advance alert state.
 //
-// Prices come from the stored price_history cache. A market name whose cache
-// is missing or older than the history TTL is refreshed through the existing
-// history cache (no force flag), which already skips providers that are
-// cooling down. A total miss backs off for several hours so a 30-minute
-// tick does not walk the provider chain again. Cash is skipped. Names with
-// no cached close and no NAV are skipped. Private/illiquid names are
-// included only when a NAV series (or a cached close) actually exists.
+// Auto-priced stock/ETF holdings (no NAV series) whose last close is more
+// than about one trading day old are refreshed through the history cache
+// before drawdown runs — oldest first, capped per run. Manual NAV, Cash,
+// and private/alt names are never refreshed. Live quote points appended by
+// the cache are labeled as today's close.
+//
+// A breach based on closes older than 5 days does not send email; it is
+// stored as "breach pending fresh data" and retried next run. Fresh data
+// that no longer breaches recovers without another email.
 
 import { uid } from '../util.js';
 import { todayToronto } from '../nav.js';
-import { HISTORY_TTL_MS } from '../historyCache.js';
-import { collectCurrentHoldings, evaluateHolding } from './drawdown.js';
+import { decidePricePath } from '../navPrice.js';
+import { lastCloseNeedsRefresh, lastCloseDate } from '../historyCache.js';
+import { collectCurrentHoldings, evaluateHolding, isPriceStale } from './drawdown.js';
 import { transitionAlert } from './state.js';
 import { buildAlertEmail, buildTestEmail, EMAIL_NOT_CONFIGURED, FOLIOTRACK_URL } from './email.js';
+import {
+  ALERT_REFRESH_CAP,
+  BREACH_PENDING_FRESH,
+  isRefreshableAutoHolding,
+  planAutoPriceRefresh,
+  refreshOneAutoHolding,
+} from './refresh.js';
 
 export const ALERT_MISS_BACKOFF_MS = 6 * 60 * 60 * 1000;
-
-function isMarketName(inst) {
-  return inst?.type === 'stock' || inst?.type === 'etf';
-}
-
-async function loadPrices(store, inst, { getHistory, nowMs, liveMissUntil, missBackoffMs }) {
-  const stored = store.getPriceHistory ? await store.getPriceHistory(inst.symbol) : null;
-  const navSeries = store.getNavSeries ? await store.getNavSeries(inst.id) : [];
-  let historySeries = stored?.series || [];
-  let historyFetchedAt = stored?.fetchedAt || null;
-  const ageMs = historyFetchedAt ? nowMs - Date.parse(historyFetchedAt) : Infinity;
-  const fresh = historySeries.length > 0 && Number.isFinite(ageMs) && ageMs >= 0 && ageMs < HISTORY_TTL_MS;
-  const symbol = String(inst.symbol || '').toUpperCase();
-
-  if (isMarketName(inst) && typeof getHistory === 'function' && !fresh && nowMs >= (liveMissUntil.get(symbol) || 0)) {
-    try {
-      const h = await getHistory(inst.symbol, 'max');
-      if (h?.series?.length) {
-        historySeries = h.series;
-        historyFetchedAt = h.fetchedAt || new Date(nowMs).toISOString();
-        liveMissUntil.delete(symbol);
-      } else {
-        liveMissUntil.set(symbol, nowMs + missBackoffMs);
-      }
-    } catch {
-      liveMissUntil.set(symbol, nowMs + missBackoffMs);
-    }
-  }
-
-  return { historySeries, historyFetchedAt, navSeries: navSeries || [] };
-}
+export { ALERT_REFRESH_CAP, BREACH_PENDING_FRESH };
 
 function historyEntry(kind, event, now, detail) {
   return {
@@ -73,6 +53,7 @@ export function createAlertService({
   today = () => todayToronto(),
   appUrl = FOLIOTRACK_URL,
   missBackoffMs = ALERT_MISS_BACKOFF_MS,
+  refreshCap = ALERT_REFRESH_CAP,
 } = {}) {
   if (!store) throw new Error('createAlertService requires a store');
   if (!email?.send) throw new Error('createAlertService requires an email sender');
@@ -98,46 +79,108 @@ export function createAlertService({
     await store.setAlertMissUntil(obj);
   }
 
-  async function runAlertCheck() {
-    const nowDate = now();
-    const nowIso = nowDate.toISOString();
-    const nowMs = nowDate.getTime();
-    const todayIso = today();
-    await hydrateMisses(nowMs);
-    const settings = await store.getAlertSettings();
-    const models = await store.listModels();
-    const groups = collectCurrentHoldings(models);
-    const heldIds = new Set(groups.map((g) => g.instrumentId));
-
-    const summary = {
-      ok: true,
-      checkedAt: nowIso,
-      evaluated: 0,
-      skippedHoldings: 0,
-      opened: 0,
-      recovered: 0,
-      emailed: 0,
-      pending: 0,
-      active: 0,
-      alertsEnabled: settings.alertEnabled,
-      errors: [],
+  async function loadHoldingContext(group) {
+    const inst = await store.getInstrument(group.instrumentId);
+    if (!inst) return null;
+    const stored = store.getPriceHistory ? await store.getPriceHistory(inst.symbol) : null;
+    const navSeries = store.getNavSeries ? await store.getNavSeries(inst.id) : [];
+    const path = decidePricePath(inst, navSeries || []);
+    // NAV-backed instruments (manual or auto-with-NAV) use nav_series only —
+    // never prefer a frozen leftover price_history over entered NAV.
+    const useNav = path.path === 'nav_series' && path.series.length > 0;
+    return {
+      group,
+      inst,
+      historySeries: useNav ? [] : (stored?.series || []),
+      historyFetchedAt: useNav ? null : (stored?.fetchedAt || null),
+      navSeries: navSeries || [],
+      refreshable: isRefreshableAutoHolding(inst, navSeries),
     };
+  }
 
-    for (const group of groups) {
-      try {
-        const inst = await store.getInstrument(group.instrumentId);
-        if (!inst) {
-          summary.skippedHoldings += 1;
-          continue;
+  async function refreshStaleAutoPrices(contexts, { nowMs, todayIso, cap = refreshCap } = {}) {
+    const candidates = contexts
+      .filter(Boolean)
+      .map((c) => ({
+        instrumentId: c.inst.id,
+        symbol: c.inst.symbol,
+        name: c.inst.name,
+        refreshable: c.refreshable,
+        historySeries: c.historySeries,
+      }));
+
+    const plan = planAutoPriceRefresh(candidates, { today: todayIso, cap });
+    const byId = new Map(contexts.filter(Boolean).map((c) => [c.inst.id, c]));
+    const results = [];
+
+    for (const row of plan) {
+      const ctx = byId.get(row.instrumentId);
+      if (!ctx) continue;
+      const result = await refreshOneAutoHolding(ctx.inst, {
+        getHistory,
+        getPriceHistory: store.getPriceHistory ? (s) => store.getPriceHistory(s) : null,
+        nowMs,
+        liveMissUntil,
+        missBackoffMs,
+      });
+      results.push(result);
+      if (result.series?.length && (result.status === 'updated' || result.status === 'unchanged')) {
+        ctx.historySeries = result.series;
+        ctx.historyFetchedAt = result.fetchedAt || ctx.historyFetchedAt;
+      } else if (result.status === 'failed' || result.status === 'cooldown') {
+        // Re-read store in case a quote-append from another path landed.
+        if (store.getPriceHistory) {
+          const stored = await store.getPriceHistory(ctx.inst.symbol);
+          if (stored?.series?.length) {
+            ctx.historySeries = stored.series;
+            ctx.historyFetchedAt = stored.fetchedAt || ctx.historyFetchedAt;
+          }
         }
-        const prices = await loadPrices(store, inst, { getHistory, nowMs, liveMissUntil, missBackoffMs });
+      }
+    }
+
+    // Holdings not in the capped plan that still need refresh: report skipped.
+    const planned = new Set(plan.map((p) => p.instrumentId));
+    for (const c of candidates) {
+      if (!c.refreshable) continue;
+      if (planned.has(c.instrumentId)) continue;
+      const lastClose = lastCloseDate(c.historySeries);
+      if (!lastCloseNeedsRefresh(lastClose, todayIso)) continue;
+      results.push({
+        symbol: String(c.symbol || '').toUpperCase(),
+        instrumentId: c.instrumentId,
+        status: 'skipped',
+        error: 'Over per-run refresh cap — will retry next run',
+        lastClose: lastClose || null,
+        priceAsOf: lastClose || null,
+      });
+    }
+
+    return {
+      attempted: plan.length,
+      cap,
+      results,
+      updated: results.filter((r) => r.status === 'updated').length,
+      failed: results.filter((r) => r.status === 'failed' || r.status === 'cooldown').length,
+      skipped: results.filter((r) => r.status === 'skipped').length,
+    };
+  }
+
+  async function evaluateContexts(contexts, { nowIso, todayIso, settings, summary }) {
+    for (const ctx of contexts) {
+      if (!ctx) {
+        summary.skippedHoldings += 1;
+        continue;
+      }
+      try {
+        const { inst, group, historySeries, navSeries, historyFetchedAt } = ctx;
         const evaluation = evaluateHolding({
           inst,
           models: group.models,
-          historySeries: prices.historySeries,
-          navSeries: prices.navSeries,
+          historySeries,
+          navSeries,
           today: todayIso,
-          historyFetchedAt: prices.historyFetchedAt,
+          historyFetchedAt,
         });
         if (evaluation.skip) {
           summary.skippedHoldings += 1;
@@ -155,12 +198,22 @@ export function createAlertService({
           continue;
         }
 
+        // Could not refresh and close is old → surface Data stale; never email
+        // a new breach on data older than 5 days.
+        if (evaluation.stale && ctx.refreshable) {
+          evaluation.lastEvalNote = 'Data stale';
+        }
+
         summary.evaluated += 1;
         const prev = await store.getAlertEvent(inst.id);
         const step = transitionAlert(prev, evaluation, { thresholdPct: settings.alertThreshold, now: nowIso });
         if (step.action === 'none') continue;
 
-        let next = step.next;
+        let next = {
+          ...step.next,
+          lastEvalNote: evaluation.lastEvalNote || step.next.lastEvalNote || null,
+        };
+
         if (step.action === 'open') {
           summary.opened += 1;
           await store.appendAlertHistory(historyEntry('breach', next, nowIso, next.basisLabel));
@@ -170,7 +223,22 @@ export function createAlertService({
           await store.appendAlertHistory(historyEntry('recovered', next, nowIso, 'Back above the threshold plus 2 point hysteresis'));
         }
 
-        if (step.shouldEmail) {
+        const staleBlocksEmail = step.shouldEmail && evaluation.stale && isPriceStale(evaluation.priceAsOf, todayIso);
+
+        if (staleBlocksEmail) {
+          next = {
+            ...next,
+            notifyStatus: 'pending',
+            notifyDetail: BREACH_PENDING_FRESH,
+            lastNotifiedAt: prev?.status === 'active' ? (prev.lastNotifiedAt || null) : null,
+            lastEvalNote: 'Data stale',
+            stale: true,
+          };
+          summary.pending += 1;
+          if (prev?.notifyDetail !== BREACH_PENDING_FRESH || step.action === 'open') {
+            await store.appendAlertHistory(historyEntry('pending', next, nowIso, BREACH_PENDING_FRESH));
+          }
+        } else if (step.shouldEmail) {
           if (!settings.alertEnabled) {
             next = { ...next, notifyStatus: 'pending', notifyDetail: 'pending - alerts disabled', lastNotifiedAt: null };
             summary.pending += 1;
@@ -196,13 +264,53 @@ export function createAlertService({
               }
             }
           }
+        } else if (evaluation.stale && next.status === 'active') {
+          next = { ...next, lastEvalNote: next.lastEvalNote || 'Data stale', stale: true };
         }
 
         await store.upsertAlertEvent(next);
       } catch (e) {
-        summary.errors.push({ instrumentId: group.instrumentId, error: e.message });
+        summary.errors.push({ instrumentId: ctx.group?.instrumentId, error: e.message });
       }
     }
+  }
+
+  async function runAlertCheck({ refresh = true } = {}) {
+    const nowDate = now();
+    const nowIso = nowDate.toISOString();
+    const nowMs = nowDate.getTime();
+    const todayIso = today();
+    await hydrateMisses(nowMs);
+    const settings = await store.getAlertSettings();
+    const models = await store.listModels();
+    const groups = collectCurrentHoldings(models);
+    const heldIds = new Set(groups.map((g) => g.instrumentId));
+
+    const summary = {
+      ok: true,
+      checkedAt: nowIso,
+      evaluated: 0,
+      skippedHoldings: 0,
+      opened: 0,
+      recovered: 0,
+      emailed: 0,
+      pending: 0,
+      active: 0,
+      alertsEnabled: settings.alertEnabled,
+      errors: [],
+      refresh: null,
+    };
+
+    const contexts = [];
+    for (const group of groups) {
+      contexts.push(await loadHoldingContext(group));
+    }
+
+    if (refresh) {
+      summary.refresh = await refreshStaleAutoPrices(contexts, { nowMs, todayIso, cap: refreshCap });
+    }
+
+    await evaluateContexts(contexts, { nowIso, todayIso, settings, summary });
 
     const events = await store.listAlertEvents();
     for (const prev of events) {
@@ -231,10 +339,15 @@ export function createAlertService({
     return summary;
   }
 
-  function runCheck() {
+  function runCheck(opts) {
     if (inflight) return inflight;
-    inflight = runAlertCheck().finally(() => { inflight = null; });
+    inflight = runAlertCheck(opts).finally(() => { inflight = null; });
     return inflight;
+  }
+
+  /** Refresh stale auto prices and report per-holding results (also re-checks alerts). */
+  async function refreshPricesNow() {
+    return runCheck({ refresh: true });
   }
 
   async function sendTestEmail() {
@@ -243,5 +356,5 @@ export function createAlertService({
     return email.send(mail);
   }
 
-  return { runCheck, sendTestEmail, liveMissUntil };
+  return { runCheck, refreshPricesNow, sendTestEmail, liveMissUntil };
 }
