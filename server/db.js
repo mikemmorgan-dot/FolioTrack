@@ -82,6 +82,60 @@ CREATE TABLE IF NOT EXISTS price_history (
   range text NOT NULL DEFAULT 'max',
   fetched_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Key-value app settings (alert threshold, recipient, on/off). One row per key.
+CREATE TABLE IF NOT EXISTS app_settings (
+  key text PRIMARY KEY,
+  value jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- One row per instrument: the current breach episode (active or recovered).
+CREATE TABLE IF NOT EXISTS alert_events (
+  instrument_id text PRIMARY KEY REFERENCES instruments(id) ON DELETE CASCADE,
+  symbol text NOT NULL,
+  name text,
+  status text NOT NULL,
+  first_breached_at timestamptz,
+  last_notified_at timestamptz,
+  recovered_at timestamptz,
+  reference_price numeric,
+  reference_date date,
+  price_at_breach numeric,
+  drawdown_at_breach numeric,
+  current_price numeric,
+  current_drawdown numeric,
+  threshold numeric,
+  notify_status text,
+  notify_detail text,
+  basis text,
+  basis_label text,
+  price_as_of date,
+  history_fetched_at timestamptz,
+  stale boolean NOT NULL DEFAULT false,
+  models jsonb NOT NULL DEFAULT '[]'::jsonb,
+  currency text,
+  last_eval_note text,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS alert_events_status ON alert_events (status);
+
+-- Append-only log of breach / notify / recovery episodes for the Alerts panel.
+CREATE TABLE IF NOT EXISTS alert_history (
+  id text PRIMARY KEY,
+  instrument_id text NOT NULL,
+  symbol text NOT NULL,
+  name text,
+  kind text NOT NULL,
+  at timestamptz NOT NULL,
+  drawdown numeric,
+  price numeric,
+  reference_price numeric,
+  reference_date date,
+  detail text,
+  models jsonb
+);
+CREATE INDEX IF NOT EXISTS alert_history_at ON alert_history (at DESC);
 `;
 
 export async function initSchema(pool) {

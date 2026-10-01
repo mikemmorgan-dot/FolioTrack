@@ -7,6 +7,7 @@ import { seedData } from './seed.js';
 import { uid, instrumentFromSpec, currentVersionOf, holdingsEqual, breakdownPatchPresent, nextBreakdownFields } from './util.js';
 import { planNavBatch, todayToronto, batchError } from './nav.js';
 import { normalizePublishedReturns } from './factsheet/publishedReturns.js';
+import { coerceAlertSettings, applyAlertSettingsPatch } from './alerts/settings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data', 'store.json');
@@ -145,6 +146,59 @@ export class JsonStore {
     this._priceHistoryMap()[key] = rec;
     this._persist();
     return rec;
+  }
+
+  async getAlertSettings() {
+    return coerceAlertSettings(this.db.alertSettings || {});
+  }
+  async saveAlertSettings(patch) {
+    const next = applyAlertSettingsPatch(await this.getAlertSettings(), patch);
+    this.db.alertSettings = next;
+    this._persist();
+    return next;
+  }
+  async getAlertCheckMeta() {
+    return this.db.alertCheck || null;
+  }
+  async setAlertCheckMeta(meta) {
+    this.db.alertCheck = meta;
+    this._persist();
+    return meta;
+  }
+  async getAlertMissUntil() {
+    return this.db.alertMissUntil || {};
+  }
+  async setAlertMissUntil(obj) {
+    this.db.alertMissUntil = obj || {};
+    this._persist();
+    return this.db.alertMissUntil;
+  }
+  async getAlertEvent(instrumentId) {
+    return this.db.alertEvents?.[instrumentId] || null;
+  }
+  async listAlertEvents() {
+    return Object.values(this.db.alertEvents || {});
+  }
+  async upsertAlertEvent(event) {
+    if (!this.db.alertEvents) this.db.alertEvents = {};
+    const next = { ...event, updatedAt: event.updatedAt || new Date().toISOString() };
+    this.db.alertEvents[event.instrumentId] = next;
+    this._persist();
+    return next;
+  }
+  async appendAlertHistory(entry) {
+    if (!Array.isArray(this.db.alertHistory)) this.db.alertHistory = [];
+    this.db.alertHistory.push(entry);
+    if (this.db.alertHistory.length > 200) {
+      this.db.alertHistory.splice(0, this.db.alertHistory.length - 200);
+    }
+    this._persist();
+    return entry;
+  }
+  async listAlertHistory(limit = 40) {
+    const all = this.db.alertHistory || [];
+    const n = Math.max(1, Number(limit) || 40);
+    return all.slice(-n).reverse();
   }
 
   async listModels() {

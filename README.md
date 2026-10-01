@@ -64,6 +64,66 @@ is what feeds the Performance change-timeline (and, next, attribution).
 ## Compliance note
 Keep this to model **allocations** and instrument data. Do not put client account
 values or PII on a public URL — gate behind auth or deploy privately if that changes.
+Alert emails list model holdings only (symbol, drawdown, which models hold it).
+They do not include client names or account values.
+
+## Price drop alerts
+Settings → **Price drop alerts**. For every holding in the **current** version of
+each model (deduped by instrument), drawdown is `current / reference − 1`.
+
+- **Reference** is the highest cached close in the trailing 52 weeks (364 days)
+  ending on the latest cached close. If `price_history` has no usable closes,
+  the reference is the peak of the saved NAV series.
+- **Breach** when drawdown is at or below the threshold (default 20%, allowed 1–90).
+- **One email** the first time a holding breaches. Nothing is resent while it
+  stays breached. It is marked recovered only after drawdown is back above
+  `-(threshold − 2)` percentage points (2-point hysteresis). A later breach
+  sends a new email.
+- Changing the threshold re-evaluates. A holding that was already emailed and
+  is still inside the band is not emailed again.
+- Cash is skipped. Private/illiquid names and anything else with no cached
+  close and no NAV are skipped. The panel labels the basis
+  (`from 52-week high, using cached closes as of DATE`) and warns when the
+  price as-of is more than 5 days old.
+
+The check reads the existing price-history cache and NAV series. It refreshes
+a stock/ETF history only when that cache is missing or older than 18 hours,
+through the same cache that honors provider cooldown, and it never force-refreshes.
+A symbol whose live fetch fails entirely is not tried again for 6 hours.
+
+### Schedule (Render free tier sleeps)
+The server runs a check on startup and every **30 minutes** after that. On the
+free tier the process sleeps after about 15 minutes of no HTTP traffic, and the
+timer sleeps with it. An external pinger (cron-job.org or UptimeRobot) every
+15–30 minutes is what actually wakes the instance and runs the check.
+
+Set these on the Render service (Environment), then redeploy:
+
+| Variable | Purpose |
+|---|---|
+| `RESEND_API_KEY` | Resend API key. HTTPS only — do not configure SMTP; the free tier blocks outbound SMTP ports. |
+| `ALERT_FROM` | Optional. Defaults to `FolioTrack <onboarding@resend.dev>`. |
+| `ALERT_CRON_TOKEN` | Secret for the wake-up URL. If unset, `/api/alerts/check` rejects every request. |
+| `DATABASE_URL` | Still required if you want alert state to survive sleep/redeploy. The JSON store is ephemeral on Render. |
+
+Pinger URL (GET or POST):
+
+```
+https://foliotrack.onrender.com/api/alerts/check?token=YOUR_ALERT_CRON_TOKEN
+```
+
+`Authorization: Bearer YOUR_ALERT_CRON_TOKEN` works too.
+
+**Resend setup:** create a free account at resend.com using `mikemmorgan@gmail.com`.
+The default `onboarding@resend.dev` sender can only deliver to the address that
+owns the Resend account. Put that same address in Settings → Alert email
+(it is the default). Then use **Send test email** and confirm it arrives before
+relying on breach mail. A missing `RESEND_API_KEY` does not crash the server:
+the breach is stored as `pending - email not configured` and retried on the next check.
+
+In the app, **Check now** runs the same check without the cron token (the rest
+of the API is unauthenticated). The header menu shows a red dot while any
+holding is breached.
 
 ## Live now vs. next
 - **Live:** Overview, Holdings, Allocation, Geo/Sector, model editing, and the
