@@ -21,13 +21,14 @@ function thinHistory(data) {
   return n1 < 2 && n2 < 2;
 }
 
-function newHoldingNote(h) {
+function newHoldingNote(h, unresolved) {
   if (!h || h.covered) return null;
   const sym = h.symbol || 'This holding';
   if (h.reason === 'insufficient') {
     return `${sym} has only a single NAV, so history is insufficient and the preview ignores it.`;
   }
-  return `${sym} has no price history yet, so the preview ignores it`;
+  if ((unresolved || []).includes(sym)) return null;
+  return `No history yet for ${sym}`;
 }
 
 export default function RiskPreview({ modelKey, rows, pending }) {
@@ -121,7 +122,7 @@ export default function RiskPreview({ modelKey, rows, pending }) {
   }, []);
 
   const coverPct = data && Number.isFinite(data.coverage) ? Math.round(data.coverage * 100) : null;
-  const ignore = newHoldingNote(data?.newHolding);
+  const ignore = newHoldingNote(data?.newHolding, data?.unresolved);
   const empty = thinHistory(data);
 
   return (

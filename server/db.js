@@ -42,6 +42,8 @@ ALTER TABLE instruments ADD COLUMN IF NOT EXISTS breakdown_note text;
 ALTER TABLE instruments ADD COLUMN IF NOT EXISTS published_returns jsonb;
 -- Where the current nav_series came from: 'Yahoo Finance' | 'manual' | null.
 ALTER TABLE instruments ADD COLUMN IF NOT EXISTS nav_source text;
+-- Unverified add: suggested name/sector/region and which fields the user edited.
+ALTER TABLE instruments ADD COLUMN IF NOT EXISTS meta jsonb;
 
 CREATE TABLE IF NOT EXISTS models (
   key text PRIMARY KEY,

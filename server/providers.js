@@ -11,15 +11,19 @@
 //   supports(symbol) -> boolean (cheap pre-filter)
 
 import { getQuote as yQuote, getHistory as yHistory, YahooError } from './yahoo.js';
-import { isCoolingDown, markIfCooldownError } from './providerCooldown.js';
+import { isCoolingDown, markIfCooldownError, cooldownUntil } from './providerCooldown.js';
+import { classifyAttempt, classifyAttempts } from './failureClass.js';
+import { inferListing, isFundservCode } from './listing.js';
+import { offlineLookup } from './offlineNames.js';
+import { stooq } from './stooq.js';
+
+const YAHOO_QUERY1 = 'https://query1.finance.yahoo.com';
+const YAHOO_QUERY2 = 'https://query2.finance.yahoo.com';
 
 // ---------- Twelve Data (keyed, free tier: 800 req/day, 8 req/min) ----------
-// Stooq was the original fallback here but as of 2026-08 its entire site sits
-// behind a JS proof-of-work bot check (WebCrypto challenge + cookie), which no
-// server-side HTTP client can pass — confirmed with curl against stooq.com and
-// stooq.pl directly, not Render-specific. It cannot serve as a fallback until
-// that changes, so it's been dropped rather than kept as a dead 10s-timeout
-// hop on every failed lookup.
+// Stooq's site often answers with a JS challenge. It is still wired, last in
+// the chain, as its own hop: a challenge or 403 is a failed hop (and a
+// cooldown), never "symbol not found". See stooq.js.
 //
 // Twelve Data addresses TSX symbols via a separate `exchange` param rather
 // than a suffix (confirmed against their symbol_search endpoint: RY on TSX
@@ -216,17 +220,47 @@ const alphavantage = {
   },
 };
 
-const yahoo = {
-  id: 'yahoo',
-  supports: () => true,
-  quote: (symbol) => yQuote(symbol),
-  history: (symbol, range) => yHistory(symbol, range || '5y'),
-};
+function yahooHop(id, host) {
+  return {
+    id,
+    supports: () => true,
+    quote: (symbol) => yQuote(symbol, [host]),
+    history: (symbol, range) => yHistory(symbol, range || '5y', '1d', [host]),
+  };
+}
 
-// Order matters: richest metadata first, most-reachable last. Alpha Vantage
-// goes last — its 25/day cap is too thin to spend on symbols the earlier
-// providers already cover.
-export const PROVIDERS = [yahoo, twelvedata, finnhub, alphavantage];
+// query1 and query2 are separate hops so a cooldown on one does not skip the
+// other. A VM probe got HTTP 200 for AVGO from query2 while query1 was limited.
+const yahoo = yahooHop('yahoo', YAHOO_QUERY1);
+const yahooQuery2 = yahooHop('yahoo-query2', YAHOO_QUERY2);
+
+// Order: richest metadata first. query2 is the free sibling of query1, before
+// any keyed quota. Stooq is last — often a block page, so it should not sit
+// in front of a provider that can still answer.
+export const PROVIDERS = [yahoo, yahooQuery2, twelvedata, finnhub, alphavantage, stooq];
+
+export function providerStatusList(now = Date.now()) {
+  return PROVIDERS.map((p) => {
+    const until = cooldownUntil(p.id);
+    const coolingDown = until > now;
+    return {
+      id: p.id,
+      coolingDown,
+      cooldownUntil: coolingDown ? new Date(until).toISOString() : null,
+      remainingMs: coolingDown ? until - now : 0,
+    };
+  });
+}
+
+function earliestCooldownIso(now = Date.now()) {
+  let earliest = null;
+  for (const row of providerStatusList(now)) {
+    if (!row.coolingDown) continue;
+    const t = Date.parse(row.cooldownUntil);
+    if (earliest == null || t < earliest) earliest = t;
+  }
+  return earliest ? new Date(earliest).toISOString() : null;
+}
 
 function isNotFound(e) {
   return (e instanceof YahooError && e.notFound) || /no data|not\s*found/i.test(e.message || '');
@@ -242,7 +276,10 @@ export async function viaChain(method, symbol, arg, providerList = PROVIDERS) {
   for (const p of providerList) {
     if (p.supports && !p.supports(symbol)) continue;
     if (isCoolingDown(p.id)) {
-      attempts.push({ provider: p.id, error: 'cooling down after a recent rate-limit', skipped: true });
+      const error = 'cooling down after a recent rate-limit';
+      attempts.push({
+        provider: p.id, error, skipped: true, notFound: false, kind: 'rate-limit',
+      });
       continue;
     }
     try {
@@ -250,28 +287,59 @@ export async function viaChain(method, symbol, arg, providerList = PROVIDERS) {
       return { ...out, provider: p.id, attempts };
     } catch (e) {
       markIfCooldownError(p.id, e);
-      attempts.push({ provider: p.id, error: e.message, notFound: isNotFound(e) });
+      const notFound = isNotFound(e);
+      const attempt = {
+        provider: p.id,
+        error: e.message,
+        notFound,
+        status: e.status ?? e.statusCode ?? null,
+        skipped: false,
+      };
+      attempt.kind = classifyAttempt(attempt);
+      attempts.push(attempt);
     }
   }
   const err = new Error(
     `All providers failed for ${symbol}: ${attempts.map((a) => `${a.provider} (${a.error})`).join('; ')}`
   );
   err.attempts = attempts;
+  const classified = classifyAttempts(attempts);
+  err.classified = classified;
   // If every provider said "no such symbol", it's genuinely unknown, not a block.
-  err.notFound = attempts.length > 0 && attempts.every((a) => a.notFound);
+  err.notFound = classified.allNotFound;
   throw err;
 }
 
 export const getQuote = (symbol) => viaChain('quote', symbol);
 export const getHistory = (symbol, range = '5y') => viaChain('history', symbol, range);
 
+function guessTypeFor(symbol) {
+  const bare = String(symbol || '').replace(/\..*$/, '');
+  if (isFundservCode(symbol)) return 'mutualfund';
+  return /^[A-Z]{5}X$/i.test(bare) ? 'mutualfund' : 'stock';
+}
+
+function lookupContext(symbol) {
+  const listing = inferListing(symbol);
+  const suggestion = offlineLookup(symbol);
+  return { listing, suggestion };
+}
+
 // Resolve a ticker for the editor across all providers.
 export async function lookup(symbol) {
+  const { listing, suggestion } = lookupContext(symbol);
+  const guessType = guessTypeFor(symbol);
   try {
     const q = await getQuote(symbol);
-    if (q.price == null) return { found: false, symbol, reason: 'No price returned', blocked: false };
-    const bare = symbol.replace(/\..*$/, '');
-    const guessType = /^[A-Z]{5}X$/i.test(bare) ? 'mutualfund' : 'stock';
+    if (q.price == null) {
+      return failedLookup(symbol, {
+        reason: 'No price returned',
+        attempts: [],
+        listing,
+        suggestion,
+        guessType,
+      });
+    }
     let profile = null, profileError = null;
     // Best-effort — a failure here doesn't fail the lookup, since a price
     // without a classification is still useful. But swallowing it silently
@@ -282,18 +350,56 @@ export async function lookup(symbol) {
     catch (e) { profileError = e.message; }
     return {
       found: true, symbol, provider: q.provider, partial: !!q.partial,
-      name: q.name, currency: q.currency, exchange: q.exchange, guessType, price: q.price,
-      sector: profile?.sector || null, country: profile?.country || null,
+      name: q.name || suggestion?.name || symbol,
+      currency: q.currency || listing.currency,
+      exchange: q.exchange || listing.exchange,
+      guessType, price: q.price,
+      sector: profile?.sector || suggestion?.sector || null,
+      country: profile?.country || suggestion?.region || listing.region || null,
+      region: listing.region,
+      suggestion,
+      allowAuto: true,
+      rateLimited: false,
+      source: 'auto',
       classificationError: profile ? null : profileError,
     };
   } catch (e) {
-    return {
-      found: false, symbol,
+    return failedLookup(symbol, {
       reason: e.message,
-      blocked: !e.notFound,
       attempts: e.attempts || [],
-    };
+      classified: e.classified,
+      notFound: !!e.notFound,
+      listing,
+      suggestion,
+      guessType,
+    });
   }
+}
+
+function failedLookup(symbol, { reason, attempts, classified, notFound, listing, suggestion, guessType }) {
+  const verdict = classified || classifyAttempts(attempts);
+  const trulyMissing = verdict.allNotFound || (!!notFound && !verdict.allowAuto && verdict.anyNotFound);
+  return {
+    found: false,
+    symbol,
+    reason,
+    blocked: !trulyMissing && !verdict.allowAuto,
+    notFound: trulyMissing,
+    rateLimited: !!verdict.rateLimited,
+    allowAuto: !!verdict.allowAuto,
+    source: verdict.allowAuto ? 'auto' : 'manual',
+    attempts,
+    kinds: verdict.kinds,
+    cooldownUntil: verdict.anyRateLimit ? earliestCooldownIso() : null,
+    currency: listing.currency,
+    exchange: listing.exchange,
+    region: suggestion?.region || listing.region,
+    guessType,
+    name: suggestion?.name || null,
+    sector: suggestion?.sector || null,
+    country: suggestion?.region || listing.region || null,
+    suggestion,
+  };
 }
 
 // Probe every provider against representative symbols so the failure mode is
@@ -303,13 +409,26 @@ export async function probeAll(symbols = ['AAPL', 'XBB.TO']) {
   for (const p of PROVIDERS) {
     for (const sym of symbols) {
       const t = Date.now();
+      if (isCoolingDown(p.id)) {
+        const until = cooldownUntil(p.id);
+        results.push({
+          provider: p.id, symbol: sym, ok: false, skipped: true,
+          coolingDown: true,
+          cooldownUntil: new Date(until).toISOString(),
+          remainingMs: Math.max(0, until - Date.now()),
+          error: 'cooling down after a recent rate-limit',
+          ms: Date.now() - t,
+        });
+        continue;
+      }
       try {
         const q = await p.quote(sym);
         results.push({ provider: p.id, symbol: sym, ok: true, price: q.price, ms: Date.now() - t });
       } catch (e) {
+        markIfCooldownError(p.id, e);
         results.push({
           provider: p.id, symbol: sym, ok: false,
-          status: e instanceof YahooError ? e.status : null,
+          status: e instanceof YahooError ? e.status : (e.status ?? null),
           notFound: isNotFound(e),
           error: e.message, ms: Date.now() - t,
         });

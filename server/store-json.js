@@ -52,8 +52,10 @@ export class JsonStore {
     const inst = this.db.instruments[id];
     if (!inst) return null;
     const next = breakdownPatchPresent(patch) ? nextBreakdownFields(inst, patch) : null;
+    if (patch.name !== undefined && patch.name) inst.name = String(patch.name);
     if (patch.sector !== undefined) inst.sector = patch.sector || null;
     if (patch.country !== undefined) inst.country = patch.country || null;
+    if (patch.meta !== undefined) inst.meta = patch.meta || null;
     if (patch.mer !== undefined) inst.mer = patch.mer === null || patch.mer === '' ? null : Number(patch.mer);
     if (patch.publishedReturns !== undefined) {
       inst.publishedReturns = normalizePublishedReturns(patch.publishedReturns);

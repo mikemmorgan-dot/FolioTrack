@@ -26,6 +26,13 @@ const TYPES = [
 let seq = 0;
 const keyify = () => `h${seq++}`;
 
+function formatCooldown(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
 // Cash is an ordinary manual holding whose NAV never moves — $1.00, always —
 // so it needs no special-casing anywhere in the pricing/return/risk math:
 // a constant price is already exactly 0% return, 0% volatility by
@@ -147,7 +154,11 @@ export default function EditModel({ model, initialWeights, onClose, onSaved }) {
         const weight = (Number(r.weightPct) || 0) / 100;
         if (r.instrumentId) return { instrumentId: r.instrumentId, weight };
         return {
-          instrument: { symbol: r.symbol, name: r.name, type: r.type, source: r.source, currency: r.currency, sector: r.sector, country: r.country, mer: r.mer },
+          instrument: {
+            symbol: r.symbol, name: r.name, type: r.type, source: r.source,
+            currency: r.currency, sector: r.sector, country: r.country, mer: r.mer,
+            ...(r.meta ? { meta: r.meta } : {}),
+          },
           weight,
           ...(r.initialNav ? { initialNav: r.initialNav } : {}),
         };
@@ -239,7 +250,7 @@ function AddPanel({ rows, onAdd, onCancel, onProposal, hasCash }) {
   // overwrite their choice — that was silently resetting the selection to Fund.
   const [allocationRaw, setAllocationRaw] = useState('');
   const [mode, setMode] = useState(FUND_PROPORTIONAL);
-  const [touched, setTouched] = useState({ type: false, name: false, sector: false, country: false });
+  const [touched, setTouched] = useState({ type: false, name: false, sector: false, country: false, currency: false });
   const panelRef = useRef(null);
   const resultRef = useRef(null);
   const isCash = form.type === 'cash';
@@ -283,6 +294,9 @@ function AddPanel({ rows, onAdd, onCancel, onProposal, hasCash }) {
     const point = !isCash && form.nav !== '' && form.navDate && Number.isFinite(Number(form.nav))
       ? { date: form.navDate, nav: Number(form.nav) }
       : null;
+    const liveSource = point || isCash
+      ? 'manual'
+      : (!resolved || resolved.found || resolved.allowAuto ? 'auto' : 'manual');
     onProposal?.({
       adding: true,
       allocationRaw,
@@ -290,12 +304,12 @@ function AddPanel({ rows, onAdd, onCancel, onProposal, hasCash }) {
       mode,
       symbol: sym,
       isCash,
-      source: point || isCash ? 'manual' : 'auto',
+      source: liveSource,
       initialNav: point,
       name: isCash ? 'Cash' : (form.name || sym),
       type: isCash ? 'cash' : form.type,
     });
-  }, [onProposal, allocationRaw, alloc.value, mode, sym, isCash, form.nav, form.navDate, form.name, form.type]);
+  }, [onProposal, allocationRaw, alloc.value, mode, sym, isCash, form.nav, form.navDate, form.name, form.type, resolved]);
 
   useEffect(() => () => onProposal?.(null), [onProposal]);
 
@@ -318,23 +332,21 @@ function AddPanel({ rows, onAdd, onCancel, onProposal, hasCash }) {
     try {
       const r = await api.lookup(symbol.trim());
       setResolved(r);
+      const suggested = r.suggestion || null;
       setForm((f) => ({
         ...f,
         // Only fill fields the user hasn't set themselves — and on a failed
-        // lookup, clear them back to blank rather than leaving whatever a
-        // PREVIOUS (different) symbol's successful lookup had filled in.
-        // Otherwise a blocked H.TO lookup right after a resolved bare H
-        // leaves Hyatt's name sitting there looking like it belongs to H.TO.
-        name: touched.name ? f.name : (r.found ? r.name : ''),
-        type: touched.type ? f.type : (r.found ? r.guessType : 'stock'),
-        currency: r.found ? (r.currency || f.currency) : f.currency,
-        // Best-effort — providers.js only fills these in when its profile
-        // source (Twelve Data) actually covers the symbol, unverified for TSX.
-        // Same stale-data reasoning as name/type: a symbol change that fails
-        // to classify (or fails outright) must not keep a DIFFERENT earlier
-        // symbol's sector/country sitting there looking current.
-        sector: touched.sector ? f.sector : (r.sector || ''),
-        country: touched.country ? f.country : (r.country || ''),
+        // lookup, clear them back to blank (or to this symbol's offline
+        // suggestion) rather than leaving whatever a PREVIOUS symbol filled in.
+        name: touched.name ? f.name : (r.found ? (r.name || suggested?.name || '') : (suggested?.name || '')),
+        type: touched.type ? f.type : (r.guessType || 'stock'),
+        currency: touched.currency ? f.currency : (r.currency || f.currency),
+        sector: touched.sector ? f.sector : (r.found ? (r.sector || suggested?.sector || '') : (suggested?.sector || '')),
+        country: touched.country ? f.country : (
+          r.found
+            ? (r.country || suggested?.region || '')
+            : (suggested?.region || r.region || '')
+        ),
       }));
     } catch (e) {
       setResolved({ found: false, symbol, reason: e.message, blocked: true });
@@ -348,11 +360,11 @@ function AddPanel({ rows, onAdd, onCancel, onProposal, hasCash }) {
     // Cash skips lookup entirely and uses the same instrument shape as the
     // automatic shortfall-fill: symbol CASH, type cash, source manual, NAV $1.
     // 'auto' = priced from the provider chain. 'manual' = priced from
-    // user-entered NAVs. Only an actual confirmed price earns 'auto' — a
-    // block doesn't get the benefit of the doubt. That used to be assumed
-    // transient for listed types, but for TSX specifically it isn't: no
-    // free-tier fallback covers TSX quotes (see providers.js), so a blocked
-    // TSX symbol would otherwise sit "auto" and just never price.
+    // user-entered NAVs. A confirmed quote stays auto. So does a lookup where
+    // every hop was a cooldown, 429/403, missing key, or unreachable host and
+    // at least one was rate-limiting — prices fill in on a later quote. A
+    // provider that said the symbol does not exist stays manual. An entered
+    // NAV always forces manual.
     const row = isCash
       ? cashRow(alloc.value)
       : {
@@ -360,12 +372,23 @@ function AddPanel({ rows, onAdd, onCancel, onProposal, hasCash }) {
         symbol: sym,
         name: form.name || sym,
         type: form.type,
-        source: manualNav ? 'manual' : (resolved?.found ? 'auto' : 'manual'),
+        source: manualNav ? 'manual' : ((resolved?.found || resolved?.allowAuto) ? 'auto' : 'manual'),
         currency: form.currency || 'CAD',
         sector: form.sector || null,
         country: form.country || null,
         mer: form.mer.trim() === '' ? null : Number(form.mer),
         weightPct: alloc.value,
+        ...((!resolved?.found && resolved?.allowAuto) ? {
+          meta: {
+            unverified: true,
+            locks: {
+              name: !!touched.name,
+              sector: !!touched.sector,
+              country: !!touched.country,
+            },
+            suggested: resolved.suggestion || null,
+          },
+        } : {}),
         ...(manualNav ? { initialNav: manualNav } : {}),
       };
     const result = applyFunding(rows, row, { mode, allocationPct: alloc.value });
@@ -504,6 +527,20 @@ function AddPanel({ rows, onAdd, onCancel, onProposal, hasCash }) {
                   <div><span className="pill amber">That looks like a company name</span></div>
                   <div className="reason">Enter the ticker symbol instead — e.g. Hydro One is <code>H.TO</code>, Royal Bank is <code>RY.TO</code>. TSX listings use the <code>.TO</code> suffix; a bare symbol is treated as US-listed.</div>
                 </div>
+              ) : resolved.rateLimited ? (
+                <div className="notfound blocked-note rate-limit-note">
+                  <div><span className="pill amber">Rate limited</span></div>
+                  <div className="rate-limit-msg">
+                    Price sources are rate-limited right now, so I couldn't look up {(resolved.symbol || sym || '').toUpperCase()}. You can add it now and prices will fill in later.
+                  </div>
+                  {resolved.cooldownUntil && (
+                    <div className="reason">Cooldown ends {formatCooldown(resolved.cooldownUntil)}.</div>
+                  )}
+                  <button type="button" className="lookup-retry" onClick={doLookup} disabled={looking}>
+                    {looking ? '…' : 'Retry'}
+                  </button>
+                  <div className="reason">Open <code>/api/diagnostics</code> to see which price sources are cooling down.</div>
+                </div>
               ) : resolved.blocked ? (
                 <div className="notfound blocked-note">
                   <div><span className="pill amber">No data source reachable</span> couldn’t verify this ticker</div>
@@ -511,7 +548,11 @@ function AddPanel({ rows, onAdd, onCancel, onProposal, hasCash }) {
                   <div className="reason">Adding this as a manual holding for now — enter a NAV below and update it periodically. Open <code>/api/diagnostics</code> to see which price sources currently work.</div>
                 </div>
               ) : (
-                <div className="notfound"><span className="pill neutral">Not on Yahoo</span> add it manually below</div>
+                <div className="notfound"><span className="pill neutral">Not found</span> add it manually below</div>
+              )}
+
+              {resolved.suggestion && !resolved.found && (
+                <p className="suggested-note">suggested, edit if wrong</p>
               )}
 
               <label className="field"><span>Name</span>
@@ -521,7 +562,9 @@ function AddPanel({ rows, onAdd, onCancel, onProposal, hasCash }) {
               </label>
 
               <div className="field-row">
-                <label className="field"><span>Currency</span><input type="text" value={form.currency} onChange={set('currency')} /></label>
+                <label className="field"><span>Currency</span>
+                  <input type="text" value={form.currency} onChange={(e) => { setTouched((t) => ({ ...t, currency: true })); set('currency')(e); }} />
+                </label>
                 <label className="field"><span>Sector (optional)</span>
                   <ClassifySelect options={SECTOR_OPTIONS} value={form.sector} placeholder="e.g. Energy"
                     onChange={(v) => { setTouched((t) => ({ ...t, sector: true })); setForm((f) => ({ ...f, sector: v })); }} />
@@ -544,7 +587,9 @@ function AddPanel({ rows, onAdd, onCancel, onProposal, hasCash }) {
                 <label className="field"><span>NAV (optional)</span><input type="number" inputMode="decimal" value={form.nav} onChange={set('nav')} placeholder="e.g. 42.15" /></label>
               </div>
               <p className="note" style={{ paddingTop: 0 }}>
-                Optional. If you enter a NAV, this name is priced from your numbers — use this when live TSX quotes fail.
+                {resolved.allowAuto
+                  ? 'Optional. A NAV prices this name from your numbers and marks it manual. Leave it blank to keep live pricing once sources recover.'
+                  : 'Optional. If you enter a NAV, this name is priced from your numbers — use this when live quotes fail.'}
               </p>
 
               {gate.disabled && <p className="fund-help">{gate.message}</p>}

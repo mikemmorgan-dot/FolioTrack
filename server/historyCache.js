@@ -1,6 +1,7 @@
 // historyCache.js — persistent, cache-first price history.
 //
-// Live providers (Yahoo → Twelve Data → Finnhub → Alpha Vantage) are tried
+// Live providers (Yahoo query1 → Yahoo query2 → Twelve Data → Finnhub →
+// Alpha Vantage → Stooq) are tried
 // sequentially and only on a miss/stale cache. A successful series is stored
 // and reused for 18h (equities are end-of-day). If every live hop fails but
 // we still have a stored series, that series is returned with stale: true

@@ -34,9 +34,49 @@ export class YahooError extends Error {
   }
 }
 
-async function fetchChart(symbol, range, interval) {
+export function quoteFromChartResult(symbol, r) {
+  const m = r?.meta || {};
+  return {
+    symbol,
+    price: m.regularMarketPrice ?? null,
+    previousClose: m.chartPreviousClose ?? m.previousClose ?? null,
+    currency: m.currency ?? null,
+    exchange: m.exchangeName ?? null,
+    name: m.longName || m.shortName || symbol,
+    asOf: m.regularMarketTime ? new Date(m.regularMarketTime * 1000).toISOString() : null,
+  };
+}
+
+export function seriesFromChartResult(r) {
+  const ts = r?.timestamp || [];
+  const adj = r?.indicators?.adjclose?.[0]?.adjclose || [];
+  const close = r?.indicators?.quote?.[0]?.close || [];
+  return ts
+    .map((t, i) => ({
+      date: new Date(t * 1000).toISOString().slice(0, 10),
+      close: adj[i] ?? close[i] ?? null,
+    }))
+    .filter((p) => p.close != null);
+}
+
+// Throws YahooError. A chart error for an unknown symbol is notFound; anything
+// else (including a missing result) is a failed hop, not a confident miss when
+// the payload itself says the symbol is unknown.
+export function readChartPayload(json, symbol) {
+  const errCode = json?.chart?.error?.code;
+  if (errCode) {
+    const notFound = /not\s*found|No data found/i.test(`${errCode} ${json?.chart?.error?.description || ''}`);
+    throw new YahooError(json?.chart?.error?.description || errCode, { notFound, blocked: !notFound });
+  }
+  const result = json?.chart?.result?.[0];
+  if (!result) throw new YahooError(`No data returned for ${symbol}`, { notFound: true });
+  return result;
+}
+
+async function fetchChart(symbol, range, interval, hosts = HOSTS) {
+  const list = Array.isArray(hosts) && hosts.length ? hosts : HOSTS;
   let lastErr = null;
-  for (const host of HOSTS) {
+  for (const host of list) {
     const url = `${host}${PATH}/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}`;
     let res;
     try {
@@ -70,45 +110,19 @@ async function fetchChart(symbol, range, interval) {
       continue;
     }
 
-    const errCode = json?.chart?.error?.code;
-    if (errCode) {
-      const notFound = /not\s*found|No data found/i.test(`${errCode} ${json?.chart?.error?.description || ''}`);
-      throw new YahooError(json?.chart?.error?.description || errCode, { notFound, blocked: !notFound });
-    }
-
-    const result = json?.chart?.result?.[0];
-    if (!result) throw new YahooError(`No data returned for ${symbol}`, { notFound: true });
-    return result;
+    return readChartPayload(json, symbol);
   }
   throw lastErr || new YahooError('Yahoo unreachable', { blocked: true });
 }
 
-export async function getQuote(symbol) {
-  const r = await fetchChart(symbol, '1d', '1d');
-  const m = r.meta || {};
-  return {
-    symbol,
-    price: m.regularMarketPrice ?? null,
-    previousClose: m.chartPreviousClose ?? m.previousClose ?? null,
-    currency: m.currency ?? null,
-    exchange: m.exchangeName ?? null,
-    name: m.longName || m.shortName || symbol,
-    asOf: m.regularMarketTime ? new Date(m.regularMarketTime * 1000).toISOString() : null,
-  };
+export async function getQuote(symbol, hosts) {
+  const r = await fetchChart(symbol, '1d', '1d', hosts);
+  return quoteFromChartResult(symbol, r);
 }
 
-export async function getHistory(symbol, range = '1y', interval = '1d') {
-  const r = await fetchChart(symbol, range, interval);
-  const ts = r.timestamp || [];
-  const adj = r.indicators?.adjclose?.[0]?.adjclose || [];
-  const close = r.indicators?.quote?.[0]?.close || [];
-  const series = ts
-    .map((t, i) => ({
-      date: new Date(t * 1000).toISOString().slice(0, 10),
-      close: adj[i] ?? close[i] ?? null,
-    }))
-    .filter((p) => p.close != null);
-  return { symbol, range, interval, series };
+export async function getHistory(symbol, range = '1y', interval = '1d', hosts) {
+  const r = await fetchChart(symbol, range, interval, hosts);
+  return { symbol, range, interval, series: seriesFromChartResult(r) };
 }
 
 // Resolve a ticker for the editor. Never collapses a block into "not found":

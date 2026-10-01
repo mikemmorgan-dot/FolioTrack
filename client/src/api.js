@@ -162,7 +162,17 @@ export function applyHoldingPrices(model, payload) {
     holdings: model.holdings.map((h) => {
       const q = byId.get(h.id);
       if (!q) return h;
-      return { ...h, price: q.price, priceAsOf: q.priceAsOf, priceSource: q.priceSource };
+      return {
+        ...h,
+        price: q.price,
+        priceAsOf: q.priceAsOf,
+        priceSource: q.priceSource,
+        ...(q.metadataUpdated ? {
+          name: q.name ?? h.name,
+          sector: q.sector ?? h.sector,
+          country: q.country ?? h.country,
+        } : {}),
+      };
     }),
   };
 }
