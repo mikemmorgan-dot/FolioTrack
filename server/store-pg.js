@@ -3,9 +3,16 @@ import { makePool, initSchema, seedIfEmpty } from './db.js';
 import { uid, instrumentFromSpec, currentVersionOf, holdingsEqual, breakdownPatchPresent, nextBreakdownFields } from './util.js';
 import { planNavBatch, todayToronto, batchError } from './nav.js';
 import { normalizePublishedReturns } from './factsheet/publishedReturns.js';
+import { coerceAlertSettings, applyAlertSettingsPatch } from './alerts/settings.js';
 
 const numOrNull = (x) => (x == null ? null : Number(x));
 const d = (x) => (x instanceof Date ? x.toISOString().slice(0, 10) : String(x).slice(0, 10));
+const isoTs = (x) => {
+  if (x == null) return null;
+  if (x instanceof Date) return x.toISOString();
+  const t = Date.parse(x);
+  return Number.isFinite(t) ? new Date(t).toISOString() : String(x);
+};
 
 function rowToInstrument(r) {
   return {
@@ -209,6 +216,158 @@ export class PgStore {
       range: r.range,
       fetchedAt: r.fetched_at instanceof Date ? r.fetched_at.toISOString() : String(r.fetched_at),
     };
+  }
+
+  async getAlertSettings() {
+    const { rows } = await this.pool.query(`SELECT value FROM app_settings WHERE key='alerts'`);
+    return coerceAlertSettings(rows[0]?.value || {});
+  }
+  async saveAlertSettings(patch) {
+    const next = applyAlertSettingsPatch(await this.getAlertSettings(), patch);
+    await this.pool.query(
+      `INSERT INTO app_settings (key, value, updated_at) VALUES ('alerts', $1::jsonb, now())
+       ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
+      [JSON.stringify(next)],
+    );
+    return next;
+  }
+  async getAlertCheckMeta() {
+    const { rows } = await this.pool.query(`SELECT value FROM app_settings WHERE key='alertCheck'`);
+    return rows[0]?.value || null;
+  }
+  async setAlertCheckMeta(meta) {
+    await this.pool.query(
+      `INSERT INTO app_settings (key, value, updated_at) VALUES ('alertCheck', $1::jsonb, now())
+       ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
+      [JSON.stringify(meta)],
+    );
+    return meta;
+  }
+  async getAlertMissUntil() {
+    const { rows } = await this.pool.query(`SELECT value FROM app_settings WHERE key='alertMissUntil'`);
+    return rows[0]?.value || {};
+  }
+  async setAlertMissUntil(obj) {
+    await this.pool.query(
+      `INSERT INTO app_settings (key, value, updated_at) VALUES ('alertMissUntil', $1::jsonb, now())
+       ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
+      [JSON.stringify(obj || {})],
+    );
+    return obj || {};
+  }
+
+  _rowToAlertEvent(r) {
+    if (!r) return null;
+    return {
+      instrumentId: r.instrument_id,
+      symbol: r.symbol,
+      name: r.name,
+      status: r.status,
+      firstBreachedAt: isoTs(r.first_breached_at),
+      lastNotifiedAt: isoTs(r.last_notified_at),
+      recoveredAt: isoTs(r.recovered_at),
+      referencePrice: numOrNull(r.reference_price),
+      referenceDate: r.reference_date ? d(r.reference_date) : null,
+      priceAtBreach: numOrNull(r.price_at_breach),
+      drawdownAtBreach: numOrNull(r.drawdown_at_breach),
+      currentPrice: numOrNull(r.current_price),
+      currentDrawdown: numOrNull(r.current_drawdown),
+      threshold: numOrNull(r.threshold),
+      notifyStatus: r.notify_status,
+      notifyDetail: r.notify_detail,
+      basis: r.basis,
+      basisLabel: r.basis_label,
+      priceAsOf: r.price_as_of ? d(r.price_as_of) : null,
+      historyFetchedAt: isoTs(r.history_fetched_at),
+      stale: !!r.stale,
+      models: r.models || [],
+      currency: r.currency,
+      lastEvalNote: r.last_eval_note,
+      updatedAt: isoTs(r.updated_at),
+    };
+  }
+  async getAlertEvent(instrumentId) {
+    const { rows } = await this.pool.query('SELECT * FROM alert_events WHERE instrument_id=$1', [instrumentId]);
+    return this._rowToAlertEvent(rows[0]);
+  }
+  async listAlertEvents() {
+    const { rows } = await this.pool.query('SELECT * FROM alert_events ORDER BY first_breached_at DESC NULLS LAST');
+    return rows.map((r) => this._rowToAlertEvent(r));
+  }
+  async upsertAlertEvent(event) {
+    const e = event;
+    const { rows } = await this.pool.query(
+      `INSERT INTO alert_events (
+         instrument_id, symbol, name, status, first_breached_at, last_notified_at, recovered_at,
+         reference_price, reference_date, price_at_breach, drawdown_at_breach, current_price,
+         current_drawdown, threshold, notify_status, notify_detail, basis, basis_label,
+         price_as_of, history_fetched_at, stale, models, currency, last_eval_note, updated_at
+       ) VALUES (
+         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23,$24,$25
+       )
+       ON CONFLICT (instrument_id) DO UPDATE SET
+         symbol=EXCLUDED.symbol, name=EXCLUDED.name, status=EXCLUDED.status,
+         first_breached_at=EXCLUDED.first_breached_at, last_notified_at=EXCLUDED.last_notified_at,
+         recovered_at=EXCLUDED.recovered_at, reference_price=EXCLUDED.reference_price,
+         reference_date=EXCLUDED.reference_date, price_at_breach=EXCLUDED.price_at_breach,
+         drawdown_at_breach=EXCLUDED.drawdown_at_breach, current_price=EXCLUDED.current_price,
+         current_drawdown=EXCLUDED.current_drawdown, threshold=EXCLUDED.threshold,
+         notify_status=EXCLUDED.notify_status, notify_detail=EXCLUDED.notify_detail,
+         basis=EXCLUDED.basis, basis_label=EXCLUDED.basis_label, price_as_of=EXCLUDED.price_as_of,
+         history_fetched_at=EXCLUDED.history_fetched_at, stale=EXCLUDED.stale,
+         models=EXCLUDED.models, currency=EXCLUDED.currency, last_eval_note=EXCLUDED.last_eval_note,
+         updated_at=EXCLUDED.updated_at
+       RETURNING *`,
+      [
+        e.instrumentId, e.symbol, e.name || null, e.status,
+        e.firstBreachedAt || null, e.lastNotifiedAt || null, e.recoveredAt || null,
+        e.referencePrice ?? null, e.referenceDate || null, e.priceAtBreach ?? null,
+        e.drawdownAtBreach ?? null, e.currentPrice ?? null, e.currentDrawdown ?? null,
+        e.threshold ?? null, e.notifyStatus || null, e.notifyDetail || null,
+        e.basis || null, e.basisLabel || null, e.priceAsOf || null, e.historyFetchedAt || null,
+        !!e.stale, JSON.stringify(e.models || []), e.currency || null, e.lastEvalNote || null,
+        e.updatedAt || new Date().toISOString(),
+      ],
+    );
+    return this._rowToAlertEvent(rows[0]);
+  }
+
+  _rowToAlertHistory(r) {
+    if (!r) return null;
+    return {
+      id: r.id,
+      instrumentId: r.instrument_id,
+      symbol: r.symbol,
+      name: r.name,
+      kind: r.kind,
+      at: isoTs(r.at),
+      drawdown: numOrNull(r.drawdown),
+      price: numOrNull(r.price),
+      referencePrice: numOrNull(r.reference_price),
+      referenceDate: r.reference_date ? d(r.reference_date) : null,
+      detail: r.detail,
+      models: r.models || [],
+    };
+  }
+  async appendAlertHistory(entry) {
+    await this.pool.query(
+      `INSERT INTO alert_history (
+         id, instrument_id, symbol, name, kind, at, drawdown, price, reference_price, reference_date, detail, models
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)`,
+      [
+        entry.id, entry.instrumentId, entry.symbol, entry.name || null, entry.kind, entry.at,
+        entry.drawdown ?? null, entry.price ?? null, entry.referencePrice ?? null,
+        entry.referenceDate || null, entry.detail || null, JSON.stringify(entry.models || []),
+      ],
+    );
+    return entry;
+  }
+  async listAlertHistory(limit = 40) {
+    const { rows } = await this.pool.query(
+      'SELECT * FROM alert_history ORDER BY at DESC LIMIT $1',
+      [Math.max(1, Number(limit) || 40)],
+    );
+    return rows.map((r) => this._rowToAlertHistory(r));
   }
 
   async _versionsFor(modelKey) {

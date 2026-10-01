@@ -29,3 +29,15 @@ services:
       # other three providers all miss. Set in the Render dashboard, not here.
       - key: ALPHAVANTAGE_API_KEY
         sync: false
+      # Resend (https://resend.com) — price-drop alerts. Render free tier blocks
+      # outbound SMTP, so mail goes through the HTTPS API only. The default
+      # onboarding@resend.dev sender can only deliver to the account owner's email.
+      - key: RESEND_API_KEY
+        sync: false
+      # Optional. Defaults to: FolioTrack <onboarding@resend.dev>
+      - key: ALERT_FROM
+        sync: false
+      # Secret for GET/POST /api/alerts/check?token=... (cron-job.org / UptimeRobot).
+      # The free instance sleeps, so an external ping every 15–30 min is required.
+      - key: ALERT_CRON_TOKEN
+        sync: false

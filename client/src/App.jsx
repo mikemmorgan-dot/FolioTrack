@@ -43,11 +43,15 @@ export default function App() {
   const [, setSettingsRev] = useState(0);
   const [err, setErr] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [alertCount, setAlertCount] = useState(0);
+
+  const refreshAlerts = () => api.alerts().then((a) => setAlertCount(a.activeCount || 0)).catch(() => {});
 
   useEffect(() => {
     api.models()
       .then((m) => { setModels(m); setSelected((s) => s || m[0]?.key || null); })
       .catch((e) => setErr(e.message));
+    refreshAlerts();
   }, []);
 
   // Bumped on every load so an in-flight GET for model A cannot overwrite
@@ -96,8 +100,8 @@ export default function App() {
   return (
     <div className={`app${isCompare ? ' compare-mode' : ''}`}>
       <header className="topbar">
-        <button className="icon-btn" aria-label="Menu" aria-haspopup="menu" aria-expanded={menuOpen}
-          onClick={() => setMenuOpen((o) => !o)}><IconMenu /></button>
+        <button className="icon-btn" aria-label={alertCount > 0 ? `Menu, ${alertCount} price alert${alertCount === 1 ? '' : 's'} active` : 'Menu'} aria-haspopup="menu" aria-expanded={menuOpen}
+          onClick={() => { setMenuOpen((o) => !o); if (!menuOpen) refreshAlerts(); }}><IconMenu />{alertCount > 0 && <span className="alert-badge" />}</button>
         <h1>Model Portfolios</h1>
         <button className="icon-btn" aria-label="Search"><IconSearch /></button>
       </header>
@@ -122,7 +126,10 @@ export default function App() {
           <button type="button" className="app-menu-backdrop" aria-label="Close menu" onClick={() => setMenuOpen(false)} />
           <div className="app-menu" role="menu">
             <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setPricesOpen(true); }}>Prices</button>
-            <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setSettingsOpen(true); }}>Settings</button>
+            <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setSettingsOpen(true); }}>
+              Settings
+              {alertCount > 0 && <span className="menu-alert-dot" aria-label={`${alertCount} breached`} />}
+            </button>
           </div>
         </>
       )}
@@ -183,8 +190,9 @@ export default function App() {
 
       {settingsOpen && (
         <SettingsPanel
-          onClose={() => setSettingsOpen(false)}
-          onSaved={() => { setSettingsOpen(false); setSettingsRev((r) => r + 1); }}
+          onClose={() => { setSettingsOpen(false); refreshAlerts(); }}
+          onSaved={() => setSettingsRev((r) => r + 1)}
+          onAlertCount={setAlertCount}
         />
       )}
 

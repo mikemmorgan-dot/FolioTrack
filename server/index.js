@@ -29,6 +29,10 @@ import { firstAddedToModel, filterSeriesByRange, periodReturnFromSeries, rangeBo
 import { periodReturnsFromSeries } from './periodReturns.js';
 import { publishedToPeriodRow } from './factsheet/publishedReturns.js';
 import { buildCompare } from './compare.js';
+import { createEmailSender } from './alerts/email.js';
+import { createAlertService } from './alerts/check.js';
+import { createAlertRouter } from './alerts/http.js';
+import { startAlertScheduler } from './alerts/schedule.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -659,6 +663,21 @@ app.get('/api/history/:symbol', async (req, res) => {
   catch (e) { res.status(502).json({ error: e.message }); }
 });
 
+// Price-drop alerts. The check reads the history cache (18h TTL, no force
+// refresh) and nav_series. It does not call the live quote endpoint. Provider
+// cooldown lives inside that cache; a total miss backs off for 6 hours.
+const alertEmail = createEmailSender();
+const alerts = createAlertService({
+  store,
+  getHistory: (symbol, range) => cachedHistory(symbol, range || 'max', { force: false }),
+  email: alertEmail,
+});
+app.use('/api/alerts', createAlertRouter({
+  store,
+  runCheck: () => alerts.runCheck(),
+  sendTestEmail: () => alerts.sendTestEmail(),
+}));
+
 // ---------------- static client ----------------
 const clientDist = path.join(__dirname, '..', 'client', 'dist');
 app.use(express.static(clientDist));
@@ -667,10 +686,19 @@ app.get('*', (_req, res) => res.sendFile(path.join(clientDist, 'index.html')));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log(`MPT server on :${PORT}`);
+  if (!String(process.env.RESEND_API_KEY || '').trim()) {
+    console.warn('[alerts] RESEND_API_KEY is not set — breaches will be recorded as pending - email not configured');
+  }
+  if (!String(process.env.ALERT_CRON_TOKEN || '').trim()) {
+    console.warn('[alerts] ALERT_CRON_TOKEN is not set — /api/alerts/check will reject every request');
+  }
   // State the Yahoo verdict in the deploy log so it never has to be guessed.
+  // Probe first so its cooldowns are in place before the alert check asks
+  // the history cache for anything stale.
   const probe = await probeAll();
   console.log(`[data] ${probe.verdict}`);
   for (const r of probe.results) {
     if (!r.ok) console.warn(`[data] ${r.provider} ${r.symbol}: ${r.error}`);
   }
+  startAlertScheduler({ run: () => alerts.runCheck() });
 });

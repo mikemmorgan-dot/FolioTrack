@@ -53,8 +53,14 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 }
 .topbar h1 { font-size: 19px; font-weight: 700; letter-spacing: -0.02em; margin: 0; }
 .icon-btn {
+  position: relative;
   width: 38px; height: 38px; border: none; background: none;
   display: grid; place-items: center; color: var(--text); border-radius: 12px;
+}
+.alert-badge {
+  position: absolute; top: 6px; right: 6px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--red); box-shadow: 0 0 0 2px #000;
 }
 .icon-btn:active { background: var(--surface-2); }
 
@@ -525,10 +531,12 @@ a.ext { color: var(--green); text-decoration: none; }
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
 }
 .app-menu button {
-  display: block; width: 100%; text-align: left;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; text-align: left;
   background: none; border: none; padding: 14px 16px; border-radius: 12px;
   font-size: 16px; font-weight: 600;
 }
+.menu-alert-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); flex: none; }
 .app-menu button:active { background: var(--surface-3); }
 @media (min-width: 620px) {
   .app-menu { left: calc(50% - 240px + 12px); }
@@ -634,3 +642,28 @@ a.ext { color: var(--green); text-decoration: none; }
   .compare-card-stats { grid-template-columns: 1fr 1fr; }
   .compare-pair-label { width: 92px; font-size: 12px; }
 }
+
+/* ---------- price drop alerts (settings) ---------- */
+.switch-row {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+  margin: 4px 0 8px;
+}
+.switch-label { font-size: 16px; font-weight: 700; padding-top: 2px; }
+.switch-row .ed-hint { margin: 4px 0 0; }
+.switch {
+  flex: none; width: 48px; height: 28px; border-radius: 999px; border: none;
+  background: var(--surface-3); padding: 3px; display: flex; align-items: center;
+}
+.switch.on { background: var(--green); }
+.switch span {
+  width: 22px; height: 22px; border-radius: 50%; background: #fff;
+  transform: translateX(0); transition: transform 0.15s;
+}
+.switch.on span { transform: translateX(20px); }
+.field-error { color: var(--red); font-size: 13px; margin: -6px 4px 12px; line-height: 1.4; }
+.save-ok { color: var(--green); font-size: 14px; font-weight: 700; margin: 8px 4px; }
+.alert-actions { display: flex; flex-direction: column; gap: 10px; margin: 8px 0 4px; }
+.alert-secondary { color: var(--text); }
+.alert-card .alert-sym { font-size: 16px; font-weight: 700; letter-spacing: -0.02em; }
+.alert-dd { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.03em; }
+.alert-basis { font-size: 13px; color: var(--text-2); line-height: 1.45; margin: 10px 0 0; }

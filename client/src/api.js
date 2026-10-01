@@ -57,6 +57,22 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }),
+  alerts: () => j('/api/alerts'),
+  saveAlertSettings: (body) =>
+    j('/api/alerts/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  runAlerts: () => j('/api/alerts/run', { method: 'POST' }),
+  testAlertEmail: async () => {
+    const res = await fetch('/api/alerts/test-email', { method: 'POST' });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body.ok === false) {
+      return { ok: false, error: body.error || body.message || `HTTP ${res.status}` };
+    }
+    return { ok: true, id: body.id || null };
+  },
 };
 
 // ---- formatting ----
