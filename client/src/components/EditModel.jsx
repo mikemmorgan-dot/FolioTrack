@@ -1,8 +1,19 @@
-import { useState, useRef, useEffect } from 'react';
-import { api, pct, typeColor, typeLabel } from '../api.js';
+import { useState, useRef, useEffect, useMemo } from 'react';
+import { api, pct, typeColor } from '../api.js';
 import { SECTOR_OPTIONS, REGION_OPTIONS } from '../classify.js';
 import RiskPreview from './RiskPreview.jsx';
 import ClassifySelect from './ClassifySelect.jsx';
+import {
+  FUND_CASH,
+  FUND_MANUAL,
+  FUND_PROPORTIONAL,
+  addDisabled,
+  allocationState,
+  applyFunding,
+  fundAllocation,
+  isCashHolding,
+  previewGate,
+} from '../funding.js';
 
 const TYPES = [
   { id: 'stock', label: 'Stock' },
@@ -47,6 +58,7 @@ export default function EditModel({ model, initialWeights, onClose, onSaved }) {
   const [effectiveDate, setEffectiveDate] = useState(new Date().toISOString().slice(0, 10));
   const [note, setNote] = useState('');
   const [adding, setAdding] = useState(false);
+  const [proposal, setProposal] = useState(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
   const [noChange, setNoChange] = useState(false);
@@ -66,15 +78,56 @@ export default function EditModel({ model, initialWeights, onClose, onSaved }) {
     setRows((rs) => rs.map((r) => ({ ...r, weightPct: +((Number(r.weightPct) || 0) / total * 100).toFixed(2) })));
   };
 
-  const addRow = (row) => {
-    setRows((rs) => {
-      // CASH is one instrument (ensureInstrument dedupes by symbol). A second
-      // row would collide on version_holdings' (version, instrument) PK.
-      if (row.symbol === CASH_SYMBOL && rs.some((r) => r.symbol === CASH_SYMBOL)) return rs;
-      return [...rs, { ...row, uiKey: keyify() }];
-    });
+  const addRow = (nextRows) => {
+    setRows(nextRows.map((r) => (r.uiKey ? r : { ...r, uiKey: keyify() })));
     setAdding(false);
   };
+
+  // While the add form is open, preview the funded book (existing weights
+  // adjusted + the new holding). Until the allocation is valid, preview stays
+  // off so it can't compare the current weights to themselves.
+  const pending = useMemo(() => {
+    if (!proposal) return null;
+    const gate = previewGate({
+      adding: true,
+      allocationRaw: proposal.allocationRaw,
+      symbol: proposal.symbol,
+      isCash: proposal.isCash,
+    });
+    if (gate.blocked) return { valid: false, message: gate.message, holdings: null };
+    if (proposal.isCash && rows.some((r) => isCashHolding(r))) {
+      return { valid: false, message: 'This model already has a cash holding — change its weight above.', holdings: null };
+    }
+    if (!proposal.isCash && proposal.symbol && rows.some((r) => String(r.symbol || '').toUpperCase() === proposal.symbol)) {
+      return { valid: false, message: 'That symbol is already in this model — change its weight above.', holdings: null };
+    }
+    const funded = fundAllocation({
+      holdings: rows.map((r) => ({
+        key: r.uiKey, symbol: r.symbol, name: r.name, weightPct: r.weightPct, type: r.type,
+      })),
+      newHolding: {
+        key: '__new__', symbol: proposal.symbol, name: proposal.name, isCash: proposal.isCash, type: proposal.type,
+      },
+      mode: proposal.mode,
+      allocationPct: proposal.value,
+    });
+    if (!funded.canAdd) return { valid: false, message: funded.warning || gate.message, holdings: null };
+    const byKey = new Map(funded.rows.filter((r) => !r.isNew).map((r) => [r.key, r.weightPct]));
+    const holdings = rows.map((r) => ({
+      instrumentId: r.instrumentId || undefined,
+      symbol: r.symbol,
+      source: r.source || (isCashHolding(r) ? 'manual' : 'auto'),
+      weight: (byKey.has(r.uiKey) ? byKey.get(r.uiKey) : (Number(r.weightPct) || 0)) / 100,
+    }));
+    holdings.push({
+      symbol: proposal.symbol,
+      source: proposal.source || 'auto',
+      weight: funded.newWeightPct / 100,
+      hypothetical: true,
+      ...(proposal.initialNav ? { initialNav: proposal.initialNav } : {}),
+    });
+    return { valid: true, message: null, holdings };
+  }, [proposal, rows]);
 
   async function save() {
     setSaving(true); setErr(null); setNoChange(false);
@@ -150,16 +203,24 @@ export default function EditModel({ model, initialWeights, onClose, onSaved }) {
         </div>
 
         {adding
-          ? <AddPanel onAdd={addRow} onCancel={() => setAdding(false)} hasCash={rows.some((r) => r.symbol === CASH_SYMBOL)} />
+          ? (
+            <AddPanel
+              rows={rows}
+              onAdd={addRow}
+              onCancel={() => setAdding(false)}
+              onProposal={setProposal}
+              hasCash={rows.some((r) => isCashHolding(r))}
+            />
+          )
           : <button type="button" className="add-holding" onClick={() => setAdding(true)}>+ Add holding</button>}
 
-        {rows.length > 0 && <RiskPreview modelKey={model.key} rows={rows} />}
+        {(rows.length > 0 || adding) && <RiskPreview modelKey={model.key} rows={rows} pending={pending} />}
 
         {err && <div className="banner" style={{ margin: '16px 0 0' }}>Couldn’t save — {err}</div>}
         {noChange && <div className="data-warn" style={{ margin: '16px 0 0' }}>No changes from the current version — nothing was saved.</div>}
       </div>
 
-      <div className={`sum-bar${balanced ? ' ok' : ''}`}>
+      <div className={`sum-bar${balanced ? ' ok' : overAllocated ? ' over' : ' short'}`}>
         <span>Total weight{!balanced && !overAllocated ? ` · ${pct((100 - total) / 100)} will go to Cash` : ''}</span>
         <span className="sum-val num">{pct(total / 100)}</span>
         {!balanced && <button type="button" className="sum-normalize" onClick={normalize}>Normalize to 100%</button>}
@@ -169,20 +230,77 @@ export default function EditModel({ model, initialWeights, onClose, onSaved }) {
   );
 }
 
-function AddPanel({ onAdd, onCancel, hasCash }) {
+function AddPanel({ rows, onAdd, onCancel, onProposal, hasCash }) {
   const [symbol, setSymbol] = useState('');
   const [looking, setLooking] = useState(false);
   const [resolved, setResolved] = useState(null); // null | {found,...}
   const [form, setForm] = useState({ name: '', type: 'stock', currency: 'CAD', sector: '', country: '', mer: '', navDate: '', nav: '' });
   // Once the user picks a type or edits a field themselves, lookups must not
   // overwrite their choice — that was silently resetting the selection to Fund.
+  const [allocationRaw, setAllocationRaw] = useState('');
+  const [mode, setMode] = useState(FUND_PROPORTIONAL);
   const [touched, setTouched] = useState({ type: false, name: false, sector: false, country: false });
   const panelRef = useRef(null);
   const resultRef = useRef(null);
   const isCash = form.type === 'cash';
+  const sym = isCash ? CASH_SYMBOL : symbol.trim().toUpperCase();
+  const navNum = Number(form.nav);
+  const manualNav = !isCash && form.nav !== '' && form.navDate && Number.isFinite(navNum)
+    ? { date: form.navDate, nav: navNum }
+    : null;
+  const alloc = allocationState(allocationRaw);
+  const cashModeOff = isCash || !hasCash;
+
+  const funded = alloc.valid ? fundAllocation({
+    holdings: rows.map((r) => ({
+      key: r.uiKey, symbol: r.symbol, name: r.name, weightPct: r.weightPct, type: r.type,
+    })),
+    newHolding: {
+      key: '__new__',
+      symbol: sym || 'NEW',
+      name: isCash ? 'Cash' : (form.name || sym || 'New holding'),
+      isCash,
+      type: isCash ? 'cash' : form.type,
+    },
+    mode,
+    allocationPct: alloc.value,
+  }) : null;
+
+  const duplicate = !isCash && !!sym && rows.some((r) => String(r.symbol || '').toUpperCase() === sym);
+  const gate = addDisabled({
+    allocationRaw,
+    funding: funded,
+    needsName: !isCash && !String(form.name || '').trim(),
+    duplicate,
+    cashAlready: isCash && hasCash,
+  });
+
+  useEffect(() => {
+    if (mode === FUND_CASH && cashModeOff) setMode(FUND_PROPORTIONAL);
+  }, [mode, cashModeOff]);
+
+  useEffect(() => {
+    const point = !isCash && form.nav !== '' && form.navDate && Number.isFinite(Number(form.nav))
+      ? { date: form.navDate, nav: Number(form.nav) }
+      : null;
+    onProposal?.({
+      adding: true,
+      allocationRaw,
+      value: alloc.value,
+      mode,
+      symbol: sym,
+      isCash,
+      source: point || isCash ? 'manual' : 'auto',
+      initialNav: point,
+      name: isCash ? 'Cash' : (form.name || sym),
+      type: isCash ? 'cash' : form.type,
+    });
+  }, [onProposal, allocationRaw, alloc.value, mode, sym, isCash, form.nav, form.navDate, form.name, form.type]);
+
+  useEffect(() => () => onProposal?.(null), [onProposal]);
 
   useEffect(() => { panelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, []);
-  useEffect(() => { if (resolved || isCash) resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, [resolved, isCash]);
+  useEffect(() => { if (resolved || isCash) resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }, [resolved, isCash]);
 
   async function doLookup() {
     if (!symbol.trim()) return;
@@ -226,39 +344,100 @@ function AddPanel({ onAdd, onCancel, hasCash }) {
   }
 
   function confirm() {
+    if (gate.disabled || !alloc.valid) return;
     // Cash skips lookup entirely and uses the same instrument shape as the
     // automatic shortfall-fill: symbol CASH, type cash, source manual, NAV $1.
-    if (isCash) {
-      if (hasCash) return;
-      onAdd(cashRow(0));
-      return;
-    }
     // 'auto' = priced from the provider chain. 'manual' = priced from
     // user-entered NAVs. Only an actual confirmed price earns 'auto' — a
     // block doesn't get the benefit of the doubt. That used to be assumed
     // transient for listed types, but for TSX specifically it isn't: no
     // free-tier fallback covers TSX quotes (see providers.js), so a blocked
     // TSX symbol would otherwise sit "auto" and just never price.
-    const auto = !!resolved?.found;
-    const row = {
-      instrumentId: null,
-      symbol: symbol.trim().toUpperCase(),
-      name: form.name || symbol.trim().toUpperCase(),
-      type: form.type,
-      source: auto ? 'auto' : 'manual',
-      currency: form.currency || 'CAD',
-      sector: form.sector || null,
-      country: form.country || null,
-      mer: form.mer.trim() === '' ? null : Number(form.mer),
-      weightPct: 0,
-    };
-    const navNum = Number(form.nav);
-    if (form.nav && form.navDate && Number.isFinite(navNum)) {
-      row.initialNav = { date: form.navDate, nav: navNum };
-      row.source = 'manual';
-    }
-    onAdd(row);
+    const row = isCash
+      ? cashRow(alloc.value)
+      : {
+        instrumentId: null,
+        symbol: sym,
+        name: form.name || sym,
+        type: form.type,
+        source: manualNav ? 'manual' : (resolved?.found ? 'auto' : 'manual'),
+        currency: form.currency || 'CAD',
+        sector: form.sector || null,
+        country: form.country || null,
+        mer: form.mer.trim() === '' ? null : Number(form.mer),
+        weightPct: alloc.value,
+        ...(manualNav ? { initialNav: manualNav } : {}),
+      };
+    const result = applyFunding(rows, row, { mode, allocationPct: alloc.value });
+    if (!result?.applied) return;
+    onAdd(result.applied);
   }
+
+  const manualNote = funded && mode === FUND_MANUAL
+    ? (funded.total > 100.5
+      ? `Total would be ${funded.total.toFixed(2)}%. Save stays blocked until weights are back to 100%.`
+      : funded.total < 99.5
+        ? `Total would be ${funded.total.toFixed(2)}%. A shortfall is added to Cash when you save.`
+        : null)
+    : null;
+  const totalClass = !funded ? ''
+    : funded.total > 100.5 ? 'over'
+      : Math.abs(funded.total - 100) > 0.5 ? 'short' : 'ok';
+
+  const allocationFields = (
+    <>
+      <label className="field alloc-field">
+        <span>Allocation %</span>
+        <input
+          type="number"
+          inputMode="decimal"
+          min="0"
+          max="100"
+          step="any"
+          placeholder="e.g. 5"
+          value={allocationRaw}
+          onChange={(e) => setAllocationRaw(e.target.value)}
+        />
+      </label>
+      {!alloc.valid && <p className="fund-help">{alloc.message}</p>}
+
+      <fieldset className="fund-modes">
+        <legend>Fund this allocation</legend>
+        <label className="fund-option">
+          <input type="radio" name="fund-mode" checked={mode === FUND_PROPORTIONAL} onChange={() => setMode(FUND_PROPORTIONAL)} />
+          <span>Scale existing holdings proportionally</span>
+        </label>
+        <label className={`fund-option${cashModeOff ? ' disabled' : ''}`}>
+          <input type="radio" name="fund-mode" checked={mode === FUND_CASH} disabled={cashModeOff} onChange={() => setMode(FUND_CASH)} />
+          <span>Take from Cash</span>
+        </label>
+        {cashModeOff && (
+          <p className="fund-help">{isCash ? 'Taking from cash doesn’t apply when the new holding is cash.' : 'No cash holding in this model.'}</p>
+        )}
+        <label className="fund-option">
+          <input type="radio" name="fund-mode" checked={mode === FUND_MANUAL} onChange={() => setMode(FUND_MANUAL)} />
+          <span>I'll adjust weights manually</span>
+        </label>
+      </fieldset>
+
+      {funded && (
+        <div className="fund-preview" aria-label="Resulting weights">
+          {funded.rows.map((r) => (
+            <div className={`fund-preview-row${r.isNew ? ' is-new' : ''}`} key={`${r.isNew ? 'new' : 'old'}-${r.key}`}>
+              <span>{r.isNew ? (r.symbol && r.symbol !== 'NEW' ? r.symbol : 'New holding') : (r.symbol || r.name)}</span>
+              <span className="num">{Number(r.weightPct).toFixed(2)}%</span>
+            </div>
+          ))}
+          <div className={`fund-preview-row total ${totalClass}`}>
+            <span>Total</span>
+            <span className="num">{funded.total.toFixed(2)}%</span>
+          </div>
+        </div>
+      )}
+      {funded?.warning && <div className="data-warn">{funded.warning}</div>}
+      {manualNote && <p className="fund-help">{manualNote}</p>}
+    </>
+  );
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -281,17 +460,19 @@ function AddPanel({ onAdd, onCancel, hasCash }) {
 
       {isCash ? (
         <div className="lookup-result" ref={resultRef}>
+          {allocationFields}
           <div className="notfound blocked-note">
             <div><span className="pill neutral">Manual · $1.00 NAV</span> not live-priced</div>
-            <div className="reason">Cash is an ordinary manual instrument with NAV fixed at $1.00 — it doesn’t need a ticker or a live quote. Set its weight in the list after adding.</div>
+            <div className="reason">Cash is an ordinary manual instrument with NAV fixed at $1.00 — it doesn’t need a ticker or a live quote. Enter the allocation above.</div>
             {hasCash && (
               <div className="reason">This model already has a cash holding — change its weight above rather than adding another.</div>
             )}
           </div>
+          {gate.disabled && !hasCash && <p className="fund-help">{gate.message}</p>}
           <div className="add-actions">
             <button type="button" className="ed-cancel" onClick={onCancel}>Cancel</button>
             {!hasCash && (
-              <button type="button" className="btn-primary sm" onClick={confirm}>Add to model</button>
+              <button type="button" className="btn-primary sm" onClick={confirm} disabled={gate.disabled}>Add to model</button>
             )}
           </div>
         </div>
@@ -303,6 +484,8 @@ function AddPanel({ onAdd, onCancel, hasCash }) {
               onChange={(e) => { setSymbol(e.target.value); setResolved(null); }} />
             <button type="button" className="lookup-btn" onClick={doLookup} disabled={looking || !symbol.trim()}>{looking ? '…' : 'Look up'}</button>
           </div>
+
+          {allocationFields}
 
           {resolved && (
             <div className="lookup-result" ref={resultRef}>
@@ -364,9 +547,10 @@ function AddPanel({ onAdd, onCancel, hasCash }) {
                 Optional. If you enter a NAV, this name is priced from your numbers — use this when live TSX quotes fail.
               </p>
 
+              {gate.disabled && <p className="fund-help">{gate.message}</p>}
               <div className="add-actions">
                 <button type="button" className="ed-cancel" onClick={onCancel}>Cancel</button>
-                <button type="button" className="btn-primary sm" onClick={confirm} disabled={!form.name.trim()}>Add to model</button>
+                <button type="button" className="btn-primary sm" onClick={confirm} disabled={gate.disabled}>Add to model</button>
               </div>
             </div>
           )}

@@ -22,6 +22,7 @@ import { listInUseManualInstruments } from './nav.js';
 import { loadNavMarket } from './navPrice.js';
 import { runPerformance, gatherReturns, returnsForRefs, monthGrid, levelsOnGrid, monthlyReturnsFromLevels } from './perf.js';
 import { riskMetrics, staticPortfolioMonthly } from './risk.js';
+import { compareStaticRisk, newHoldingProjectionStatus, hasUsableReturns } from './projection.js';
 import { runOptimize } from './optimize.js';
 import { lookupSource } from './factsheet/sources.js';
 import { fetchBreakdownForSymbol, BreakdownFetchError } from './factsheet/fetchBreakdown.js';
@@ -247,6 +248,8 @@ app.post('/api/models/:key/simulate', async (req, res) => {
       symbol: (h.symbol || '').toUpperCase(),
       source: h.source || 'auto',
       weight: Number(h.weight),
+      hypothetical: !!h.hypothetical,
+      initialNav: h.initialNav || null,
     }));
 
     const cur = currentVersionOf(m);
@@ -258,30 +261,26 @@ app.post('/api/models/:key/simulate', async (req, res) => {
     const baseRefs = (cur?.holdings || []).map((h) => ({ ref: h.instrumentId, weight: h.weight }));
     const byRef = { ...instReturns };
 
-    // fetch any proposed refs not already present (new tickers)
-    const need = proposed.filter((p) => !byRef[p.ref]);
+    // New tickers (and a manual NAV that isn't a saved instrument yet) are
+    // priced through the same cached history path as everything else.
+    const need = proposed.filter((p) => !hasUsableReturns(byRef[p.ref]) && (p.hypothetical || !byRef[p.ref]));
     if (need.length) Object.assign(byRef, await returnsForRefs(need, fetchers(), grid));
 
-    const baseSeries = staticPortfolioMonthly(baseRefs, byRef, grid);
-    const propSeries = staticPortfolioMonthly(proposed, byRef, grid);
-
-    const alignBench = (months) => months.map((ym) => (benchMonthly[ym] ?? null));
-    const baseMetrics = riskMetrics(baseSeries.rets, alignBench(baseSeries.months), rf);
-    const propMetrics = riskMetrics(propSeries.rets, alignBench(propSeries.months), rf);
-
-    const DELTA_KEYS = ['sharpe', 'sortino', 'informationRatio', 'volatility', 'maxDrawdown', 'beta', 'trackingError', 'annualizedReturn'];
-    const deltas = {};
-    for (const k of DELTA_KEYS) {
-      const a = baseMetrics[k], b = propMetrics[k];
-      deltas[k] = a != null && b != null ? b - a : null;
-    }
+    const compared = compareStaticRisk({
+      baseline: baseRefs,
+      proposed,
+      returnsByRef: byRef,
+      grid,
+      benchMonthly,
+      rf,
+    });
+    const hypo = proposed.find((p) => p.hypothetical) || null;
 
     res.json({
-      key: m.key, rf,
-      baseline: { metrics: baseMetrics, coverageMin: baseSeries.coverageMin },
-      proposed: { metrics: propMetrics, coverageMin: propSeries.coverageMin },
-      deltas,
-      unresolved: proposed.filter((p) => !byRef[p.ref]).map((p) => p.symbol || p.ref),
+      key: m.key,
+      rf,
+      ...compared,
+      newHolding: newHoldingProjectionStatus(hypo, byRef),
       dataNotes,
     });
   } catch (e) {
