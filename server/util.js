@@ -36,6 +36,30 @@ export function instrumentFromSpec(spec) {
     breakdownAsOf: normalizeAsOf(spec.breakdownAsOf),
     breakdownNote: normalizeNote(spec.breakdownNote),
     publishedReturns: spec.publishedReturns || null,
+    meta: normalizeMeta(spec.meta),
+  };
+}
+
+// Suggested name/sector/region from an unverified add, plus which of those
+// fields the user edited (those must not be overwritten by a later quote).
+export function normalizeMeta(meta) {
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null;
+  const locks = meta.locks && typeof meta.locks === 'object' ? meta.locks : {};
+  const raw = meta.suggested && typeof meta.suggested === 'object' ? meta.suggested : null;
+  const suggested = raw ? {
+    name: raw.name || null,
+    sector: raw.sector || null,
+    region: raw.region || raw.country || null,
+  } : null;
+  const hasSuggestion = !!(suggested && (suggested.name || suggested.sector || suggested.region));
+  return {
+    unverified: !!meta.unverified,
+    locks: {
+      name: !!locks.name,
+      sector: !!locks.sector,
+      country: !!locks.country,
+    },
+    suggested: hasSuggestion ? suggested : null,
   };
 }
 

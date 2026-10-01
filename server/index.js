@@ -3,7 +3,7 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getStore } from './store.js';
-import { getQuote, getHistory, lookup, probeAll } from './providers.js';
+import { getQuote, getHistory, lookup, probeAll, providerStatusList } from './providers.js';
 import { getHistory as yahooHistory } from './yahoo.js';
 import {
   isYahooHistoryEligible,
@@ -144,6 +144,7 @@ app.get('/api/diagnostics', async (req, res) => {
   res.json({
     storage: process.env.DATABASE_URL ? 'postgres' : 'json-ephemeral',
     ...probe,
+    providers: providerStatusList(),
     ts: new Date().toISOString(),
   });
 });

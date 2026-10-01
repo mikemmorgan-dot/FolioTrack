@@ -26,6 +26,7 @@ function rowToInstrument(r) {
     breakdownNote: r.breakdown_note || null,
     publishedReturns: r.published_returns || null,
     navSource: r.nav_source || null,
+    meta: r.meta || null,
   };
 }
 
@@ -57,11 +58,11 @@ export class PgStore {
     const s = instrumentFromSpec(input);
     const id = input.id || uid('inst');
     const { rows } = await this.pool.query(
-      `INSERT INTO instruments (id,symbol,name,type,source,currency,sector,country,mer)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      `INSERT INTO instruments (id,symbol,name,type,source,currency,sector,country,mer,meta)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        ON CONFLICT (lower(symbol)) DO UPDATE SET name=EXCLUDED.name
        RETURNING *`,
-      [id, s.symbol, s.name, s.type, s.source, s.currency, s.sector, s.country, s.mer]
+      [id, s.symbol, s.name, s.type, s.source, s.currency, s.sector, s.country, s.mer, s.meta ? JSON.stringify(s.meta) : null]
     );
     return rowToInstrument(rows[0]);
   }
@@ -70,8 +71,13 @@ export class PgStore {
     const sets = [];
     const vals = [];
     let n = 1;
+    if (patch.name !== undefined && patch.name) { sets.push(`name=$${n++}`); vals.push(String(patch.name)); }
     if (patch.sector !== undefined) { sets.push(`sector=$${n++}`); vals.push(patch.sector || null); }
     if (patch.country !== undefined) { sets.push(`country=$${n++}`); vals.push(patch.country || null); }
+    if (patch.meta !== undefined) {
+      sets.push(`meta=$${n++}`);
+      vals.push(patch.meta ? JSON.stringify(patch.meta) : null);
+    }
     if (patch.mer !== undefined) {
       sets.push(`mer=$${n++}`);
       vals.push(patch.mer === null || patch.mer === '' ? null : Number(patch.mer));

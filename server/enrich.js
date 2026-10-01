@@ -7,6 +7,7 @@
 // Non-empty nav_series wins over source=auto: a user-entered NAV is the
 // price, even if the instrument is still flagged auto (TSX provider miss).
 import { quoteFieldsFromLatestNav } from './navPrice.js';
+import { metadataPatchFromQuote } from './metadataRefresh.js';
 
 export function createQuoteCache({ getQuote, ttlMs = 60_000 } = {}) {
   const cache = new Map();
@@ -46,7 +47,9 @@ export async function enrichHoldings(version, store, quotes, { liveQuotes = fals
   }
 
   return Promise.all(rows.map(async ({ holding, inst }) => {
+    let row = inst;
     let price = null, priceAsOf = null, priceSource = inst.source;
+    let metadataUpdated = false;
     try {
       const fromNav = quoteFieldsFromLatestNav(await store.latestNav(inst.id), inst.navSource);
       if (fromNav) {
@@ -55,6 +58,11 @@ export async function enrichHoldings(version, store, quotes, { liveQuotes = fals
         if (liveQuotes) {
           const q = await quotes.cachedQuote(inst.symbol);
           price = q.price; priceAsOf = q.asOf;
+          const refreshed = await applyQuoteMetadata(store, inst, q);
+          if (refreshed) {
+            row = refreshed.inst;
+            metadataUpdated = refreshed.updated;
+          }
         } else {
           const q = quotes.peek(inst.symbol);
           if (q) { price = q.price; priceAsOf = q.asOf; }
@@ -63,15 +71,50 @@ export async function enrichHoldings(version, store, quotes, { liveQuotes = fals
     } catch (e) {
       priceSource = `${inst.source} (error: ${e.message})`;
     }
-    return { ...inst, weight: holding.weight, price, priceAsOf, priceSource };
+    const out = { ...row, weight: holding.weight, price, priceAsOf, priceSource };
+    if (metadataUpdated) out.metadataUpdated = true;
+    return out;
   }));
 }
 
+async function applyQuoteMetadata(store, inst, quote) {
+  const patch = metadataPatchFromQuote(inst, quote);
+  if (!patch) return null;
+  let next = { ...inst, ...patch };
+  if (typeof store.updateInstrument === 'function') {
+    try {
+      const saved = await store.updateInstrument(inst.id, patch);
+      if (saved) {
+        next = {
+          ...inst,
+          ...saved,
+          name: saved.name ?? patch.name ?? inst.name,
+          sector: patch.sector !== undefined ? saved.sector : inst.sector,
+          country: patch.country !== undefined ? saved.country : inst.country,
+          meta: saved.meta ?? patch.meta,
+        };
+      }
+    } catch {
+      // The quote still stands if the metadata write fails.
+    }
+  }
+  return { inst: next, updated: true };
+}
+
 export function quotePatch(holdings) {
-  return holdings.map((h) => ({
-    id: h.id,
-    price: h.price,
-    priceAsOf: h.priceAsOf,
-    priceSource: h.priceSource,
-  }));
+  return holdings.map((h) => {
+    const row = {
+      id: h.id,
+      price: h.price,
+      priceAsOf: h.priceAsOf,
+      priceSource: h.priceSource,
+    };
+    if (h.metadataUpdated) {
+      row.metadataUpdated = true;
+      row.name = h.name;
+      row.sector = h.sector ?? null;
+      row.country = h.country ?? null;
+    }
+    return row;
+  });
 }
