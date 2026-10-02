@@ -11,6 +11,7 @@
 //   supports(symbol) -> boolean (cheap pre-filter)
 
 import { getQuote as yQuote, getHistory as yHistory, YahooError } from './yahoo.js';
+import { dedupeYahoo } from './yahooQueue.js';
 import { isCoolingDown, markIfCooldownError, cooldownUntil } from './providerCooldown.js';
 import { classifyAttempt, classifyAttempts } from './failureClass.js';
 import { inferListing, isFundservCode } from './listing.js';
@@ -229,19 +230,21 @@ function yahooHop(id, host) {
   };
 }
 
-// query1 and query2 are separate hops so a cooldown on one does not skip the
-// other. A VM probe got HTTP 200 for AVGO from query2 while query1 was limited.
-const yahoo = yahooHop('yahoo', YAHOO_QUERY1);
+// query2 and query1 are separate hops so a cooldown on one does not skip the
+// other. A 429 from the first host is not a total miss while the other host
+// has not been tried. query2 is first: both hosts returned bars from this VM
+// (2026-10-02), and query2 has answered when query1 was limited.
 const yahooQuery2 = yahooHop('yahoo-query2', YAHOO_QUERY2);
+const yahoo = yahooHop('yahoo', YAHOO_QUERY1);
 
-// Order: richest metadata first. query2 is the free sibling of query1, before
-// any keyed quota. Stooq is last — often a block page, so it should not sit
-// in front of a provider that can still answer.
-export const PROVIDERS = [yahoo, yahooQuery2, twelvedata, finnhub, alphavantage, stooq];
+// Order: query2, then query1, then keyed quotas. Stooq is last — often a
+// block page, so it should not sit in front of a provider that can still answer.
+export const PROVIDERS = [yahooQuery2, yahoo, twelvedata, finnhub, alphavantage, stooq];
 
 // Canadian listings on the free tier, checked 2026-10-02:
-// - Yahoo query1 and query2 chart bars do work for .TO (ENB, XBB, VFV, VDY,
-//   TOU, XEF returned CAD prices from this VM with a Chrome-like user agent).
+// - Yahoo query2 and query1 chart bars do work for .TO (ATD.TO returned CAD
+//   77.20 from this VM on 2026-10-02 with no UA, a FolioTrack UA, and Chrome /
+//   Firefox / Edge). The Safari UA previously hardcoded here got HTTP 429.
 // - Twelve Data Basic (free) is US data plus a handful of trial symbols.
 //   TSX, TSXV, NEO, and CSE require the Grow plan.
 // - Finnhub's free plan does not include /stock/candle, and TSX end-of-day
@@ -261,9 +264,9 @@ export function isCanadianListingSymbol(symbol) {
 export function providersForSymbol(symbol) {
   if (!isCanadianListingSymbol(symbol)) return PROVIDERS;
   if (/\.TO$/i.test(String(symbol || '').trim())) {
-    return [yahoo, yahooQuery2, stooq, alphavantage];
+    return [yahooQuery2, yahoo, stooq, alphavantage];
   }
-  return [yahoo, yahooQuery2, stooq];
+  return [yahooQuery2, yahoo, stooq];
 }
 
 export function providerStatusList(now = Date.now()) {
@@ -327,6 +330,8 @@ export async function viaChain(method, symbol, arg, providerList = PROVIDERS) {
         notFound,
         status: e.status ?? e.statusCode ?? null,
         skipped: false,
+        otherHostUntried: !!e.otherHostUntried,
+        retryAfterMs: e.retryAfterMs ?? null,
       };
       attempt.kind = classifyAttempt(attempt);
       attempts.push(attempt);
@@ -343,8 +348,21 @@ export async function viaChain(method, symbol, arg, providerList = PROVIDERS) {
   throw err;
 }
 
-export const getQuote = (symbol) => viaChain('quote', symbol, undefined, providersForSymbol(symbol));
-export const getHistory = (symbol, range = '5y') => viaChain('history', symbol, range, providersForSymbol(symbol));
+function symbolKey(symbol) {
+  return String(symbol || '').trim().toUpperCase();
+}
+
+export function getQuote(symbol) {
+  return dedupeYahoo(`quote:${symbolKey(symbol)}`, () => (
+    viaChain('quote', symbol, undefined, providersForSymbol(symbol))
+  ));
+}
+
+export function getHistory(symbol, range = '5y') {
+  return dedupeYahoo(`hist:${symbolKey(symbol)}:${range}`, () => (
+    viaChain('history', symbol, range, providersForSymbol(symbol))
+  ));
+}
 
 function guessTypeFor(symbol) {
   const bare = String(symbol || '').replace(/\..*$/, '');

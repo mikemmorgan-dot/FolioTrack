@@ -588,6 +588,28 @@ describe('alert check', () => {
     expect(calls).toBe(1);
   });
 
+  it('fetches a repeated symbol once per refresh run', async () => {
+    const { store } = fixture();
+    store.db.instruments.inst_nvda2 = {
+      id: 'inst_nvda2', symbol: 'NVDA', name: 'NVIDIA duplicate', type: 'stock', source: 'auto', currency: 'USD',
+    };
+    store.db.models[1].versions[0].holdings.push({ instrumentId: 'inst_nvda2', weight: 0.05 });
+    store.db.historyBySymbol.NVDA = {
+      symbol: 'NVDA',
+      fetchedAt: '2024-01-02T00:00:00.000Z',
+      series: [{ date: '2024-01-02', close: 10 }],
+    };
+    let calls = 0;
+    const summary = await service(store, mockEmail(), {
+      getHistory: async (symbol) => {
+        calls += 1;
+        return { series: [{ date: TODAY, close: 11 }], stale: false, provider: 'yahoo', symbol };
+      },
+    }).refreshPricesNow();
+    expect(calls).toBe(1);
+    expect(summary.refresh.results.filter((r) => r.symbol === 'NVDA')).toHaveLength(2);
+  });
+
   it('reports provider hops skipped for cooldown when a manual refresh still cannot call them', async () => {
     const { store } = fixture();
     store.db.instruments.inst_ry = {

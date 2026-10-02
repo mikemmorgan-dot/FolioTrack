@@ -1,7 +1,7 @@
 // historyCache.js — persistent, cache-first price history.
 //
 // Live providers are tried sequentially and only on a miss/stale cache.
-// US names walk Yahoo query1 → query2 → Twelve Data → Finnhub → Alpha
+// US names walk Yahoo query2 → query1 → Twelve Data → Finnhub → Alpha
 // Vantage → Stooq. Canadian .TO/.V/.NE/.CN names start at Yahoo and skip the
 // free-tier providers that do not cover those listings (see providers.js).
 // A successful series is stored

@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getStore } from './store.js';
 import { getQuote, getHistory, lookup, probeAll, providerStatusList } from './providers.js';
-import { getHistory as yahooHistory } from './yahoo.js';
+import { getHistory as yahooHistory, yahooStatus } from './yahoo.js';
 import {
   isYahooHistoryEligible,
   yahooSymbolFor,
@@ -157,6 +157,7 @@ app.get('/api/diagnostics', async (req, res) => {
     storage: process.env.DATABASE_URL ? 'postgres' : 'json-ephemeral',
     ...probe,
     providers: providerStatusList(),
+    yahoo: yahooStatus(),
     ts: new Date().toISOString(),
   });
 });
@@ -500,6 +501,7 @@ app.post('/api/instruments/:id/fetch-yahoo-history', async (req, res) => {
         error: e.message,
         code: e.code,
         manualFallback: e.manualFallback,
+        retryAfterMs: e.retryAfterMs ?? null,
       });
     }
     res.status(502).json({
