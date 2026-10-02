@@ -22,7 +22,19 @@ import { YahooError } from './yahoo.js';
 import { formatRetryHint } from './yahooQueue.js';
 
 export const YAHOO_PRICE_SOURCE = 'Yahoo Finance';
+export const TMX_PRICE_SOURCE = 'TMX Money';
 export const LONG_MANUAL_SERIES = 10;
+
+const FETCHED_SERIES_SOURCES = new Set([YAHOO_PRICE_SOURCE, TMX_PRICE_SOURCE]);
+
+export function sourceForProvider(provider) {
+  return provider === 'tmx' ? TMX_PRICE_SOURCE : YAHOO_PRICE_SOURCE;
+}
+
+export function navSourceForApply(requested) {
+  if (requested === TMX_PRICE_SOURCE || requested === YAHOO_PRICE_SOURCE) return requested;
+  return YAHOO_PRICE_SOURCE;
+}
 
 // Bare tickers that Yahoo lists with a TSX suffix. `.TO` names pass through.
 export const YAHOO_ALIASES = {
@@ -117,6 +129,13 @@ export function yahooFallbackCopy(symbol, classified, err) {
   }
   const why = err?.message ? ` ${err.message.replace(/\s+/g, ' ').trim()}` : '';
   return `Yahoo did not return a history for ${s}.${why} Enter Date / Close from ${page} in Prices — this is not a hard wall.`;
+}
+
+export function chainFallbackCopy(symbol, err) {
+  const s = yahooSymbolFor(symbol) || symbol || 'this ticker';
+  const page = yahooHistoryUrl(s);
+  const why = err?.message ? ` ${String(err.message).replace(/\s+/g, ' ').trim()}` : '';
+  return `No price source returned a history for ${s}.${why} Download the CSV from ${page} (Historical Data → Download) and paste Date / Close, or type a NAV.`;
 }
 
 function splitRow(line) {
@@ -234,7 +253,7 @@ export function planApplySeries(existing, incoming, {
   );
   const summary = applySummary(existingN, incomingN);
   const longManual = existingN.length >= LONG_MANUAL_SERIES
-    && existingSource !== YAHOO_PRICE_SOURCE
+    && !FETCHED_SERIES_SOURCES.has(existingSource)
     && summary.overwriteCount > 0;
 
   if (longManual && !confirm) {
@@ -242,7 +261,7 @@ export function planApplySeries(existing, incoming, {
       needsConfirm: true,
       summary,
       series: incomingN,
-      error: `This name already has ${summary.existingCount} dated prices that are not from Yahoo. Applying will overwrite ${summary.overwriteCount} date${summary.overwriteCount === 1 ? '' : 's'} and add ${summary.addedCount}. Confirm to merge by date (same date → Yahoo close).`,
+      error: `This name already has ${summary.existingCount} dated prices that were typed in. Applying will overwrite ${summary.overwriteCount} date${summary.overwriteCount === 1 ? '' : 's'} and add ${summary.addedCount}. Confirm to merge by date (same date → incoming close).`,
     };
   }
 
@@ -257,10 +276,11 @@ export function planApplySeries(existing, incoming, {
 function proposeFromRecord(rec, extra = {}) {
   const series = normalizeSeries(rec.series);
   const symbol = rec.symbol || extra.yahooSymbol;
+  const provider = extra.provider || rec.provider || 'yahoo';
   return {
     yahooSymbol: symbol,
-    source: YAHOO_PRICE_SOURCE,
-    provider: 'yahoo',
+    source: extra.source || sourceForProvider(provider),
+    provider,
     pageUrl: yahooPageUrl(symbol),
     historyUrl: yahooHistoryUrl(symbol),
     series,
@@ -300,10 +320,11 @@ export async function fetchYahooHistoryForSymbol(symbol, {
         { status: 502, code: 'empty', manualFallback: true }
       );
     }
+    const provider = live.provider || 'yahoo';
     const rec = {
       symbol: yahooSymbol,
       series,
-      provider: 'yahoo',
+      provider,
       range: live.range || 'max',
       fetchedAt: new Date(now()).toISOString(),
     };
@@ -324,17 +345,20 @@ export async function fetchYahooHistoryForSymbol(symbol, {
       throw e;
     }
     const classified = classifyYahooFailure(e);
+    const copy = /All providers failed/i.test(e?.message || '')
+      ? chainFallbackCopy(yahooSymbol, e)
+      : yahooFallbackCopy(yahooSymbol, classified, e);
     if (cached?.series?.length) {
       return proposeFromRecord(cached, {
         yahooSymbol,
         stale: true,
         fromCache: true,
-        error: yahooFallbackCopy(yahooSymbol, classified, e),
+        error: copy,
         code: classified.code,
         manualFallback: true,
       });
     }
-    throw new YahooSeriesError(yahooFallbackCopy(yahooSymbol, classified, e), {
+    throw new YahooSeriesError(copy, {
       status: classified.status >= 400 ? classified.status : 502,
       code: classified.code,
       manualFallback: true,

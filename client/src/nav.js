@@ -1,6 +1,8 @@
 // nav.js — calendar-day NAV cadence and as-of helpers (client).
 // Cadences are calendar days, not trading days — labeled as such in the UI.
 
+import { TMX_PRICE_SOURCE } from './tmxBrowser.js';
+
 export const NAV_CADENCE_DAYS = {
   stock: 7,
   etf: 7,
@@ -32,13 +34,15 @@ export function isCashHolding(h) {
   return h?.type === 'cash' || String(h?.symbol || '').toUpperCase() === 'CASH';
 }
 
-// NAV / applied Yahoo series — not a live provider quote.
+// NAV / applied series — not a live provider quote.
 export const YAHOO_PRICE_SOURCE = 'Yahoo Finance';
+export { TMX_PRICE_SOURCE };
 export function isSeriesPrice(h) {
   const src = h?.priceSource;
-  return src === 'manual' || src === YAHOO_PRICE_SOURCE || h?.source === 'manual';
+  return src === 'manual' || src === YAHOO_PRICE_SOURCE || src === TMX_PRICE_SOURCE || h?.source === 'manual';
 }
 export function priceSourceLabel(h) {
+  if (h?.priceSource === TMX_PRICE_SOURCE || h?.navSource === TMX_PRICE_SOURCE) return 'TMX';
   if (h?.priceSource === YAHOO_PRICE_SOURCE || h?.navSource === YAHOO_PRICE_SOURCE) return 'Yahoo Finance';
   if (isSeriesPrice(h)) return 'Manual';
   return 'Live';

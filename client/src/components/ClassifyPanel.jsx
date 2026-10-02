@@ -300,9 +300,10 @@ function YahooHistoryBox({ instrument, onApplied }) {
       const out = await api.fetchYahooHistory(instrument.id);
       setProposed(out);
       setNeedsConfirm(!!out.needsConfirm);
+      const label = out.source || 'Yahoo Finance';
       const bits = [
-        `Yahoo Finance · ${out.count} daily closes · ${out.from} → ${out.to}.`,
-        'Review, then Apply series. Merge is by date (same date → Yahoo close).',
+        `${label} · ${out.count} daily closes · ${out.from} → ${out.to}.`,
+        'Review, then Apply series. Merge is by date (same date → incoming close).',
       ];
       if (out.stale) bits.push(out.error || 'Showing a cached series — live Yahoo did not answer.');
       if (out.needsConfirm) bits.push('This will overwrite dates on a long manual series — confirm to apply.');
@@ -361,10 +362,10 @@ function YahooHistoryBox({ instrument, onApplied }) {
   return (
     <div className="fetch-box">
       <button type="button" className="fetch-factsheet" disabled={fetching} onClick={fetchYahoo}>
-        {fetching ? 'Fetching Yahoo…' : 'Fetch from Yahoo'}
+        {fetching ? 'Fetching…' : 'Fetch prices'}
       </button>
       <p className="note" style={{ paddingTop: 8 }}>
-        Source: Yahoo Finance{info.yahooSymbol ? ` · ${info.yahooSymbol}` : ''}.
+        Tries TMX Money for .TO and .V, then Yahoo{info.yahooSymbol ? ` · ${info.yahooSymbol}` : ''}.
         Proposes an EOD series for nav_series (quotes + Performance). Apply is required — nothing is overwritten silently.
         {info.pageUrl ? <> {' '}<a className="ext" href={info.pageUrl} target="_blank" rel="noreferrer">Yahoo quote</a></> : null}
       </p>
@@ -554,7 +555,7 @@ export default function ClassifyPanel({ instrument, modelKey, onClose, onSaved }
               <p className="note" style={{ paddingTop: 8 }}>
                 No issuer factsheet mapped for {instrument.symbol}.
                 {instrument.symbol?.toUpperCase().endsWith('.TO')
-                  ? ' A TSX ETF without a mapped sheet can still Fetch from Yahoo above for prices.'
+                  ? ' A TSX ETF without a mapped sheet can still Fetch prices above.'
                   : ' Enter the breakdown manually below.'}
               </p>
             )}

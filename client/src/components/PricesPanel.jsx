@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, num } from '../api.js';
-import { todayToronto, isNavStale, cadenceLabel, navFreshnessRank, YAHOO_PRICE_SOURCE, priceSourceLabel } from '../nav.js';
+import { todayToronto, isNavStale, cadenceLabel, navFreshnessRank, YAHOO_PRICE_SOURCE, TMX_PRICE_SOURCE, priceSourceLabel } from '../nav.js';
 import { YAHOO_PASTE_PLACEHOLDER, formatFetchYahooError, navFieldError, parseNavInput } from '../navField.js';
+import { fetchTmxInBrowser, tmxSupports } from '../tmxBrowser.js';
 
 export default function PricesPanel({ onClose, onSaved }) {
   const [asOf, setAsOf] = useState(todayToronto);
@@ -23,7 +24,19 @@ export default function PricesPanel({ onClose, onSaved }) {
           const r = navFreshnessRank(a.type, a.latestDate) - navFreshnessRank(b.type, b.latestDate);
           return r || a.symbol.localeCompare(b.symbol);
         });
-        setRows(sorted.map((i) => ({ ...i, newNav: '', dateOverride: '', paste: '', yahooBusy: false, yahooMsg: '', yahooSeries: null })));
+        setRows(sorted.map((i) => ({
+          ...i,
+          newNav: '',
+          dateOverride: '',
+          paste: '',
+          lastPricePaste: '',
+          yahooBusy: false,
+          phoneBusy: false,
+          yahooFailed: false,
+          yahooMsg: '',
+          yahooSeries: null,
+          pendingSource: null,
+        })));
       })
       .catch((e) => { if (!cancelled) setErr(e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -41,33 +54,111 @@ export default function PricesPanel({ onClose, onSaved }) {
     setRows((rs) => rs.map((r) => (r.id === id ? { ...r, ...fields } : r)));
   }
 
-  async function fetchYahoo(id, confirm = false, series = null) {
-    patch(id, { yahooBusy: true, yahooMsg: '' });
+  async function fetchYahoo(id, confirm = false, series = null, navSource = null) {
+    patch(id, { yahooBusy: true, yahooMsg: '', yahooFailed: false });
     try {
-      const proposed = series ? { series, needsConfirm: !confirm } : await api.fetchYahooHistory(id);
+      const proposed = series
+        ? {
+          series,
+          needsConfirm: false,
+          source: navSource || YAHOO_PRICE_SOURCE,
+          count: series.length,
+          from: series[0]?.date,
+          to: series.at(-1)?.date,
+          lastClose: series.at(-1)?.close,
+        }
+        : await api.fetchYahooHistory(id);
+      const label = proposed.source || YAHOO_PRICE_SOURCE;
       if (proposed.needsConfirm && !confirm) {
         patch(id, {
           yahooBusy: false,
+          yahooFailed: false,
           yahooSeries: proposed.series,
-          yahooMsg: `Yahoo Finance · ${proposed.count} closes ${proposed.from} → ${proposed.to}. This will overwrite dates on a long manual series — tap Fetch Yahoo again to confirm the merge.`,
+          pendingSource: label,
+          yahooMsg: `${label} · ${proposed.count || proposed.series.length} closes ${proposed.from || proposed.series[0]?.date} → ${proposed.to || proposed.series.at(-1)?.date}. This will overwrite dates on a long manual series — tap Confirm merge to apply.`,
         });
         return;
       }
-      const out = await api.applyYahooHistory(id, { series: proposed.series, confirm });
+      const out = await api.applyYahooHistory(id, { series: proposed.series, confirm, navSource: label });
       patch(id, {
         yahooBusy: false,
+        yahooFailed: false,
         yahooSeries: null,
-        yahooMsg: `Applied ${out.count} Yahoo Finance closes (${out.from} → ${out.to}).`,
+        pendingSource: null,
+        yahooMsg: `Applied ${out.count} ${out.source || label} closes (${out.from} → ${out.to}).`,
         latestNav: out.quote?.price ?? proposed.lastClose,
         latestDate: out.to,
-        navSource: YAHOO_PRICE_SOURCE,
+        navSource: out.source || label,
         source: 'manual',
       });
     } catch (e) {
+      const confirm = /confirm to merge|overwrite/i.test(e.message || '');
       patch(id, {
         yahooBusy: false,
-        yahooMsg: formatFetchYahooError(e.message, { code: e.code, retryAfterMs: e.retryAfterMs }),
+        yahooFailed: !confirm,
+        yahooMsg: confirm
+          ? e.message
+          : formatFetchYahooError(e.message, { code: e.code, retryAfterMs: e.retryAfterMs }),
       });
+    }
+  }
+
+  async function fillFromPhone(row) {
+    patch(row.id, { phoneBusy: true, yahooMsg: '' });
+    try {
+      const out = await fetchTmxInBrowser(row.yahooSymbol || row.symbol);
+      if (out.series?.length) {
+        patch(row.id, {
+          phoneBusy: false,
+          yahooFailed: false,
+          yahooSeries: out.series,
+          pendingSource: TMX_PRICE_SOURCE,
+          yahooMsg: `TMX Money from this phone · ${out.series.length} closes ${out.from} → ${out.to} (last ${out.lastClose}). Tap Apply phone series to write nav_series. Nothing is saved until you do.`,
+        });
+        return;
+      }
+      patch(row.id, {
+        phoneBusy: false,
+        yahooFailed: true,
+        newNav: out.quote?.price != null ? String(out.quote.price) : '',
+        dateOverride: todayToronto(),
+        yahooMsg: `TMX last price ${out.lastClose}${out.quote?.currency ? ` ${out.quote.currency}` : ''} is in New NAV for today. Tap Save to store that one point.`,
+      });
+    } catch (e) {
+      patch(row.id, {
+        phoneBusy: false,
+        yahooFailed: true,
+        yahooMsg: `This phone could not read TMX (${e.message || 'request failed'}). Yahoo chart calls are blocked by the browser. Paste a last price or a Yahoo CSV.`,
+      });
+    }
+  }
+
+  async function saveLastPrice(row) {
+    const parsed = parseNavInput(row.lastPricePaste);
+    if (parsed.error || parsed.value == null) {
+      patch(row.id, { yahooMsg: parsed.error || 'Enter a last price greater than 0.' });
+      return;
+    }
+    const date = todayToronto();
+    patch(row.id, { phoneBusy: true, yahooMsg: '' });
+    try {
+      await api.addNavBatch({
+        asOf: date,
+        points: [{ instrumentId: row.id, nav: parsed.value, date }],
+      });
+      patch(row.id, {
+        phoneBusy: false,
+        yahooFailed: false,
+        lastPricePaste: '',
+        newNav: '',
+        latestNav: parsed.value,
+        latestDate: date,
+        navSource: 'manual',
+        source: 'manual',
+        yahooMsg: `Saved ${parsed.value} as the NAV for ${date}.`,
+      });
+    } catch (e) {
+      patch(row.id, { phoneBusy: false, yahooFailed: true, yahooMsg: e.message || 'Couldn’t save that price.' });
     }
   }
 
@@ -121,7 +212,7 @@ export default function PricesPanel({ onClose, onSaved }) {
           One NAV update applies to every model that holds the name — instruments are shared, this is not an allocation change.
           Empty new-NAV rows are skipped; you don’t have to fill every name.
           Entering a NAV prices that name from your numbers (and flips it to manual) so quotes don’t wait on the live feed.
-          Stocks and unmapped TSX ETFs can Fetch from Yahoo here too — apply writes nav_series (merge by date). A 429 is not a wall: paste Date / Close from ca.finance.yahoo.com or type them.
+          Stocks and unmapped TSX ETFs can Fetch here too — TMX Money is tried first for .TO and .V, then Yahoo. Apply writes nav_series (merge by date). A failed fetch is not a wall: on a phone, Fill from my phone reads TMX in the browser, or paste a Yahoo CSV.
           Stale means the last NAV is older than the calendar-day cadence for that type (stocks/ETFs 7, mutual funds 40, alts 100) — not trading days.
           Cash stays at $1 and isn’t listed.
         </p>
@@ -183,10 +274,47 @@ export default function PricesPanel({ onClose, onSaved }) {
                 {navErr && <p className="field-error" role="alert">{navErr}</p>}
                 {r.yahooEligible && (
                   <div className="yahoo-price-actions">
-                    <button type="button" className="classify-select-back" disabled={r.yahooBusy}
-                      onClick={() => fetchYahoo(r.id, /confirm the merge/i.test(r.yahooMsg || ''), r.yahooSeries)}>
-                      {r.yahooBusy ? 'Yahoo…' : (/confirm the merge/i.test(r.yahooMsg || '') ? 'Confirm Yahoo merge' : 'Fetch Yahoo')}
+                    <button type="button" className="classify-select-back" disabled={r.yahooBusy || r.phoneBusy}
+                      onClick={() => {
+                        const confirming = /confirm( to)? merge|overwrite dates/i.test(r.yahooMsg || '');
+                        return fetchYahoo(r.id, confirming, confirming ? r.yahooSeries : null, r.pendingSource);
+                      }}>
+                      {r.yahooBusy ? 'Fetching…' : (/confirm( to)? merge|overwrite dates/i.test(r.yahooMsg || '') ? 'Confirm merge' : 'Fetch')}
                     </button>
+                    {r.yahooSeries && r.pendingSource === TMX_PRICE_SOURCE && !/confirm( to)? merge|overwrite dates/i.test(r.yahooMsg || '') && (
+                      <button type="button" className="classify-select-back" disabled={r.yahooBusy || r.phoneBusy}
+                        onClick={() => fetchYahoo(r.id, false, r.yahooSeries, TMX_PRICE_SOURCE)}>
+                        Apply phone series
+                      </button>
+                    )}
+                    {r.yahooFailed && (
+                      <div className="phone-fill">
+                        {tmxSupports(r.yahooSymbol || r.symbol) ? (
+                          <button type="button" className="classify-select-back" disabled={r.phoneBusy || r.yahooBusy}
+                            onClick={() => fillFromPhone(r)}>
+                            {r.phoneBusy ? 'Reading TMX…' : 'Fill from my phone'}
+                          </button>
+                        ) : (
+                          <div className="paste-last">
+                            <label className="field">
+                              <span>Paste last price</span>
+                              <input type="text" inputMode="decimal" autoComplete="off" placeholder="76.95"
+                                value={r.lastPricePaste || ''}
+                                onChange={(e) => patch(r.id, { lastPricePaste: e.target.value })} />
+                            </label>
+                            <button type="button" className="classify-select-back" disabled={r.phoneBusy}
+                              onClick={() => saveLastPrice(r)}>
+                              Save
+                            </button>
+                          </div>
+                        )}
+                        <p>
+                          Or download the CSV from{' '}
+                          <a className="ext" href={r.historyUrl} target="_blank" rel="noreferrer">Yahoo history for {r.yahooSymbol || r.symbol}</a>.
+                          Open Historical Data, choose Download, then paste Date and Close below. Adj Close is used when the file has it.
+                        </p>
+                      </div>
+                    )}
                     <label className="field" style={{ marginTop: 8 }}>
                       <span>Or paste Yahoo Date, Close</span>
                       <textarea className="yahoo-paste" rows={3} value={r.paste}
@@ -200,9 +328,9 @@ export default function PricesPanel({ onClose, onSaved }) {
                       </button>
                     )}
                     {r.yahooMsg && (
-                      <p className={/\b429\b|rate-?limit/i.test(r.yahooMsg) ? 'field-error' : 'note'}
+                      <p className={/\b429\b|rate-?limit|could not read|No price source/i.test(r.yahooMsg) ? 'field-error' : 'note'}
                         style={{ paddingTop: 6 }}
-                        role={/\b429\b|rate-?limit/i.test(r.yahooMsg) ? 'alert' : undefined}>
+                        role={/\b429\b|rate-?limit|could not read/i.test(r.yahooMsg) ? 'alert' : undefined}>
                         {r.yahooMsg}
                       </p>
                     )}

@@ -11,6 +11,7 @@
 
 import { clearCooldown, markCooldown } from './providerCooldown.js';
 import { buildChartQuery, resolveYahooUserAgent, yahooRequestHeaders } from './yahooHeaders.js';
+import { buildYahooRelayUrl, relayStatus } from './yahooRelay.js';
 import {
   createPaceQueue,
   parseRetryAfter,
@@ -51,6 +52,8 @@ function emptyState() {
     lastHttpStatus: null,
     lastError: null,
     lastHost: null,
+    lastViaRelay: false,
+    lastSuccessViaRelay: false,
   };
 }
 
@@ -106,6 +109,7 @@ export function yahooStatus() {
     lastHttpStatus: state.lastHttpStatus,
     lastError: state.lastError,
     lastHost: state.lastHost,
+    relay: relayStatus(state, process.env),
   };
 }
 
@@ -190,6 +194,7 @@ function noteSuccess(symbol, host) {
   state.lastSuccessSymbol = symbol;
   state.lastHost = host;
   state.lastError = null;
+  state.lastSuccessViaRelay = !!state.lastViaRelay;
 }
 
 function refusedMessage(status) {
@@ -199,10 +204,16 @@ function refusedMessage(status) {
 async function requestOnce(symbol, range, interval, host) {
   const nowSec = Math.floor(deps.now() / 1000);
   const qs = buildChartQuery({ range, interval, nowSec });
-  const url = `${host}${PATH}/${encodeURIComponent(symbol)}?${qs}`;
-  const headers = yahooRequestHeaders(process.env, { random: deps.random });
+  const directUrl = `${host}${PATH}/${encodeURIComponent(symbol)}?${qs}`;
+  const relayed = buildYahooRelayUrl(directUrl, process.env);
+  const url = relayed.url;
+  const headers = {
+    ...yahooRequestHeaders(process.env, { random: deps.random }),
+    ...relayed.headers,
+  };
   state.lastAttemptAt = new Date(deps.now()).toISOString();
   state.lastHost = host;
+  state.lastViaRelay = !!relayed.configured;
 
   let res;
   try {

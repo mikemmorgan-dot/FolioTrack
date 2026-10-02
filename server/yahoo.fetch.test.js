@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { getQuote } from './providers.js';
+import { resetTmxForTests, setTmxDeps } from './tmx.js';
 import { isCoolingDown, resetCooldowns, setCooldownNow } from './providerCooldown.js';
 import { DEFAULT_YAHOO_UA } from './yahooHeaders.js';
 import {
@@ -59,7 +60,10 @@ function installFetch(fetchImpl) {
 
 afterEach(() => {
   delete process.env.YAHOO_UA;
+  delete process.env.YAHOO_PROXY_URL;
+  delete process.env.YAHOO_PROXY_SECRET;
   resetYahooForTests();
+  resetTmxForTests();
   resetCooldowns();
   setCooldownNow(null);
 });
@@ -96,6 +100,9 @@ describe('Yahoo chart fetch', () => {
   });
 
   it('tries the other host after one 429 before any Retry-After sleep', async () => {
+    setTmxDeps({
+      fetch: async () => mockRes(404, { errors: [{ message: 'not found', code: '404' }] }),
+    });
     const log = [];
     const fetchImpl = async (url) => {
       log.push(url.includes('query2') ? 'q2' : 'q1');

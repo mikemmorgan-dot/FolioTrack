@@ -13,10 +13,12 @@
 import { getQuote as yQuote, getHistory as yHistory, YahooError } from './yahoo.js';
 import { dedupeYahoo } from './yahooQueue.js';
 import { isCoolingDown, markIfCooldownError, cooldownUntil } from './providerCooldown.js';
+import { noteProviderResult, providerStat } from './providerStats.js';
 import { classifyAttempt, classifyAttempts } from './failureClass.js';
 import { inferListing, isFundservCode } from './listing.js';
 import { offlineLookup } from './offlineNames.js';
 import { stooq } from './stooq.js';
+import { tmx } from './tmx.js';
 
 const YAHOO_QUERY1 = 'https://query1.finance.yahoo.com';
 const YAHOO_QUERY2 = 'https://query2.finance.yahoo.com';
@@ -237,24 +239,31 @@ function yahooHop(id, host) {
 const yahooQuery2 = yahooHop('yahoo-query2', YAHOO_QUERY2);
 const yahoo = yahooHop('yahoo', YAHOO_QUERY1);
 
-// Order: query2, then query1, then keyed quotas. Stooq is last — often a
-// block page, so it should not sit in front of a provider that can still answer.
-export const PROVIDERS = [yahooQuery2, yahoo, twelvedata, finnhub, alphavantage, stooq];
+// Order for US names: TMX's supports() is false, so it is skipped. query2,
+// then query1, then keyed quotas. Stooq is last — often a block page.
+export const PROVIDERS = [tmx, yahooQuery2, yahoo, twelvedata, finnhub, alphavantage, stooq];
 
-// Canadian listings on the free tier, checked 2026-10-02:
-// - Yahoo query2 and query1 chart bars do work for .TO (ATD.TO returned CAD
-//   77.20 from this VM on 2026-10-02 with no UA, a FolioTrack UA, and Chrome /
-//   Firefox / Edge). The Safari UA previously hardcoded here got HTTP 429.
+// Canadian listings, checked from this VM on 2026-10-02:
+// - TMX Money GraphQL (app-money.tmx.com) returned real quotes and daily
+//   bars for ATD, ENB, XBB, TECK.B, VFV, and TSXV AUMB with no API key.
+//   getTimeSeriesData freq=day covered years in one call (ATD back to 1999).
+//   Symbols are without .TO/.V. It is first for those suffixes only.
+//   .NE and .CN are not TMX listings and are not sent there.
+// - Yahoo query1 chart for ATD.TO returned 76.945 CAD from this VM. Render's
+//   shared egress is a separate problem; YAHOO_PROXY_URL can send those
+//   calls through a Cloudflare Worker. See docs/cloudflare-yahoo-relay.md.
 // - Twelve Data Basic (free) is US data plus a handful of trial symbols.
 //   TSX, TSXV, NEO, and CSE require the Grow plan.
 // - Finnhub's free plan does not include /stock/candle, and TSX end-of-day
 //   OHLC is a separate paid feed. Calling it cannot fill price_history.
-// - Alpha Vantage documents Toronto as SYMBOL.TRT and serves compact daily
-//   bars on a free key (25/day). This environment has no key, so that hop was
-//   not verified live. It stays last, and only for .TO, where the suffix map
-//   exists. .V / .NE / .CN are not sent there.
-// - Stooq maps RY.TO (and .V/.NE/.CN) to symbol.ca. From this VM the CSV URL
-//   returned a JavaScript challenge, not prices. It is still an extra hop.
+// - Alpha Vantage documents Toronto as SYMBOL.TRT. This environment has no
+//   key (the no-key call returned "apikey is invalid or missing"), so that
+//   hop was not verified live. It stays optional, and only for .TO.
+// - Financial Modeling Prep returned HTTP 401 without a key. Not wired.
+// - Google Finance's ATD:TSE page contains an intraday blob, not a stable
+//   daily series. Not wired.
+// - Cboe delayed-quote and CSE/CNSX pages did not return an ATD.TO quote.
+// - Stooq's CSV URL returned a JavaScript challenge, not prices.
 const CANADIAN_LISTING = /\.(TO|V|NE|CN)$/i;
 
 export function isCanadianListingSymbol(symbol) {
@@ -262,10 +271,13 @@ export function isCanadianListingSymbol(symbol) {
 }
 
 export function providersForSymbol(symbol) {
-  if (!isCanadianListingSymbol(symbol)) return PROVIDERS;
-  if (/\.TO$/i.test(String(symbol || '').trim())) {
-    return [yahooQuery2, yahoo, stooq, alphavantage];
+  const raw = String(symbol || '').trim();
+  if (/\.(TO|V)$/i.test(raw)) {
+    const hops = [tmx, yahooQuery2, yahoo, stooq];
+    if (/\.TO$/i.test(raw)) hops.push(alphavantage);
+    return hops;
   }
+  if (!isCanadianListingSymbol(symbol)) return PROVIDERS;
   return [yahooQuery2, yahoo, stooq];
 }
 
@@ -273,11 +285,15 @@ export function providerStatusList(now = Date.now()) {
   return PROVIDERS.map((p) => {
     const until = cooldownUntil(p.id);
     const coolingDown = until > now;
+    const stat = providerStat(p.id);
     return {
       id: p.id,
       coolingDown,
       cooldownUntil: coolingDown ? new Date(until).toISOString() : null,
       remainingMs: coolingDown ? until - now : 0,
+      lastSuccessAt: stat.lastSuccessAt,
+      lastSuccessSymbol: stat.lastSuccessSymbol,
+      lastError: stat.lastError,
     };
   });
 }
@@ -293,7 +309,7 @@ function earliestCooldownIso(now = Date.now()) {
 }
 
 function isNotFound(e) {
-  return (e instanceof YahooError && e.notFound) || /no data|not\s*found/i.test(e.message || '');
+  return !!e?.notFound || (e instanceof YahooError && e.notFound) || /no data|not\s*found/i.test(e.message || '');
 }
 
 // Try each provider until one answers. Sequential with early exit — never
@@ -320,9 +336,11 @@ export async function viaChain(method, symbol, arg, providerList = PROVIDERS) {
     }
     try {
       const out = await p[method](symbol, arg);
+      noteProviderResult(p.id, { ok: true, symbol });
       return { ...out, provider: p.id, attempts };
     } catch (e) {
       markIfCooldownError(p.id, e);
+      noteProviderResult(p.id, { ok: false, symbol, error: e.message });
       const notFound = isNotFound(e);
       const attempt = {
         provider: p.id,
@@ -460,6 +478,13 @@ export async function probeAll(symbols = ['AAPL', 'XBB.TO']) {
   for (const p of PROVIDERS) {
     for (const sym of symbols) {
       const t = Date.now();
+      if (p.supports && !p.supports(sym)) {
+        results.push({
+          provider: p.id, symbol: sym, ok: false, skipped: true,
+          error: 'not used for this symbol', ms: Date.now() - t,
+        });
+        continue;
+      }
       if (isCoolingDown(p.id)) {
         const until = cooldownUntil(p.id);
         results.push({
