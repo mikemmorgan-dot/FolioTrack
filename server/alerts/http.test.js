@@ -67,12 +67,17 @@ describe('alert check token guard', () => {
       expect(get()).toBe(0);
 
       const okGet = await fetch(`${base}/api/alerts/check?token=s3cret`);
-      expect(okGet.status).toBe(200);
+      expect(okGet.status).toBe(202);
+      const okGetBody = await okGet.json();
+      expect(okGetBody.started).toBe(true);
+      expect(okGetBody.alreadyRunning).toBe(false);
+      expect(okGetBody).toHaveProperty('lastRunAt');
+      expect(okGetBody).toHaveProperty('lastResult');
       const okPost = await fetch(`${base}/api/alerts/check`, {
         method: 'POST',
         headers: { Authorization: 'Bearer s3cret' },
       });
-      expect(okPost.status).toBe(200);
+      expect(okPost.status).toBe(202);
       expect(get()).toBe(2);
     });
 
@@ -118,10 +123,151 @@ describe('alert check token guard', () => {
     const ctx = appWith('s3cret');
     await withServer(ctx.app, async (base) => {
       const res = await fetch(`${base}/api/alerts/refresh-prices`, { method: 'POST' });
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.refresh.results[0].symbol).toBe('TSLA');
+      expect(res.status).toBe(202);
+      const ack = await res.json();
+      expect(ack.started).toBe(true);
       expect(ctx.refreshes).toBe(1);
+      let status;
+      for (let i = 0; i < 20; i++) {
+        status = await (await fetch(`${base}/api/alerts/status`)).json();
+        if (!status.running) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(status.running).toBe(false);
+      expect(status.lastResult.refresh.results[0].symbol).toBe('TSLA');
+    });
+  });
+});
+
+describe('background alert check', () => {
+  it('answers 202 before the check finishes, and a second call does not overlap', async () => {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    let calls = 0;
+    const app = express();
+    app.use(express.json());
+    app.use('/api/alerts', createAlertRouter({
+      store: memoryStore(),
+      runCheck: () => {
+        calls += 1;
+        return gate.then(() => ({
+          ok: true,
+          evaluated: 4,
+          active: 1,
+          checkedAt: '2026-10-02T12:00:00.000Z',
+        }));
+      },
+      sendTestEmail: async () => ({ ok: true }),
+      token: () => 's3cret',
+      logger: { log() {}, warn() {}, error() {} },
+    }));
+    await withServer(app, async (base) => {
+      const started = Date.now();
+      const res = await fetch(`${base}/api/alerts/check?token=s3cret`);
+      expect(Date.now() - started).toBeLessThan(1000);
+      expect(res.status).toBe(202);
+      const body = await res.json();
+      expect(body).toMatchObject({ started: true, alreadyRunning: false });
+      expect(calls).toBe(1);
+
+      const run = await fetch(`${base}/api/alerts/run`, { method: 'POST' });
+      expect(run.status).toBe(202);
+      expect(await run.json()).toMatchObject({ started: false, alreadyRunning: true });
+      expect(calls).toBe(1);
+
+      const mid = await (await fetch(`${base}/api/alerts/status`)).json();
+      expect(mid.running).toBe(true);
+      expect(mid.lastResult).toBeNull();
+
+      release();
+      let done;
+      for (let i = 0; i < 30; i++) {
+        done = await (await fetch(`${base}/api/alerts/status`)).json();
+        if (!done.running) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(done.running).toBe(false);
+      expect(done.lastResult.evaluated).toBe(4);
+      expect(done.lastError).toBeNull();
+      expect(done.finishedRunId).toBe(body.runId);
+    });
+  });
+
+  it('releases a timed-out lock so a later check can start', async () => {
+    let clock = 0;
+    const timers = [];
+    let calls = 0;
+    const app = express();
+    app.use(express.json());
+    app.use('/api/alerts', createAlertRouter({
+      store: memoryStore(),
+      runCheck: () => {
+        calls += 1;
+        return new Promise(() => {});
+      },
+      sendTestEmail: async () => ({ ok: true }),
+      token: () => 's3cret',
+      lockTimeoutMs: 1000,
+      now: () => clock,
+      schedule: (fn, ms) => {
+        const id = timers.push({ fn, ms }) - 1;
+        return id;
+      },
+      clearSchedule: (id) => { if (id != null) timers[id] = null; },
+      logger: { log() {}, warn() {}, error() {} },
+    }));
+    await withServer(app, async (base) => {
+      const first = await (await fetch(`${base}/api/alerts/check?token=s3cret`)).json();
+      expect(first.started).toBe(true);
+      const second = await (await fetch(`${base}/api/alerts/check?token=s3cret`)).json();
+      expect(second).toMatchObject({ started: false, alreadyRunning: true });
+      expect(calls).toBe(1);
+      expect(timers[0].ms).toBe(1000);
+      clock = 1000;
+      timers[0].fn();
+      const mid = await (await fetch(`${base}/api/alerts/status`)).json();
+      expect(mid.running).toBe(false);
+      expect(mid.lastError).toMatch(/lock timeout/);
+      const third = await (await fetch(`${base}/api/alerts/check?token=s3cret`)).json();
+      expect(third).toMatchObject({ started: true, alreadyRunning: false });
+      expect(calls).toBe(2);
+    });
+  });
+
+  it('records a thrown check error and keeps serving status', async () => {
+    const db = { check: null };
+    const store = {
+      async getAlertSettings() { return coerceAlertSettings({}); },
+      async listAlertEvents() { return []; },
+      async listAlertHistory() { return []; },
+      async getAlertCheckMeta() { return db.check; },
+      async setAlertCheckMeta(meta) { db.check = meta; return meta; },
+    };
+    const app = express();
+    app.use(express.json());
+    app.use('/api/alerts', createAlertRouter({
+      store,
+      runCheck: async () => { throw new Error('db down'); },
+      sendTestEmail: async () => ({ ok: true }),
+      token: () => 's3cret',
+      logger: { log() {}, warn() {}, error() {} },
+    }));
+    await withServer(app, async (base) => {
+      const res = await fetch(`${base}/api/alerts/check?token=s3cret`);
+      expect(res.status).toBe(202);
+      let status;
+      for (let i = 0; i < 30; i++) {
+        status = await (await fetch(`${base}/api/alerts/status`)).json();
+        if (!status.running && status.lastError) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(status.running).toBe(false);
+      expect(status.lastError).toBe('db down');
+      expect(status.lastResult.ok).toBe(false);
+      expect(db.check.last_error).toBe('db down');
+      expect(db.check.error).toBe('db down');
+      const again = await fetch(`${base}/api/alerts/status`);
+      expect(again.status).toBe(200);
     });
   });
 });

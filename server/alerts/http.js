@@ -4,6 +4,7 @@
 
 import express from 'express';
 import crypto from 'crypto';
+import { createAlertCoordinator, isAlertCheckStale } from './runner.js';
 
 export function extractBearer(header) {
   if (!header || typeof header !== 'string') return null;
@@ -32,9 +33,55 @@ export function createAlertRouter({
   runCheck,
   refreshPrices,
   sendTestEmail,
+  startCheck,
+  getStatus,
   token = () => process.env.ALERT_CRON_TOKEN || '',
+  budgetMs,
+  lockTimeoutMs,
+  now,
+  schedule,
+  clearSchedule,
+  logger,
 } = {}) {
   const router = express.Router();
+
+  let start = startCheck;
+  let status = getStatus;
+  if (typeof start !== 'function') {
+    const coordinator = createAlertCoordinator({
+      store,
+      budgetMs,
+      lockTimeoutMs,
+      now,
+      schedule,
+      clearSchedule,
+      logger,
+      runJob: (opts) => {
+        if (opts?.kind === 'refresh' && typeof refreshPrices === 'function') return refreshPrices(opts);
+        if (typeof runCheck !== 'function') throw new Error('Alert check is not configured');
+        return runCheck(opts);
+      },
+    });
+    start = (opts) => coordinator.start(opts);
+    status = () => coordinator.status();
+  }
+
+  function checkView(check, live) {
+    const useLive = Boolean(live && (live.lastRunAt || live.running || live.finishedRunId));
+    const lastSuccessAt = useLive
+      ? (live.lastSuccessAt || null)
+      : (check?.lastSuccessAt
+        || (!check?.last_error && !check?.error && check?.at ? check.at : null));
+    return {
+      lastCheckAt: useLive ? (live.lastRunAt || null) : (check?.at || null),
+      lastCheckError: useLive ? (live.lastError || null) : (check?.last_error || check?.error || null),
+      lastCheckDurationMs: useLive ? (live.lastDurationMs ?? null) : (check?.durationMs ?? null),
+      lastSuccessAt,
+      lastCheckSummary: useLive ? (live.lastResult || null) : (check?.summary || null),
+      checkRunning: Boolean(live?.running),
+      checkStale: useLive ? Boolean(live.checkStale) : isAlertCheckStale(lastSuccessAt),
+    };
+  }
 
   router.get('/', async (_req, res) => {
     try {
@@ -42,15 +89,14 @@ export function createAlertRouter({
       const events = await store.listAlertEvents();
       const history = await store.listAlertHistory(40);
       const check = await store.getAlertCheckMeta();
+      const live = typeof status === 'function' ? status() : null;
       const active = events
         .filter((e) => e.status === 'active')
         .sort((a, b) => (a.currentDrawdown ?? 0) - (b.currentDrawdown ?? 0));
       res.json({
         settings,
         emailConfigured: Boolean(String(process.env.RESEND_API_KEY || '').trim()),
-        lastCheckAt: check?.at || null,
-        lastCheckError: check?.error || null,
-        lastCheckSummary: check?.summary || null,
+        ...checkView(check, live),
         active,
         history,
         activeCount: active.length,
@@ -81,18 +127,21 @@ export function createAlertRouter({
     }
   });
 
-  router.post('/run', async (_req, res) => {
+  const acknowledge = (res, opts) => {
     try {
-      res.json(await runCheck());
+      res.status(202).json(start(opts));
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
-  });
+  };
 
-  router.post('/refresh-prices', async (_req, res) => {
+  router.post('/run', (_req, res) => acknowledge(res, { refresh: true, kind: 'check' }));
+
+  router.post('/refresh-prices', (_req, res) => acknowledge(res, { refresh: true, kind: 'refresh' }));
+
+  router.get('/status', (_req, res) => {
     try {
-      const run = typeof refreshPrices === 'function' ? refreshPrices : runCheck;
-      res.json(await run());
+      res.json(typeof status === 'function' ? status() : { running: false });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
@@ -104,13 +153,7 @@ export function createAlertRouter({
     next();
   };
 
-  const check = async (_req, res) => {
-    try {
-      res.json(await runCheck());
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  };
+  const check = (_req, res) => acknowledge(res, { refresh: true, kind: 'check' });
 
   router.get('/check', guard, check);
   router.post('/check', guard, check);

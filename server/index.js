@@ -33,13 +33,27 @@ import { buildCompare } from './compare.js';
 import { createEmailSender } from './alerts/email.js';
 import { createAlertService } from './alerts/check.js';
 import { createAlertRouter } from './alerts/http.js';
+import { createAlertCoordinator } from './alerts/runner.js';
 import { startAlertScheduler } from './alerts/schedule.js';
+import { listenThenStart } from './boot.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-app.use(express.json());
+const PORT = process.env.PORT || 3000;
 
-const store = await getStore();
+// Listen first. Migrations, the provider probe, and the first alert check run
+// only after the socket is open so /api/health can answer a cold-start ping.
+const boot = listenThenStart({
+  app,
+  port: PORT,
+  getStore,
+  mount: async (expressApp) => {
+    expressApp.use(express.json());
+  },
+  logger: console,
+});
+
+const { store } = await boot.started;
 
 // Quote cache (60s) + in-flight dedupe so a model view doesn't stampede the
 // provider chain. GET /api/models/:key peeks this cache only — it never waits
@@ -48,8 +62,6 @@ const quotes = createQuoteCache({ getQuote });
 const cachedQuote = (symbol) => quotes.cachedQuote(symbol);
 
 // ---------------- API ----------------
-app.get('/api/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
-
 app.get('/api/models', async (_req, res) => {
   const models = await store.listModels();
   res.json(models.map((m) => {
@@ -674,10 +686,20 @@ const alerts = createAlertService({
   getHistory: (symbol, range, opts) => cachedHistory(symbol, range || 'max', { ...(opts || {}), force: false }),
   email: alertEmail,
 });
+const alertRuns = createAlertCoordinator({
+  store,
+  logger: console,
+  runJob: (opts) => (
+    opts?.kind === 'refresh'
+      ? alerts.refreshPricesNow(opts)
+      : alerts.runCheck({ ...(opts || {}), refresh: opts?.refresh !== false })
+  ),
+});
+await alertRuns.hydrate();
 app.use('/api/alerts', createAlertRouter({
   store,
-  runCheck: () => alerts.runCheck({ refresh: true }),
-  refreshPrices: () => alerts.refreshPricesNow(),
+  startCheck: (opts) => alertRuns.start(opts),
+  getStatus: () => alertRuns.status(),
   sendTestEmail: () => alerts.sendTestEmail(),
 }));
 
@@ -686,22 +708,29 @@ const clientDist = path.join(__dirname, '..', 'client', 'dist');
 app.use(express.static(clientDist));
 app.get('*', (_req, res) => res.sendFile(path.join(clientDist, 'index.html')));
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, async () => {
-  console.log(`MPT server on :${PORT}`);
+// Provider probe and the first alert check run after listen and after routes
+// are mounted. They are not awaited: a slow probe must not block startup.
+void (async () => {
   if (!String(process.env.RESEND_API_KEY || '').trim()) {
     console.warn('[alerts] RESEND_API_KEY is not set — breaches will be recorded as pending - email not configured');
   }
   if (!String(process.env.ALERT_CRON_TOKEN || '').trim()) {
     console.warn('[alerts] ALERT_CRON_TOKEN is not set — /api/alerts/check will reject every request');
   }
-  // State the Yahoo verdict in the deploy log so it never has to be guessed.
-  // Probe first so its cooldowns are in place before the alert check asks
-  // the history cache for anything stale.
-  const probe = await probeAll();
-  console.log(`[data] ${probe.verdict}`);
-  for (const r of probe.results) {
-    if (!r.ok) console.warn(`[data] ${r.provider} ${r.symbol}: ${r.error}`);
+  try {
+    // State the Yahoo verdict in the deploy log so it never has to be guessed.
+    // Probe first so its cooldowns are in place before the alert check asks
+    // the history cache for anything stale.
+    const probe = await probeAll();
+    console.log(`[data] ${probe.verdict}`);
+    for (const r of probe.results) {
+      if (!r.ok) console.warn(`[data] ${r.provider} ${r.symbol}: ${r.error}`);
+    }
+  } catch (e) {
+    console.error(`[boot] provider probe failed: ${e.message}`);
   }
-  startAlertScheduler({ run: () => alerts.runCheck() });
-});
+  startAlertScheduler({
+    run: () => alertRuns.start({ refresh: true, kind: 'check' }),
+    logger: console,
+  });
+})();

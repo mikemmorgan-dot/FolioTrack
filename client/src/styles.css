@@ -249,6 +249,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 .bottom-nav.nav-wide .nav-ico { width: 20px; height: 20px; }
 
 .banner { margin: 14px 16px; padding: 13px 15px; border-radius: var(--r-sm); font-size: 14px; background: var(--red-dim); color: var(--red); }
+.banner.alert-stale { margin: 8px 0 12px; background: rgba(229,168,75,0.16); color: #E5A84B; }
 .loading { padding: 80px 20px; text-align: center; color: var(--text-2); }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
