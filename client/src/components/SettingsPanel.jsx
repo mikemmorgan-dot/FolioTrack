@@ -36,7 +36,9 @@ function modelNames(models) {
 
 function formatDuration(ms) {
   if (ms == null || !Number.isFinite(Number(ms))) return null;
-  const s = Math.max(0, Number(ms) / 1000);
+  const n = Math.max(0, Number(ms));
+  if (n < 1000) return `${Math.round(n)}ms`;
+  const s = n / 1000;
   if (s < 10) return `${s.toFixed(1)}s`;
   const rounded = Math.round(s);
   if (rounded < 60) return `${rounded}s`;
