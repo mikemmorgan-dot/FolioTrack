@@ -353,9 +353,9 @@ describe('metadata refresh and unverified preview', () => {
 });
 
 describe('diagnostics cooldown list', () => {
-  it('keeps query2 and Stooq as their own hops after query1', () => {
+  it('tries query2 before query1 and keeps Stooq as its own hop', () => {
     expect(PROVIDERS.map((p) => p.id)).toEqual([
-      'yahoo', 'yahoo-query2', 'twelvedata', 'finnhub', 'alphavantage', 'stooq',
+      'yahoo-query2', 'yahoo', 'twelvedata', 'finnhub', 'alphavantage', 'stooq',
     ]);
   });
 
@@ -372,7 +372,7 @@ describe('diagnostics cooldown list', () => {
     markCooldown('yahoo', 5 * 60 * 1000);
     const rows = providerStatusList(Date.parse('2026-10-01T16:00:00.000Z'));
     const ids = rows.map((r) => r.id);
-    expect(ids).toEqual(['yahoo', 'yahoo-query2', 'twelvedata', 'finnhub', 'alphavantage', 'stooq']);
+    expect(ids).toEqual(['yahoo-query2', 'yahoo', 'twelvedata', 'finnhub', 'alphavantage', 'stooq']);
     expect(PROVIDERS.map((p) => p.id)).toEqual(ids);
     expect(PROVIDERS.find((p) => p.id === 'yahoo-query2').quote).toBeTypeOf('function');
     expect(PROVIDERS.find((p) => p.id === 'stooq').history).toBeTypeOf('function');

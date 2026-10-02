@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, num } from '../api.js';
 import { todayToronto, isNavStale, cadenceLabel, navFreshnessRank, YAHOO_PRICE_SOURCE, priceSourceLabel } from '../nav.js';
+import { YAHOO_PASTE_PLACEHOLDER, formatFetchYahooError, navFieldError, parseNavInput } from '../navField.js';
 
 export default function PricesPanel({ onClose, onSaved }) {
   const [asOf, setAsOf] = useState(todayToronto);
@@ -30,10 +31,11 @@ export default function PricesPanel({ onClose, onSaved }) {
   }, []);
 
   const filled = useMemo(
-    () => rows.filter((r) => String(r.newNav).trim() !== '' && Number.isFinite(Number(r.newNav))),
+    () => rows.filter((r) => parseNavInput(r.newNav).value != null),
     [rows]
   );
-  const canSave = filled.length > 0 && !saving && /^\d{4}-\d{2}-\d{2}$/.test(asOf);
+  const navInvalid = useMemo(() => rows.some((r) => navFieldError(r.newNav)), [rows]);
+  const canSave = filled.length > 0 && !navInvalid && !saving && /^\d{4}-\d{2}-\d{2}$/.test(asOf);
 
   function patch(id, fields) {
     setRows((rs) => rs.map((r) => (r.id === id ? { ...r, ...fields } : r)));
@@ -62,7 +64,10 @@ export default function PricesPanel({ onClose, onSaved }) {
         source: 'manual',
       });
     } catch (e) {
-      patch(id, { yahooBusy: false, yahooMsg: e.message || 'Yahoo failed — paste Date / Close below or type a NAV.' });
+      patch(id, {
+        yahooBusy: false,
+        yahooMsg: formatFetchYahooError(e.message, { code: e.code, retryAfterMs: e.retryAfterMs }),
+      });
     }
   }
 
@@ -91,7 +96,7 @@ export default function PricesPanel({ onClose, onSaved }) {
         asOf,
         points: filled.map((r) => ({
           instrumentId: r.id,
-          nav: Number(r.newNav),
+          nav: parseNavInput(r.newNav).value,
           ...(r.dateOverride.trim() ? { date: r.dateOverride.trim() } : {}),
         })),
       });
@@ -139,6 +144,7 @@ export default function PricesPanel({ onClose, onSaved }) {
           {rows.map((r) => {
             const stale = isNavStale(r.type, r.latestDate);
             const used = r.models.map((m) => m.name).join(', ');
+            const navErr = navFieldError(r.newNav);
             return (
               <div className="nav-card" key={r.id}>
                 <div className="nav-card-top">
@@ -164,7 +170,8 @@ export default function PricesPanel({ onClose, onSaved }) {
                 <div className="nav-inputs">
                   <label className="field">
                     <span>New NAV</span>
-                    <input type="number" inputMode="decimal" step="any" placeholder="skip"
+                    <input type="text" inputMode="decimal" autoComplete="off" placeholder="skip"
+                      aria-invalid={navErr ? 'true' : 'false'}
                       value={r.newNav} onChange={(e) => patch(r.id, { newNav: e.target.value })} />
                   </label>
                   <label className="field">
@@ -173,6 +180,7 @@ export default function PricesPanel({ onClose, onSaved }) {
                       onChange={(e) => patch(r.id, { dateOverride: e.target.value })} />
                   </label>
                 </div>
+                {navErr && <p className="field-error" role="alert">{navErr}</p>}
                 {r.yahooEligible && (
                   <div className="yahoo-price-actions">
                     <button type="button" className="classify-select-back" disabled={r.yahooBusy}
@@ -183,7 +191,7 @@ export default function PricesPanel({ onClose, onSaved }) {
                       <span>Or paste Yahoo Date, Close</span>
                       <textarea className="yahoo-paste" rows={3} value={r.paste}
                         onChange={(e) => patch(r.id, { paste: e.target.value })}
-                        placeholder={'Date,Close\n2024-01-02,128.00'} />
+                        placeholder={YAHOO_PASTE_PLACEHOLDER} />
                     </label>
                     {r.paste?.trim() && (
                       <button type="button" className="classify-select-back" disabled={r.yahooBusy}
@@ -191,7 +199,13 @@ export default function PricesPanel({ onClose, onSaved }) {
                         Apply paste
                       </button>
                     )}
-                    {r.yahooMsg && <p className="note" style={{ paddingTop: 6 }}>{r.yahooMsg}</p>}
+                    {r.yahooMsg && (
+                      <p className={/\b429\b|rate-?limit/i.test(r.yahooMsg) ? 'field-error' : 'note'}
+                        style={{ paddingTop: 6 }}
+                        role={/\b429\b|rate-?limit/i.test(r.yahooMsg) ? 'alert' : undefined}>
+                        {r.yahooMsg}
+                      </p>
+                    )}
                   </div>
                 )}
               </div>

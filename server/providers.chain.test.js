@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { PROVIDERS, getHistory, getQuote, providersForSymbol } from './providers.js';
 
 describe('TSX provider hop order', () => {
-  it('tries Yahoo query1 then query2, keeps Stooq, and skips free-tier gaps', () => {
+  it('tries Yahoo query2 then query1, keeps Stooq, and skips free-tier gaps', () => {
     const tsx = providersForSymbol('ENB.TO').map((p) => p.id);
-    expect(tsx).toEqual(['yahoo', 'yahoo-query2', 'stooq', 'alphavantage']);
+    expect(tsx).toEqual(['yahoo-query2', 'yahoo', 'stooq', 'alphavantage']);
     expect(tsx).not.toContain('twelvedata');
     expect(tsx).not.toContain('finnhub');
     expect(providersForSymbol('vfv.to').map((p) => p.id)).toEqual(tsx);
@@ -12,7 +12,7 @@ describe('TSX provider hop order', () => {
 
     for (const symbol of ['ABC.V', 'NEO.NE', 'CSE.CN']) {
       expect(providersForSymbol(symbol).map((p) => p.id)).toEqual([
-        'yahoo', 'yahoo-query2', 'stooq',
+        'yahoo-query2', 'yahoo', 'stooq',
       ]);
     }
 

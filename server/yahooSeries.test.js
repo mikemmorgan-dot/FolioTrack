@@ -167,6 +167,8 @@ describe('classify + fallback copy', () => {
     expect(classifyYahooFailure({ status: 429, message: 'HTTP 429' }).code).toBe('rate_limit');
     expect(classifyYahooFailure(new YahooError('unknown', { notFound: true })).code).toBe('not_found');
     expect(yahooFallbackCopy('RY.TO', { code: 'rate_limit' })).toMatch(/ca\.finance\.yahoo\.com/);
+    expect(yahooFallbackCopy('RY.TO', { code: 'rate_limit' })).toMatch(/No Retry-After/);
+    expect(yahooFallbackCopy('ATD.TO', { code: 'rate_limit', retryAfterMs: 12_000 })).toMatch(/Retry after 12s/);
   });
 });
 

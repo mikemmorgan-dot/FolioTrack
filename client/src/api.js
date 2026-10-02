@@ -9,7 +9,13 @@ async function j(url, opts) {
     if (e?.name === 'AbortError') throw e;
     throw new Error(e?.message || 'Network error');
   }
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const err = new Error(body.error || `HTTP ${res.status}`);
+    if (body.code) err.code = body.code;
+    if (body.retryAfterMs != null) err.retryAfterMs = body.retryAfterMs;
+    throw err;
+  }
   return res.json();
 }
 

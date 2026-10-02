@@ -19,6 +19,7 @@
 import { mergeSeries, normalizeSeries, normalizeSymbol } from './historyCache.js';
 import { lookupSource } from './factsheet/sources.js';
 import { YahooError } from './yahoo.js';
+import { formatRetryHint } from './yahooQueue.js';
 
 export const YAHOO_PRICE_SOURCE = 'Yahoo Finance';
 export const LONG_MANUAL_SERIES = 10;
@@ -37,12 +38,13 @@ const MONTHS = {
 };
 
 export class YahooSeriesError extends Error {
-  constructor(message, { status = 502, code = 'blocked', manualFallback = true } = {}) {
+  constructor(message, { status = 502, code = 'blocked', manualFallback = true, retryAfterMs = null } = {}) {
     super(message);
     this.name = 'YahooSeriesError';
     this.status = status;
     this.code = code;
     this.manualFallback = manualFallback;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -85,7 +87,7 @@ export function classifyYahooFailure(err) {
   const status = err?.status ?? err?.statusCode ?? null;
   const msg = String(err?.message || '');
   if (status === 429 || /\bHTTP\s*429\b|too many requests|rate.?limit/i.test(msg)) {
-    return { code: 'rate_limit', status: 429 };
+    return { code: 'rate_limit', status: 429, retryAfterMs: err?.retryAfterMs ?? null };
   }
   if (err instanceof YahooError && err.notFound) {
     return { code: 'not_found', status: 404 };
@@ -103,7 +105,12 @@ export function yahooFallbackCopy(symbol, classified, err) {
   const s = yahooSymbolFor(symbol) || symbol || 'this ticker';
   const page = yahooHistoryUrl(s);
   if (classified.code === 'rate_limit') {
-    return `Yahoo rate-limited this server (HTTP 429). Paste Date / Close from ${page} into Prices, or type them there. A retry from Render often hits the same limit.`;
+    const ms = err?.retryAfterMs ?? classified.retryAfterMs ?? null;
+    const hint = formatRetryHint(ms);
+    const retry = hint
+      ? ` Retry after ${hint}.`
+      : ' No Retry-After header — try again in about a minute.';
+    return `Yahoo rate-limited this server (HTTP 429).${retry} Paste Date / Close from ${page} into Prices, or type a NAV.`;
   }
   if (classified.code === 'not_found') {
     return `Yahoo does not have a chart for ${s}. Enter prices manually in Prices.`;
@@ -331,6 +338,7 @@ export async function fetchYahooHistoryForSymbol(symbol, {
       status: classified.status >= 400 ? classified.status : 502,
       code: classified.code,
       manualFallback: true,
+      retryAfterMs: classified.retryAfterMs ?? e?.retryAfterMs ?? null,
     });
   }
 }

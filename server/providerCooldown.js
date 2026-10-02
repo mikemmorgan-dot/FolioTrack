@@ -28,6 +28,10 @@ export function markCooldown(id, ms = COOLDOWN_MS) {
   until.set(id, nowFn() + ms);
 }
 
+export function clearCooldown(id) {
+  until.delete(id);
+}
+
 export function isCooldownError(err) {
   if (!err) return false;
   const status = err.status ?? err.statusCode ?? null;

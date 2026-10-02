@@ -27,6 +27,7 @@ import {
 } from './refresh.js';
 import { ALERT_RUN_BUDGET_MS } from './runner.js';
 import { normalizeMissRecord } from './missBackoff.js';
+import { createRunFetchDedupe, withYahooRun } from '../yahooQueue.js';
 
 export { ALERT_REFRESH_CAP, BREACH_PENDING_FRESH };
 
@@ -161,31 +162,34 @@ export function createAlertService({
     const plan = eligible.slice(0, Math.max(0, Number(cap) || 0));
     const deferred = eligible.slice(Math.max(0, Number(cap) || 0));
     const byId = new Map(peeks.filter((p) => p?.inst).map((p) => [p.inst.id, p]));
+    const fetchHistory = typeof getHistory === 'function' ? createRunFetchDedupe(getHistory) : getHistory;
     const results = [];
     // Only the capped refresh set (default 8) keeps a series, and each one is
     // dropped after that holding is evaluated.
     const refreshed = new Map();
 
-    for (const row of plan) {
-      if (ensureBudget) ensureBudget();
-      const peek = byId.get(row.instrumentId);
-      if (!peek?.inst) continue;
-      const result = await refreshOneAutoHolding(peek.inst, {
-        getHistory,
-        getPriceHistory: store.getPriceHistory ? (s) => store.getPriceHistory(s) : null,
-        nowMs,
-        liveMissUntil,
-        bypassMissBackoff,
-      });
-      if (result.series?.length && (result.status === 'updated' || result.status === 'unchanged')) {
-        refreshed.set(peek.inst.id, {
-          series: result.series,
-          fetchedAt: result.fetchedAt || null,
+    await withYahooRun(async () => {
+      for (const row of plan) {
+        if (ensureBudget) ensureBudget();
+        const peek = byId.get(row.instrumentId);
+        if (!peek?.inst) continue;
+        const result = await refreshOneAutoHolding(peek.inst, {
+          getHistory: fetchHistory,
+          getPriceHistory: store.getPriceHistory ? (s) => store.getPriceHistory(s) : null,
+          nowMs,
+          liveMissUntil,
+          bypassMissBackoff,
         });
+        if (result.series?.length && (result.status === 'updated' || result.status === 'unchanged')) {
+          refreshed.set(peek.inst.id, {
+            series: result.series,
+            fetchedAt: result.fetchedAt || null,
+          });
+        }
+        const { series, ...publicResult } = result;
+        results.push(publicResult);
       }
-      const { series, ...publicResult } = result;
-      results.push(publicResult);
-    }
+    });
 
     for (const row of cooling) {
       const rec = liveMissUntil.get(String(row.symbol || '').toUpperCase());

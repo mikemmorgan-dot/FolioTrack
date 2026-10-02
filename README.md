@@ -61,6 +61,8 @@ is what feeds the Performance change-timeline (and, next, attribution).
 | Private alts (OCIC, CVC, pooled) | Manual NAV |
 | CUSIP-only instruments | Manual |
 
+Yahoo chart calls try **query2 then query1**, use `period1`/`period2` for history (`range=max` came back monthly/quarterly), and send at most one request about every 1.5 seconds. Set `YAHOO_UA` to `none`, `rotate`, or an exact User-Agent; the default is `FolioTrack/1.0 (portfolio price history)`. A Safari browser UA received HTTP 429 from a datacenter VM while that default returned bars, so it is not the default. `GET /api/diagnostics` includes `yahoo.lastSuccessAt`.
+
 ## Compliance note
 Keep this to model **allocations** and instrument data. Do not put client account
 values or PII on a public URL — gate behind auth or deploy privately if that changes.
