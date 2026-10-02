@@ -272,6 +272,54 @@ describe('background alert check', () => {
   });
 });
 
+describe('manual refresh bypass flag', () => {
+  async function settle(base) {
+    let status;
+    for (let i = 0; i < 30; i++) {
+      status = await (await fetch(`${base}/api/alerts/status`)).json();
+      if (!status.running) return status;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw new Error('run did not finish');
+  }
+
+  it('bypasses holding backoff for Check now and Refresh prices now, not for the cron URL', async () => {
+    const seen = [];
+    const app = express();
+    app.use(express.json());
+    app.use('/api/alerts', createAlertRouter({
+      store: memoryStore(),
+      runCheck: async (opts) => {
+        seen.push({ via: 'check', bypass: !!opts?.bypassMissBackoff });
+        return { ok: true, evaluated: 0, active: 0 };
+      },
+      refreshPrices: async (opts) => {
+        seen.push({ via: 'refresh', bypass: !!opts?.bypassMissBackoff });
+        return { ok: true, evaluated: 0, active: 0 };
+      },
+      sendTestEmail: async () => ({ ok: true }),
+      token: () => 's3cret',
+      logger: { log() {}, warn() {}, error() {} },
+    }));
+    await withServer(app, async (base) => {
+      const run = await fetch(`${base}/api/alerts/run`, { method: 'POST' });
+      expect(run.status).toBe(202);
+      await settle(base);
+      const refresh = await fetch(`${base}/api/alerts/refresh-prices`, { method: 'POST' });
+      expect(refresh.status).toBe(202);
+      await settle(base);
+      const cron = await fetch(`${base}/api/alerts/check?token=s3cret`);
+      expect(cron.status).toBe(202);
+      await settle(base);
+    });
+    expect(seen).toEqual([
+      { via: 'check', bypass: true },
+      { via: 'refresh', bypass: true },
+      { via: 'check', bypass: false },
+    ]);
+  });
+});
+
 describe('alert scheduler', () => {
   afterEach(() => { vi.useRealTimers(); });
 

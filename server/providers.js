@@ -239,6 +239,33 @@ const yahooQuery2 = yahooHop('yahoo-query2', YAHOO_QUERY2);
 // in front of a provider that can still answer.
 export const PROVIDERS = [yahoo, yahooQuery2, twelvedata, finnhub, alphavantage, stooq];
 
+// Canadian listings on the free tier, checked 2026-10-02:
+// - Yahoo query1 and query2 chart bars do work for .TO (ENB, XBB, VFV, VDY,
+//   TOU, XEF returned CAD prices from this VM with a Chrome-like user agent).
+// - Twelve Data Basic (free) is US data plus a handful of trial symbols.
+//   TSX, TSXV, NEO, and CSE require the Grow plan.
+// - Finnhub's free plan does not include /stock/candle, and TSX end-of-day
+//   OHLC is a separate paid feed. Calling it cannot fill price_history.
+// - Alpha Vantage documents Toronto as SYMBOL.TRT and serves compact daily
+//   bars on a free key (25/day). This environment has no key, so that hop was
+//   not verified live. It stays last, and only for .TO, where the suffix map
+//   exists. .V / .NE / .CN are not sent there.
+// - Stooq maps RY.TO (and .V/.NE/.CN) to symbol.ca. From this VM the CSV URL
+//   returned a JavaScript challenge, not prices. It is still an extra hop.
+const CANADIAN_LISTING = /\.(TO|V|NE|CN)$/i;
+
+export function isCanadianListingSymbol(symbol) {
+  return CANADIAN_LISTING.test(String(symbol || '').trim());
+}
+
+export function providersForSymbol(symbol) {
+  if (!isCanadianListingSymbol(symbol)) return PROVIDERS;
+  if (/\.TO$/i.test(String(symbol || '').trim())) {
+    return [yahoo, yahooQuery2, stooq, alphavantage];
+  }
+  return [yahoo, yahooQuery2, stooq];
+}
+
 export function providerStatusList(now = Date.now()) {
   return PROVIDERS.map((p) => {
     const until = cooldownUntil(p.id);
@@ -277,8 +304,14 @@ export async function viaChain(method, symbol, arg, providerList = PROVIDERS) {
     if (p.supports && !p.supports(symbol)) continue;
     if (isCoolingDown(p.id)) {
       const error = 'cooling down after a recent rate-limit';
+      const until = cooldownUntil(p.id);
       attempts.push({
-        provider: p.id, error, skipped: true, notFound: false, kind: 'rate-limit',
+        provider: p.id,
+        error,
+        skipped: true,
+        notFound: false,
+        kind: 'rate-limit',
+        cooldownUntil: until ? new Date(until).toISOString() : null,
       });
       continue;
     }
@@ -310,8 +343,8 @@ export async function viaChain(method, symbol, arg, providerList = PROVIDERS) {
   throw err;
 }
 
-export const getQuote = (symbol) => viaChain('quote', symbol);
-export const getHistory = (symbol, range = '5y') => viaChain('history', symbol, range);
+export const getQuote = (symbol) => viaChain('quote', symbol, undefined, providersForSymbol(symbol));
+export const getHistory = (symbol, range = '5y') => viaChain('history', symbol, range, providersForSymbol(symbol));
 
 function guessTypeFor(symbol) {
   const bare = String(symbol || '').replace(/\..*$/, '');

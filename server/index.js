@@ -676,14 +676,18 @@ app.get('/api/history/:symbol', async (req, res) => {
 });
 
 // Price-drop alerts. The check refreshes auto-priced stock/ETF history when
-// the last close is more than ~1 trading day old (oldest first, capped),
-// through the history cache (provider cooldown + fail window, no force).
+// the last close is more than ~1 trading day old (oldest or missing first,
+// capped). Cron respects the per-holding miss timer and the history-cache
+// fail window (force: false). Check now / Refresh prices now pass force so
+// that timer is skipped; per-provider cooldowns still apply inside the chain.
 // Manual NAV / Cash / private holdings are never refreshed. A live quote may
 // be appended as today's point when candles lag.
 const alertEmail = createEmailSender();
 const alerts = createAlertService({
   store,
-  getHistory: (symbol, range, opts) => cachedHistory(symbol, range || 'max', { ...(opts || {}), force: false }),
+  getHistory: (symbol, range, opts) => cachedHistory(symbol, range || 'max', {
+    force: opts?.force === true,
+  }),
   email: alertEmail,
 });
 const alertRuns = createAlertCoordinator({

@@ -491,6 +491,156 @@ describe('alert check', () => {
     expect(summary.refresh.results.every((row) => row.series == null)).toBe(true);
   });
 
+  it('spends the cap on eligible holdings and says when a backed-off name retries', async () => {
+    const today = '2026-10-01';
+    const now = new Date('2026-10-01T15:00:00.000Z');
+    const { store } = fixture(200);
+    store.db.historyBySymbol.NVDA = nvdaSeries(200, today);
+    store.db.nav.inst_ocic = [{ date: '2026-01-01', nav: 10 }, { date: today, nav: 8 }];
+    const add = (id, symbol, lastClose) => {
+      store.db.instruments[id] = {
+        id, symbol, name: symbol, type: 'stock', source: 'auto', currency: 'CAD',
+      };
+      store.db.models[0].versions[0].holdings.push({ instrumentId: id, weight: 0.05 });
+      if (lastClose) {
+        store.db.historyBySymbol[symbol] = {
+          symbol,
+          fetchedAt: '2026-09-01T00:00:00.000Z',
+          series: [{ date: '2026-01-01', close: 10 }, { date: lastClose, close: 9 }],
+        };
+      }
+    };
+    add('inst_enb', 'ENB.TO', null);
+    add('inst_tou', 'TOU.TO', '2026-09-01');
+    add('inst_vdy', 'VDY.TO', '2026-09-10');
+    add('inst_xbb', 'XBB.TO', '2026-09-20');
+    store.db.miss = {
+      'ENB.TO': {
+        until: new Date(now.getTime() + 60 * 60 * 1000).toISOString(),
+        strikes: 2,
+        reason: 'rate-limit',
+      },
+      'TOU.TO': {
+        until: new Date(now.getTime() + 30 * 60 * 1000).toISOString(),
+        strikes: 1,
+        reason: 'rate-limit',
+      },
+    };
+    store.getAlertMissUntil = async () => store.db.miss;
+    store.setAlertMissUntil = async (obj) => { store.db.miss = obj; return obj; };
+    const order = [];
+    const summary = await createAlertService({
+      store,
+      email: mockEmail(),
+      now: () => now,
+      today: () => today,
+      refreshCap: 1,
+      getHistory: async (symbol) => {
+        order.push(String(symbol).toUpperCase());
+        return {
+          series: [{ date: '2026-01-01', close: 10 }, { date: today, close: 12 }],
+          stale: false,
+          provider: 'yahoo',
+          fetchedAt: now.toISOString(),
+        };
+      },
+    }).runCheck();
+    expect(order).toEqual(['VDY.TO']);
+    expect(summary.refresh.attempted).toBe(1);
+    const bySym = Object.fromEntries(summary.refresh.results.map((r) => [r.symbol, r]));
+    expect(bySym['ENB.TO'].status).toBe('cooldown');
+    expect(bySym['ENB.TO'].line).toBe('ENB.TO: Providers were rate-limited — retry after 12:00');
+    expect(bySym['TOU.TO'].line).toMatch(/retry after 11:30/);
+    expect(bySym['XBB.TO'].status).toBe('skipped');
+  });
+
+  it('lets Check now and Refresh prices now bypass a total-miss backoff', async () => {
+    const { store } = fixture();
+    store.db.instruments.inst_ry = {
+      id: 'inst_ry', symbol: 'RY.TO', name: 'Royal Bank', type: 'stock', source: 'auto', currency: 'CAD',
+    };
+    store.db.models[0].versions[0].holdings.push({ instrumentId: 'inst_ry', weight: 0.1 });
+    store.db.miss = { 'RY.TO': new Date(NOW.getTime() + 2 * 60 * 60 * 1000).toISOString() };
+    store.getAlertMissUntil = async () => store.db.miss;
+    store.setAlertMissUntil = async (obj) => { store.db.miss = obj; return obj; };
+    let calls = 0;
+    const svc = service(store, mockEmail(), {
+      getHistory: async () => {
+        calls += 1;
+        return { series: [{ date: TODAY, close: 100 }], stale: false, provider: 'yahoo' };
+      },
+    });
+    await svc.runCheck();
+    expect(calls).toBe(0);
+    await svc.runCheck({ bypassMissBackoff: true });
+    expect(calls).toBe(1);
+    expect(store.db.miss['RY.TO']).toBeUndefined();
+
+    store.db.miss = { 'RY.TO': new Date(NOW.getTime() + 2 * 60 * 60 * 1000).toISOString() };
+    calls = 0;
+    const again = service(store, mockEmail(), {
+      getHistory: async () => {
+        calls += 1;
+        return { series: [{ date: TODAY, close: 100 }], stale: false, provider: 'yahoo' };
+      },
+    });
+    await again.refreshPricesNow();
+    expect(calls).toBe(1);
+  });
+
+  it('reports provider hops skipped for cooldown when a manual refresh still cannot call them', async () => {
+    const { store } = fixture();
+    store.db.instruments.inst_ry = {
+      id: 'inst_ry', symbol: 'RY.TO', name: 'Royal Bank', type: 'stock', source: 'auto', currency: 'CAD',
+    };
+    store.db.models[0].versions[0].holdings.push({ instrumentId: 'inst_ry', weight: 0.1 });
+    const summary = await service(store, mockEmail(), {
+      getHistory: async () => {
+        const err = new Error('All providers failed for RY.TO');
+        err.attempts = [
+          {
+            provider: 'yahoo',
+            error: 'cooling down after a recent rate-limit',
+            skipped: true,
+            kind: 'rate-limit',
+            cooldownUntil: new Date(NOW.getTime() + 20 * 60 * 1000).toISOString(),
+          },
+          {
+            provider: 'yahoo-query2',
+            error: 'cooling down after a recent rate-limit',
+            skipped: true,
+            kind: 'rate-limit',
+            cooldownUntil: new Date(NOW.getTime() + 25 * 60 * 1000).toISOString(),
+          },
+        ];
+        throw err;
+      },
+    }).refreshPricesNow();
+    const row = summary.refresh.results.find((r) => r.symbol === 'RY.TO');
+    expect(row.skippedHops.map((h) => h.provider)).toEqual(['yahoo', 'yahoo-query2']);
+    expect(row.line).toMatch(/Price providers are still cooling down — retry after \d{2}:\d{2}/);
+    expect(row.line).toMatch(/Skipped while cooling down: yahoo until/);
+  });
+
+  it('shortens a stored 6 hour total-miss timer on the next check', async () => {
+    const { store } = fixture();
+    store.db.instruments.inst_ry = {
+      id: 'inst_ry', symbol: 'RY.TO', name: 'Royal Bank', type: 'stock', source: 'auto', currency: 'CAD',
+    };
+    store.db.models[0].versions[0].holdings.push({ instrumentId: 'inst_ry', weight: 0.1 });
+    store.db.miss = { 'RY.TO': new Date(NOW.getTime() + 6 * 60 * 60 * 1000).toISOString() };
+    store.getAlertMissUntil = async () => store.db.miss;
+    store.setAlertMissUntil = async (obj) => { store.db.miss = obj; return obj; };
+    let calls = 0;
+    const summary = await service(store, mockEmail(), {
+      getHistory: async () => { calls += 1; throw new Error('should stay backed off for the short window'); },
+    }).runCheck();
+    expect(calls).toBe(0);
+    expect(Date.parse(store.db.miss['RY.TO'].until) - NOW.getTime()).toBe(20 * 60 * 1000);
+    const row = summary.refresh.results.find((r) => r.symbol === 'RY.TO');
+    expect(row.line).toBe('RY.TO: The last price lookup missed — retry after 11:20');
+  });
+
   it('records a budget failure and rejects instead of running the check', async () => {
     const { store } = fixture();
     store.db.check = {

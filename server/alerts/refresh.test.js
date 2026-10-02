@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
   isRefreshableAutoHolding,
   planAutoPriceRefresh,
+  refreshOneAutoHolding,
   sortOldestFirst,
+  splitRefreshCandidates,
   BREACH_PENDING_FRESH,
 } from './refresh.js';
 
@@ -46,6 +48,26 @@ describe('planAutoPriceRefresh', () => {
     ], { today: '2026-10-01', cap: 2 });
 
     expect(plan.map((p) => p.symbol)).toEqual(['TSLA', 'AAPL']);
+  });
+
+  it('fills cap slots with eligible holdings and leaves backoff names out', () => {
+    const rows = [
+      { instrumentId: 'e', symbol: 'ENB.TO', refreshable: true, lastClose: null },
+      { instrumentId: 't', symbol: 'TOU.TO', refreshable: true, lastClose: '2026-09-01' },
+      { instrumentId: 'v', symbol: 'VDY.TO', refreshable: true, lastClose: '2026-09-10' },
+      { instrumentId: 'x', symbol: 'XBB.TO', refreshable: true, lastClose: '2026-09-20' },
+      { instrumentId: 'c', symbol: 'CASH', refreshable: false, lastClose: null },
+    ];
+    const cooling = new Set(['ENB.TO', 'TOU.TO']);
+    const opts = {
+      today: '2026-10-01',
+      cap: 1,
+      isCooling: (c) => cooling.has(c.symbol),
+    };
+    expect(planAutoPriceRefresh(rows, opts).map((p) => p.symbol)).toEqual(['VDY.TO']);
+    const split = splitRefreshCandidates(rows, opts);
+    expect(split.cooling.map((p) => p.symbol)).toEqual(['ENB.TO', 'TOU.TO']);
+    expect(split.eligible.map((p) => p.symbol)).toEqual(['VDY.TO', 'XBB.TO']);
   });
 
   it('sortOldestFirst puts missing closes first', () => {
