@@ -1,8 +1,10 @@
 // historyCache.js — persistent, cache-first price history.
 //
-// Live providers (Yahoo query1 → Yahoo query2 → Twelve Data → Finnhub →
-// Alpha Vantage → Stooq) are tried
-// sequentially and only on a miss/stale cache. A successful series is stored
+// Live providers are tried sequentially and only on a miss/stale cache.
+// US names walk Yahoo query1 → query2 → Twelve Data → Finnhub → Alpha
+// Vantage → Stooq. Canadian .TO/.V/.NE/.CN names start at Yahoo and skip the
+// free-tier providers that do not cover those listings (see providers.js).
+// A successful series is stored
 // and reused for 18h (equities are end-of-day). If every live hop fails but
 // we still have a stored series, that series is returned with stale: true
 // instead of an empty chart.
@@ -163,7 +165,7 @@ export function createHistoryCache({
     if (lastCloseNeedsRefresh(lastCloseDate(series), today())) {
       liveFailUntil.set(key, now() + failCooldownMs);
     }
-    return rec;
+    return { ...rec, attempts: live?.attempts || [] };
   }
 
   async function getHistory(symbol, range = 'max', { force = false } = {}) {
@@ -192,12 +194,14 @@ export function createHistoryCache({
 
     try {
       const stored = await pending;
+      const attempts = stored.attempts || [];
       const stillStaleClose = lastCloseNeedsRefresh(lastCloseDate(stored.series), today());
       if (!stillStaleClose) liveFailUntil.delete(key);
       return respond(stored, range, {
         stale: stillStaleClose,
         fromCache: false,
         quoteAppended: !!stored.quoteAppended,
+        attempts,
         error: stillStaleClose ? 'Live history did not extend the last close' : undefined,
       });
     } catch (e) {
@@ -218,7 +222,12 @@ export function createHistoryCache({
             };
             await putPriceHistory(key, rec);
             liveFailUntil.delete(key);
-            return respond(rec, range, { stale: false, fromCache: false, quoteAppended: true });
+            return respond(rec, range, {
+              stale: false,
+              fromCache: false,
+              quoteAppended: true,
+              attempts: e.attempts || [],
+            });
           }
         } catch {
           // fall through to stale cache
@@ -229,6 +238,7 @@ export function createHistoryCache({
           stale: true,
           fromCache: true,
           error: e.message,
+          attempts: e.attempts || [],
         });
       }
       throw e;

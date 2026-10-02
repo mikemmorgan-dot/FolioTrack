@@ -135,9 +135,13 @@ export function createAlertRouter({
     }
   };
 
-  router.post('/run', (_req, res) => acknowledge(res, { refresh: true, kind: 'check' }));
+  router.post('/run', (_req, res) => acknowledge(res, {
+    refresh: true, kind: 'check', bypassMissBackoff: true,
+  }));
 
-  router.post('/refresh-prices', (_req, res) => acknowledge(res, { refresh: true, kind: 'refresh' }));
+  router.post('/refresh-prices', (_req, res) => acknowledge(res, {
+    refresh: true, kind: 'refresh', bypassMissBackoff: true,
+  }));
 
   router.get('/status', (_req, res) => {
     try {
@@ -153,7 +157,7 @@ export function createAlertRouter({
     next();
   };
 
-  const check = (_req, res) => acknowledge(res, { refresh: true, kind: 'check' });
+  const check = (_req, res) => acknowledge(res, { refresh: true, kind: 'check', bypassMissBackoff: false });
 
   router.get('/check', guard, check);
   router.post('/check', guard, check);

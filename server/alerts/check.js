@@ -13,20 +13,21 @@
 import { uid } from '../util.js';
 import { todayToronto } from '../nav.js';
 import { decidePricePath } from '../navPrice.js';
-import { lastCloseNeedsRefresh, lastCloseDate } from '../historyCache.js';
+import { lastCloseDate } from '../historyCache.js';
 import { collectCurrentHoldings, evaluateHolding, isPriceStale } from './drawdown.js';
 import { transitionAlert } from './state.js';
 import { buildAlertEmail, buildTestEmail, EMAIL_NOT_CONFIGURED, FOLIOTRACK_URL } from './email.js';
 import {
   ALERT_REFRESH_CAP,
   BREACH_PENDING_FRESH,
+  describeBackoffHold,
   isRefreshableAutoHolding,
-  planAutoPriceRefresh,
   refreshOneAutoHolding,
+  splitRefreshCandidates,
 } from './refresh.js';
 import { ALERT_RUN_BUDGET_MS } from './runner.js';
+import { normalizeMissRecord } from './missBackoff.js';
 
-export const ALERT_MISS_BACKOFF_MS = 6 * 60 * 60 * 1000;
 export { ALERT_REFRESH_CAP, BREACH_PENDING_FRESH };
 
 function historyEntry(kind, event, now, detail) {
@@ -53,7 +54,6 @@ export function createAlertService({
   now = () => new Date(),
   today = () => todayToronto(),
   appUrl = FOLIOTRACK_URL,
-  missBackoffMs = ALERT_MISS_BACKOFF_MS,
   refreshCap = ALERT_REFRESH_CAP,
 } = {}) {
   if (!store) throw new Error('createAlertService requires a store');
@@ -64,17 +64,23 @@ export function createAlertService({
   async function hydrateMisses(nowMs) {
     if (typeof store.getAlertMissUntil !== 'function') return;
     const raw = await store.getAlertMissUntil();
-    for (const [sym, until] of Object.entries(raw || {})) {
-      const t = Date.parse(until);
-      if (Number.isFinite(t) && t > nowMs) liveMissUntil.set(sym, t);
+    for (const [sym, value] of Object.entries(raw || {})) {
+      const rec = normalizeMissRecord(value, nowMs);
+      if (rec) liveMissUntil.set(String(sym).toUpperCase(), rec);
     }
   }
 
   async function persistMisses(nowMs) {
     if (typeof store.setAlertMissUntil !== 'function') return;
     const obj = {};
-    for (const [sym, until] of liveMissUntil) {
-      if (until > nowMs) obj[sym] = new Date(until).toISOString();
+    const keepAfter = nowMs - (7 * 24 * 60 * 60 * 1000);
+    for (const [sym, rec] of liveMissUntil) {
+      if (!rec || rec.until < keepAfter) continue;
+      obj[sym] = {
+        until: new Date(rec.until).toISOString(),
+        strikes: rec.strikes || 0,
+        reason: rec.reason || 'total-miss',
+      };
     }
     await store.setAlertMissUntil(obj);
   }
@@ -126,7 +132,18 @@ export function createAlertService({
     };
   }
 
-  async function refreshStaleAutoPrices(peeks, { nowMs, todayIso, cap = refreshCap, ensureBudget } = {}) {
+  function missActive(symbol, nowMs) {
+    const rec = liveMissUntil.get(String(symbol || '').toUpperCase());
+    return !!(rec && nowMs < rec.until);
+  }
+
+  async function refreshStaleAutoPrices(peeks, {
+    nowMs,
+    todayIso,
+    cap = refreshCap,
+    ensureBudget,
+    bypassMissBackoff = false,
+  } = {}) {
     const candidates = peeks
       .filter((p) => p?.inst)
       .map((p) => ({
@@ -137,7 +154,12 @@ export function createAlertService({
         lastClose: p.lastClose,
       }));
 
-    const plan = planAutoPriceRefresh(candidates, { today: todayIso, cap });
+    const { eligible, cooling } = splitRefreshCandidates(candidates, {
+      today: todayIso,
+      isCooling: (c) => !bypassMissBackoff && missActive(c.symbol, nowMs),
+    });
+    const plan = eligible.slice(0, Math.max(0, Number(cap) || 0));
+    const deferred = eligible.slice(Math.max(0, Number(cap) || 0));
     const byId = new Map(peeks.filter((p) => p?.inst).map((p) => [p.inst.id, p]));
     const results = [];
     // Only the capped refresh set (default 8) keeps a series, and each one is
@@ -153,7 +175,7 @@ export function createAlertService({
         getPriceHistory: store.getPriceHistory ? (s) => store.getPriceHistory(s) : null,
         nowMs,
         liveMissUntil,
-        missBackoffMs,
+        bypassMissBackoff,
       });
       if (result.series?.length && (result.status === 'updated' || result.status === 'unchanged')) {
         refreshed.set(peek.inst.id, {
@@ -165,18 +187,27 @@ export function createAlertService({
       results.push(publicResult);
     }
 
-    const planned = new Set(plan.map((p) => p.instrumentId));
-    for (const c of candidates) {
-      if (!c.refreshable) continue;
-      if (planned.has(c.instrumentId)) continue;
-      if (!lastCloseNeedsRefresh(c.lastClose, todayIso)) continue;
+    for (const row of cooling) {
+      const rec = liveMissUntil.get(String(row.symbol || '').toUpperCase());
+      const described = describeBackoffHold({
+        symbol: row.symbol,
+        instrumentId: row.instrumentId,
+        lastClose: row.lastClose,
+        rec,
+      });
+      const { series, ...publicResult } = described;
+      results.push(publicResult);
+    }
+
+    for (const row of deferred) {
       results.push({
-        symbol: String(c.symbol || '').toUpperCase(),
-        instrumentId: c.instrumentId,
+        symbol: String(row.symbol || '').toUpperCase(),
+        instrumentId: row.instrumentId,
         status: 'skipped',
         error: 'Over per-run refresh cap — will retry next run',
-        lastClose: c.lastClose || null,
-        priceAsOf: c.lastClose || null,
+        lastClose: row.lastClose || null,
+        priceAsOf: row.lastClose || null,
+        line: `${String(row.symbol || '').toUpperCase()}: skipped — Over per-run refresh cap — will retry next run`,
       });
     }
 
@@ -318,6 +349,7 @@ export function createAlertService({
     deadline = null,
     isCurrent = null,
     budgetMs = ALERT_RUN_BUDGET_MS,
+    bypassMissBackoff = false,
   } = {}) {
     const startedMs = Date.now();
     const limit = Number.isFinite(deadline) ? deadline : startedMs + budgetMs;
@@ -372,7 +404,7 @@ export function createAlertService({
       let refreshed = null;
       if (refresh) {
         const refreshState = await refreshStaleAutoPrices(peeks, {
-          nowMs, todayIso, cap: refreshCap, ensureBudget,
+          nowMs, todayIso, cap: refreshCap, ensureBudget, bypassMissBackoff,
         });
         refreshed = refreshState.refreshed;
         summary.refresh = {
@@ -452,9 +484,10 @@ export function createAlertService({
     return runAlertCheck(opts || {});
   }
 
-  /** Refresh stale auto prices and report per-holding results (also re-checks alerts). */
+  /** Refresh stale auto prices and report per-holding results (also re-checks alerts).
+   *  Always bypasses the per-holding total-miss timer. Provider cooldowns stay. */
   function refreshPricesNow(opts) {
-    return runCheck({ ...(opts || {}), refresh: true });
+    return runCheck({ ...(opts || {}), refresh: true, bypassMissBackoff: true });
   }
 
   async function sendTestEmail() {

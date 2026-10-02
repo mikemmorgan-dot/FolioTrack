@@ -288,6 +288,8 @@ describe('provider cooldown', () => {
     expect(yahooCalls).toBe(1);
     expect(tdCalls).toBe(2);
     expect(second.attempts.some((a) => a.provider === 'yahoo' && a.skipped)).toBe(true);
+    const skipped = second.attempts.find((a) => a.provider === 'yahoo');
+    expect(skipped.cooldownUntil).toBe('2026-09-04T12:20:00.000Z');
   });
 
   it('stops at the first successful provider and does not fan out', async () => {

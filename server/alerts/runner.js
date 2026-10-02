@@ -200,7 +200,7 @@ export function createAlertCoordinator({
     }).finally(() => settleIdle());
   }
 
-  function start({ refresh = true, kind = 'check' } = {}) {
+  function start({ refresh = true, kind = 'check', bypassMissBackoff = false } = {}) {
     const t = now();
     if (running && (t - startedAtMs) > lockTimeoutMs) {
       forceRelease(generation, runningId, null, null);
@@ -221,6 +221,7 @@ export function createAlertCoordinator({
         const result = await runJob({
           refresh,
           kind,
+          bypassMissBackoff: !!bypassMissBackoff,
           budgetMs,
           deadline: now() + budgetMs,
           isCurrent: () => myGen === generation,

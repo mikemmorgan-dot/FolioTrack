@@ -34,6 +34,57 @@ function modelNames(models) {
   return names.length ? names.join(', ') : '—';
 }
 
+function formatRetryClock(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'America/Toronto',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(d);
+  const hh = parts.find((p) => p.type === 'hour')?.value;
+  const mm = parts.find((p) => p.type === 'minute')?.value;
+  if (hh == null || mm == null) return null;
+  return `${hh}:${mm}`;
+}
+
+function formatSkippedHops(hops) {
+  if (!hops?.length) return '';
+  const bits = hops.map((h) => {
+    const when = h.cooldownUntil ? formatRetryClock(h.cooldownUntil) : null;
+    const name = h.provider || 'provider';
+    return when ? `${name} until ${when}` : name;
+  });
+  return `Skipped while cooling down: ${bits.join(', ')}.`;
+}
+
+function formatRefreshLine(row) {
+  if (row?.line) return row.line;
+  const symbol = row?.symbol || '—';
+  const asOf = row?.priceAsOf || row?.lastClose || '—';
+  const hops = formatSkippedHops(row?.skippedHops);
+  if (row?.status === 'updated') {
+    const base = `${symbol}: updated (as of ${asOf})`;
+    return hops ? `${base}. ${hops}` : base;
+  }
+  if (row?.status === 'unchanged') {
+    const base = `${symbol}: already current (as of ${asOf})`;
+    return hops ? `${base}. ${hops}` : base;
+  }
+  if (row?.status === 'skipped') return `${symbol}: skipped — ${row.error || 'cap'}`;
+  if (row?.status === 'cooldown' || row?.retryAfter) {
+    const why = row.reasonText || row.error || 'Waiting after a recent miss';
+    const when = row.retryAfterLabel || formatRetryClock(row.retryAfter);
+    const retry = when ? ` — retry after ${when}` : '';
+    const base = `${symbol}: ${why}${retry}`;
+    return hops ? `${base}. ${hops}` : base;
+  }
+  const fail = `${symbol}: failed — ${row?.error || 'unknown'}`;
+  return hops ? `${fail}. ${hops}` : fail;
+}
+
 function formatDuration(ms) {
   if (ms == null || !Number.isFinite(Number(ms))) return null;
   const n = Math.max(0, Number(ms));
@@ -121,14 +172,10 @@ export default function SettingsPanel({ onClose, onSaved, onAlertCount }) {
   function formatRefreshSummary(summary) {
     const r = summary?.refresh;
     if (!r) return null;
-    const lines = (r.results || []).map((row) => {
-      const asOf = row.priceAsOf || row.lastClose || '—';
-      if (row.status === 'updated') return `${row.symbol}: updated (as of ${asOf})`;
-      if (row.status === 'unchanged') return `${row.symbol}: already current (as of ${asOf})`;
-      if (row.status === 'cooldown') return `${row.symbol}: cooldown — ${row.error || 'backed off'}`;
-      if (row.status === 'skipped') return `${row.symbol}: skipped — ${row.error || 'cap'}`;
-      return `${row.symbol}: failed — ${row.error || 'unknown'}`;
-    });
+    const lines = (r.results || []).map((row, i) => ({
+      key: `${row.symbol || 'row'}-${row.status || ''}-${i}`,
+      text: formatRefreshLine(row),
+    }));
     return {
       headline: `Refreshed ${r.updated ?? 0} updated, ${r.failed ?? 0} failed, ${r.skipped ?? 0} skipped (cap ${r.cap ?? '—'}).`,
       lines,
@@ -315,7 +362,7 @@ export default function SettingsPanel({ onClose, onSaved, onAlertCount }) {
         {refreshMsg && <p className="ed-hint">{refreshMsg}</p>}
         {refreshResults?.length > 0 && (
           <ul className="ed-hint" style={{ marginTop: 0, paddingLeft: '1.2rem' }}>
-            {refreshResults.map((line) => <li key={line}>{line}</li>)}
+            {refreshResults.map((line) => <li key={line.key}>{line.text}</li>)}
           </ul>
         )}
         {testMsg && (
