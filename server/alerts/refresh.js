@@ -36,6 +36,14 @@ export function lastCloseOf(series) {
   return lastCloseDate(series);
 }
 
+/** Explicit `lastClose` wins so a planner can drop the series after reading the date. */
+export function candidateLastClose(candidate) {
+  if (candidate && Object.prototype.hasOwnProperty.call(candidate, 'lastClose')) {
+    return candidate.lastClose || null;
+  }
+  return lastCloseOf(candidate?.historySeries);
+}
+
 export function sortOldestFirst(rows) {
   return [...rows].sort((a, b) => {
     const da = a.lastClose || '';
@@ -60,7 +68,7 @@ export function planAutoPriceRefresh(candidates, {
   const need = [];
   for (const c of candidates || []) {
     if (!c?.refreshable) continue;
-    const lastClose = lastCloseOf(c.historySeries);
+    const lastClose = candidateLastClose(c);
     if (!lastCloseNeedsRefresh(lastClose, today)) continue;
     need.push({
       instrumentId: c.instrumentId,

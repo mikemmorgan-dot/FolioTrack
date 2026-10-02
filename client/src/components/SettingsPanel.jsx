@@ -34,6 +34,21 @@ function modelNames(models) {
   return names.length ? names.join(', ') : '—';
 }
 
+function formatDuration(ms) {
+  if (ms == null || !Number.isFinite(Number(ms))) return null;
+  const s = Math.max(0, Number(ms) / 1000);
+  if (s < 10) return `${s.toFixed(1)}s`;
+  const rounded = Math.round(s);
+  if (rounded < 60) return `${rounded}s`;
+  const m = Math.floor(rounded / 60);
+  const rem = rounded % 60;
+  return `${m}m ${rem}s`;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export default function SettingsPanel({ onClose, onSaved, onAlertCount }) {
   const [basis, setBasisInput] = useState(String(BASIS));
   const [threshold, setThreshold] = useState('20');
@@ -73,6 +88,34 @@ export default function SettingsPanel({ onClose, onSaved, onAlertCount }) {
     return api.alerts().then(applyPayload);
   }
 
+  async function waitForRun(runId) {
+    const deadline = Date.now() + 120000;
+    while (Date.now() < deadline) {
+      const st = await api.alertStatus();
+      const finished = !st.running && (runId == null || (st.finishedRunId || 0) >= runId);
+      if (finished) return st;
+      await sleep(500);
+    }
+    throw new Error('Check is still running. It will finish in the background.');
+  }
+
+  function applyRun(st) {
+    const summary = st?.lastResult || {};
+    const formatted = formatRefreshSummary(summary);
+    if (formatted) {
+      setRefreshMsg(formatted.headline);
+      setRefreshResults(formatted.lines);
+    }
+    if (summary.ok === false) {
+      setCheckMsg(st?.lastError || summary.error || 'Check failed');
+      return summary;
+    }
+    const pending = summary.pending ? `, ${summary.pending} email pending` : '';
+    const err = st?.lastError ? ` Error: ${st.lastError}` : '';
+    setCheckMsg(`Checked ${summary.evaluated ?? 0} holdings. ${summary.active ?? 0} breached${pending}.${err}`);
+    return summary;
+  }
+
   function formatRefreshSummary(summary) {
     const r = summary?.refresh;
     if (!r) return null;
@@ -96,7 +139,13 @@ export default function SettingsPanel({ onClose, onSaved, onAlertCount }) {
       .then((payload) => { if (!cancel) applyPayload(payload); })
       .catch((e) => { if (!cancel) setLoadErr(e.message); })
       .finally(() => { if (!cancel) setLoaded(true); });
-    return () => { cancel = true; };
+    const timer = setInterval(() => {
+      if (!cancel) api.alerts().then((payload) => { if (!cancel) applyPayload(payload); }).catch(() => {});
+    }, 15000);
+    return () => {
+      cancel = true;
+      clearInterval(timer);
+    };
   }, []);
 
   async function persistAlerts() {
@@ -133,15 +182,10 @@ export default function SettingsPanel({ onClose, onSaved, onAlertCount }) {
     setRefreshResults(null);
     try {
       if (alertValid) await persistAlerts();
-      const summary = await api.runAlerts();
+      const ack = await api.runAlerts();
+      const st = await waitForRun(ack.runId);
+      applyRun(st);
       await reload();
-      const pending = summary.pending ? `, ${summary.pending} email pending` : '';
-      setCheckMsg(`Checked ${summary.evaluated ?? 0} holdings. ${summary.active ?? 0} breached${pending}.`);
-      const formatted = formatRefreshSummary(summary);
-      if (formatted) {
-        setRefreshMsg(formatted.headline);
-        setRefreshResults(formatted.lines);
-      }
     } catch (e) {
       setCheckMsg(e.message);
     } finally {
@@ -157,13 +201,13 @@ export default function SettingsPanel({ onClose, onSaved, onAlertCount }) {
     setCheckMsg(null);
     try {
       if (alertValid) await persistAlerts();
-      const summary = await api.refreshAlertPrices();
+      const ack = await api.refreshAlertPrices();
+      const st = await waitForRun(ack.runId);
+      const summary = applyRun(st);
+      if (!summary?.refresh) {
+        setRefreshMsg(st?.lastError || 'Refresh finished.');
+      }
       await reload();
-      const formatted = formatRefreshSummary(summary);
-      setRefreshMsg(formatted?.headline || 'Refresh finished.');
-      setRefreshResults(formatted?.lines || []);
-      const pending = summary.pending ? `, ${summary.pending} email pending` : '';
-      setCheckMsg(`Checked ${summary.evaluated ?? 0} holdings. ${summary.active ?? 0} breached${pending}.`);
     } catch (e) {
       setRefreshMsg(e.message);
     } finally {
@@ -213,6 +257,11 @@ export default function SettingsPanel({ onClose, onSaved, onAlertCount }) {
 
         <div className="ed-section">Price drop alerts</div>
         {loadErr && <div className="banner">Couldn’t load alert settings — {loadErr}</div>}
+        {loaded && status?.checkStale && (
+          <div className="banner alert-stale" role="status">
+            No successful alert check in over 2 hours. The free server sleeps when it is idle, so price alerts are not being watched. Confirm the keep-alive and alert cron jobs are still enabled.
+          </div>
+        )}
         <div className="switch-row">
           <div>
             <div className="switch-label">Alerts {enabled ? 'on' : 'off'}</div>
@@ -275,8 +324,10 @@ export default function SettingsPanel({ onClose, onSaved, onAlertCount }) {
 
         <div className="ed-section">Breached now</div>
         <p className="ed-hint">
-          Last check: {status?.lastCheckAt ? formatWhen(status.lastCheckAt) : 'not yet'}.
-          {status?.lastCheckError ? ` Check error: ${status.lastCheckError}` : ''}
+          Last check: {status?.lastCheckAt ? formatWhen(status.lastCheckAt) : 'not yet'}
+          {status?.lastCheckDurationMs != null ? `, ${formatDuration(status.lastCheckDurationMs)}` : ''}
+          {status?.lastCheckError ? `. Error: ${status.lastCheckError}` : '.'}
+          {status?.checkRunning ? ' A check is running now.' : ''}
         </p>
         {active.length === 0 && <p className="ed-hint">No holdings are through the drawdown threshold.</p>}
         <div className="nav-list">

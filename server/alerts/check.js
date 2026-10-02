@@ -24,6 +24,7 @@ import {
   planAutoPriceRefresh,
   refreshOneAutoHolding,
 } from './refresh.js';
+import { ALERT_RUN_BUDGET_MS } from './runner.js';
 
 export const ALERT_MISS_BACKOFF_MS = 6 * 60 * 60 * 1000;
 export { ALERT_REFRESH_CAP, BREACH_PENDING_FRESH };
@@ -59,7 +60,6 @@ export function createAlertService({
   if (!email?.send) throw new Error('createAlertService requires an email sender');
 
   const liveMissUntil = new Map();
-  let inflight = null;
 
   async function hydrateMisses(nowMs) {
     if (typeof store.getAlertMissUntil !== 'function') return;
@@ -79,80 +79,104 @@ export function createAlertService({
     await store.setAlertMissUntil(obj);
   }
 
-  async function loadHoldingContext(group) {
+  // Last close only. The full series is released before the next holding is read
+  // so a check cannot pin every history in memory at once.
+  async function peekHolding(group) {
     const inst = await store.getInstrument(group.instrumentId);
-    if (!inst) return null;
-    const stored = store.getPriceHistory ? await store.getPriceHistory(inst.symbol) : null;
+    if (!inst) return { group, inst: null };
+    const navSeries = store.getNavSeries ? await store.getNavSeries(inst.id) : [];
+    const refreshable = isRefreshableAutoHolding(inst, navSeries);
+    let lastClose = null;
+    if (refreshable && store.getPriceHistory) {
+      const stored = await store.getPriceHistory(inst.symbol);
+      lastClose = lastCloseDate(stored?.series);
+    }
+    return { group, inst, refreshable, lastClose };
+  }
+
+  async function loadEvalContext(peek, refreshed) {
+    if (!peek?.inst) return null;
+    const { inst, group } = peek;
     const navSeries = store.getNavSeries ? await store.getNavSeries(inst.id) : [];
     const path = decidePricePath(inst, navSeries || []);
     // NAV-backed instruments (manual or auto-with-NAV) use nav_series only —
     // never prefer a frozen leftover price_history over entered NAV.
     const useNav = path.path === 'nav_series' && path.series.length > 0;
+    let historySeries = [];
+    let historyFetchedAt = null;
+    if (!useNav) {
+      const fresh = refreshed?.get(inst.id);
+      if (fresh) {
+        historySeries = fresh.series || [];
+        historyFetchedAt = fresh.fetchedAt || null;
+        refreshed.delete(inst.id);
+      } else if (store.getPriceHistory) {
+        const stored = await store.getPriceHistory(inst.symbol);
+        historySeries = stored?.series || [];
+        historyFetchedAt = stored?.fetchedAt || null;
+      }
+    }
     return {
       group,
       inst,
-      historySeries: useNav ? [] : (stored?.series || []),
-      historyFetchedAt: useNav ? null : (stored?.fetchedAt || null),
+      historySeries,
+      historyFetchedAt,
       navSeries: navSeries || [],
-      refreshable: isRefreshableAutoHolding(inst, navSeries),
+      refreshable: !!peek.refreshable,
     };
   }
 
-  async function refreshStaleAutoPrices(contexts, { nowMs, todayIso, cap = refreshCap } = {}) {
-    const candidates = contexts
-      .filter(Boolean)
-      .map((c) => ({
-        instrumentId: c.inst.id,
-        symbol: c.inst.symbol,
-        name: c.inst.name,
-        refreshable: c.refreshable,
-        historySeries: c.historySeries,
+  async function refreshStaleAutoPrices(peeks, { nowMs, todayIso, cap = refreshCap, ensureBudget } = {}) {
+    const candidates = peeks
+      .filter((p) => p?.inst)
+      .map((p) => ({
+        instrumentId: p.inst.id,
+        symbol: p.inst.symbol,
+        name: p.inst.name,
+        refreshable: p.refreshable,
+        lastClose: p.lastClose,
       }));
 
     const plan = planAutoPriceRefresh(candidates, { today: todayIso, cap });
-    const byId = new Map(contexts.filter(Boolean).map((c) => [c.inst.id, c]));
+    const byId = new Map(peeks.filter((p) => p?.inst).map((p) => [p.inst.id, p]));
     const results = [];
+    // Only the capped refresh set (default 8) keeps a series, and each one is
+    // dropped after that holding is evaluated.
+    const refreshed = new Map();
 
     for (const row of plan) {
-      const ctx = byId.get(row.instrumentId);
-      if (!ctx) continue;
-      const result = await refreshOneAutoHolding(ctx.inst, {
+      if (ensureBudget) ensureBudget();
+      const peek = byId.get(row.instrumentId);
+      if (!peek?.inst) continue;
+      const result = await refreshOneAutoHolding(peek.inst, {
         getHistory,
         getPriceHistory: store.getPriceHistory ? (s) => store.getPriceHistory(s) : null,
         nowMs,
         liveMissUntil,
         missBackoffMs,
       });
-      results.push(result);
       if (result.series?.length && (result.status === 'updated' || result.status === 'unchanged')) {
-        ctx.historySeries = result.series;
-        ctx.historyFetchedAt = result.fetchedAt || ctx.historyFetchedAt;
-      } else if (result.status === 'failed' || result.status === 'cooldown') {
-        // Re-read store in case a quote-append from another path landed.
-        if (store.getPriceHistory) {
-          const stored = await store.getPriceHistory(ctx.inst.symbol);
-          if (stored?.series?.length) {
-            ctx.historySeries = stored.series;
-            ctx.historyFetchedAt = stored.fetchedAt || ctx.historyFetchedAt;
-          }
-        }
+        refreshed.set(peek.inst.id, {
+          series: result.series,
+          fetchedAt: result.fetchedAt || null,
+        });
       }
+      const { series, ...publicResult } = result;
+      results.push(publicResult);
     }
 
-    // Holdings not in the capped plan that still need refresh: report skipped.
     const planned = new Set(plan.map((p) => p.instrumentId));
     for (const c of candidates) {
       if (!c.refreshable) continue;
       if (planned.has(c.instrumentId)) continue;
-      const lastClose = lastCloseDate(c.historySeries);
-      if (!lastCloseNeedsRefresh(lastClose, todayIso)) continue;
+      if (!lastCloseNeedsRefresh(c.lastClose, todayIso)) continue;
       results.push({
         symbol: String(c.symbol || '').toUpperCase(),
         instrumentId: c.instrumentId,
         status: 'skipped',
         error: 'Over per-run refresh cap — will retry next run',
-        lastClose: lastClose || null,
-        priceAsOf: lastClose || null,
+        lastClose: c.lastClose || null,
+        priceAsOf: c.lastClose || null,
       });
     }
 
@@ -163,6 +187,7 @@ export function createAlertService({
       updated: results.filter((r) => r.status === 'updated').length,
       failed: results.filter((r) => r.status === 'failed' || r.status === 'cooldown').length,
       skipped: results.filter((r) => r.status === 'skipped').length,
+      refreshed,
     };
   }
 
@@ -275,16 +300,44 @@ export function createAlertService({
     }
   }
 
-  async function runAlertCheck({ refresh = true } = {}) {
+  async function previousSuccessAt() {
+    if (typeof store.getAlertCheckMeta !== 'function') return null;
+    try {
+      const prev = await store.getAlertCheckMeta();
+      if (!prev) return null;
+      if (prev.lastSuccessAt) return prev.lastSuccessAt;
+      if (!prev.last_error && !prev.error && prev.at) return prev.at;
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function runAlertCheck({
+    refresh = true,
+    deadline = null,
+    isCurrent = null,
+    budgetMs = ALERT_RUN_BUDGET_MS,
+  } = {}) {
+    const startedMs = Date.now();
+    const limit = Number.isFinite(deadline) ? deadline : startedMs + budgetMs;
     const nowDate = now();
     const nowIso = nowDate.toISOString();
     const nowMs = nowDate.getTime();
     const todayIso = today();
-    await hydrateMisses(nowMs);
-    const settings = await store.getAlertSettings();
-    const models = await store.listModels();
-    const groups = collectCurrentHoldings(models);
-    const heldIds = new Set(groups.map((g) => g.instrumentId));
+
+    const ensureBudget = () => {
+      if (typeof isCurrent === 'function' && !isCurrent()) {
+        const err = new Error('Alert check superseded');
+        err.code = 'ALERT_SUPERSEDED';
+        throw err;
+      }
+      if (Date.now() > limit) {
+        const err = new Error(`Alert check exceeded ${budgetMs}ms budget`);
+        err.code = 'ALERT_BUDGET';
+        throw err;
+      }
+    };
 
     const summary = {
       ok: true,
@@ -296,58 +349,112 @@ export function createAlertService({
       emailed: 0,
       pending: 0,
       active: 0,
-      alertsEnabled: settings.alertEnabled,
+      alertsEnabled: null,
       errors: [],
       refresh: null,
     };
 
-    const contexts = [];
-    for (const group of groups) {
-      contexts.push(await loadHoldingContext(group));
+    try {
+      ensureBudget();
+      await hydrateMisses(nowMs);
+      const settings = await store.getAlertSettings();
+      summary.alertsEnabled = settings.alertEnabled;
+      const models = await store.listModels();
+      const groups = collectCurrentHoldings(models);
+      const heldIds = new Set(groups.map((g) => g.instrumentId));
+
+      const peeks = [];
+      for (const group of groups) {
+        ensureBudget();
+        peeks.push(await peekHolding(group));
+      }
+
+      let refreshed = null;
+      if (refresh) {
+        const refreshState = await refreshStaleAutoPrices(peeks, {
+          nowMs, todayIso, cap: refreshCap, ensureBudget,
+        });
+        refreshed = refreshState.refreshed;
+        summary.refresh = {
+          attempted: refreshState.attempted,
+          cap: refreshState.cap,
+          results: refreshState.results,
+          updated: refreshState.updated,
+          failed: refreshState.failed,
+          skipped: refreshState.skipped,
+        };
+      }
+
+      for (const peek of peeks) {
+        ensureBudget();
+        const ctx = await loadEvalContext(peek, refreshed);
+        await evaluateContexts([ctx], { nowIso, todayIso, settings, summary });
+        if (ctx) ctx.historySeries = null;
+      }
+      refreshed?.clear();
+
+      ensureBudget();
+      const events = await store.listAlertEvents();
+      for (const prev of events) {
+        if (prev.status !== 'active') continue;
+        if (heldIds.has(prev.instrumentId)) continue;
+        const next = {
+          ...prev,
+          status: 'recovered',
+          recoveredAt: nowIso,
+          lastEvalNote: 'Removed from current model versions',
+          updatedAt: nowIso,
+        };
+        await store.upsertAlertEvent(next);
+        await store.appendAlertHistory(historyEntry('recovered', next, nowIso, next.lastEvalNote));
+        summary.recovered += 1;
+      }
+
+      const after = await store.listAlertEvents();
+      summary.active = after.filter((e) => e.status === 'active').length;
+      const durationMs = Date.now() - startedMs;
+      summary.durationMs = durationMs;
+      const holdingError = summary.errors.length ? summary.errors.map((e) => e.error).join('; ') : null;
+      await store.setAlertCheckMeta({
+        at: nowIso,
+        durationMs,
+        error: holdingError,
+        last_error: holdingError,
+        lastSuccessAt: nowIso,
+        summary: { ...summary, errors: summary.errors },
+      });
+      await persistMisses(nowMs);
+      return summary;
+    } catch (e) {
+      if (e?.code === 'ALERT_SUPERSEDED') throw e;
+      summary.ok = false;
+      summary.error = e.message;
+      const durationMs = Date.now() - startedMs;
+      summary.durationMs = durationMs;
+      try {
+        const lastSuccessAt = await previousSuccessAt();
+        await store.setAlertCheckMeta({
+          at: new Date().toISOString(),
+          durationMs,
+          error: e.message,
+          last_error: e.message,
+          lastSuccessAt,
+          summary: { ...summary, ok: false, error: e.message },
+        });
+      } catch {
+        // The coordinator still records last_error. A persist failure must not crash the process.
+      }
+      throw e;
     }
-
-    if (refresh) {
-      summary.refresh = await refreshStaleAutoPrices(contexts, { nowMs, todayIso, cap: refreshCap });
-    }
-
-    await evaluateContexts(contexts, { nowIso, todayIso, settings, summary });
-
-    const events = await store.listAlertEvents();
-    for (const prev of events) {
-      if (prev.status !== 'active') continue;
-      if (heldIds.has(prev.instrumentId)) continue;
-      const next = {
-        ...prev,
-        status: 'recovered',
-        recoveredAt: nowIso,
-        lastEvalNote: 'Removed from current model versions',
-        updatedAt: nowIso,
-      };
-      await store.upsertAlertEvent(next);
-      await store.appendAlertHistory(historyEntry('recovered', next, nowIso, next.lastEvalNote));
-      summary.recovered += 1;
-    }
-
-    const after = await store.listAlertEvents();
-    summary.active = after.filter((e) => e.status === 'active').length;
-    await store.setAlertCheckMeta({
-      at: nowIso,
-      error: summary.errors.length ? summary.errors.map((e) => e.error).join('; ') : null,
-      summary: { ...summary, errors: summary.errors },
-    });
-    await persistMisses(nowMs);
-    return summary;
   }
 
   function runCheck(opts) {
-    if (inflight) return inflight;
-    inflight = runAlertCheck(opts).finally(() => { inflight = null; });
-    return inflight;
+    return runAlertCheck(opts || {});
   }
 
   /** Refresh stale auto prices and report per-holding results (also re-checks alerts). */
-  async function refreshPricesNow() {
-    return runCheck({ refresh: true });
+  function refreshPricesNow(opts) {
+    return runCheck({ ...(opts || {}), refresh: true });
   }
 
   async function sendTestEmail() {

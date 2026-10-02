@@ -92,10 +92,38 @@ through the same cache that honors provider cooldown, and it never force-refresh
 A symbol whose live fetch fails entirely is not tried again for 6 hours.
 
 ### Schedule (Render free tier sleeps)
-The server runs a check on startup and every **30 minutes** after that. On the
-free tier the process sleeps after about 15 minutes of no HTTP traffic, and the
-timer sleeps with it. An external pinger (cron-job.org or UptimeRobot) every
-15–30 minutes is what actually wakes the instance and runs the check.
+The process listens before it migrates the database, warms the provider cache,
+or runs the first alert check. `GET` and `HEAD /api/health` return
+`{ ok: true, uptimeSec, time }` immediately and do not touch the database or a
+price provider. The in-process timer still runs a check on startup and every
+**30 minutes** after that, but on the free tier the process sleeps after about
+15 minutes of no HTTP traffic and the timer sleeps with it.
+
+Use **two** cron-job.org jobs. A single job that hits the alert check is what
+got auto-disabled: Render returns **503 while the instance is cold-starting**
+(often longer than cron-job.org’s default ~30s timeout), and a disabled job
+means alerts are not checked at all.
+
+| Job | URL | Schedule |
+|---|---|---|
+| Keep app alive | `GET https://foliotrack.onrender.com/api/health` | Every **10 minutes** |
+| Alert check | `GET https://foliotrack.onrender.com/api/alerts/check?token=YOUR_ALERT_CRON_TOKEN` | Every **30 minutes** |
+
+On both jobs:
+
+- Set the request **timeout to 60 seconds**. Health is instant once the process
+  is listening; the alert URL returns **202** as soon as the check is queued
+  and finishes the work in the background (90s budget, at most 8 price refreshes).
+- **Turn on failure notifications** so a run of failures is visible.
+- **Do not rely on auto-disable.** cron-job.org will disable a job after a
+  streak of failures (this app’s job was disabled after 26 consecutive 503s).
+  A 503 during cold start is expected — the proxy has nothing to forward to
+  until the process binds the port — and **one failure should not matter**.
+  The next keep-alive ping wakes the instance.
+
+`Authorization: Bearer YOUR_ALERT_CRON_TOKEN` works on the alert URL too. If
+`ALERT_CRON_TOKEN` is unset, `/api/alerts/check` rejects every request. Health
+does not use a token.
 
 Set these on the Render service (Environment), then redeploy:
 
@@ -103,16 +131,8 @@ Set these on the Render service (Environment), then redeploy:
 |---|---|
 | `RESEND_API_KEY` | Resend API key. HTTPS only — do not configure SMTP; the free tier blocks outbound SMTP ports. |
 | `ALERT_FROM` | Optional. Defaults to `FolioTrack <onboarding@resend.dev>`. |
-| `ALERT_CRON_TOKEN` | Secret for the wake-up URL. If unset, `/api/alerts/check` rejects every request. |
+| `ALERT_CRON_TOKEN` | Secret for the alert-check URL. If unset, `/api/alerts/check` rejects every request. |
 | `DATABASE_URL` | Still required if you want alert state to survive sleep/redeploy. The JSON store is ephemeral on Render. |
-
-Pinger URL (GET or POST):
-
-```
-https://foliotrack.onrender.com/api/alerts/check?token=YOUR_ALERT_CRON_TOKEN
-```
-
-`Authorization: Bearer YOUR_ALERT_CRON_TOKEN` works too.
 
 **Resend setup:** create a free account at resend.com using `mikemmorgan@gmail.com`.
 The default `onboarding@resend.dev` sender can only deliver to the address that
@@ -121,9 +141,11 @@ owns the Resend account. Put that same address in Settings → Alert email
 relying on breach mail. A missing `RESEND_API_KEY` does not crash the server:
 the breach is stored as `pending - email not configured` and retried on the next check.
 
-In the app, **Check now** runs the same check without the cron token (the rest
-of the API is unauthenticated). The header menu shows a red dot while any
-holding is breached.
+In the app, **Check now** and **Refresh prices now** start the same background
+check (no cron token; the rest of the API is unauthenticated) and poll
+`GET /api/alerts/status` until it finishes. The Alerts panel shows the last
+check time, duration, and error. A warning stays up when no check has succeeded
+in over 2 hours. The header menu shows a red dot while any holding is breached.
 
 ## Live now vs. next
 - **Live:** Overview, Holdings, Allocation, Geo/Sector, model editing, and the

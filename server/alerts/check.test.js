@@ -456,4 +456,57 @@ describe('alert check', () => {
     // 190/200 = -5% — not a breach at 20%
     expect(event).toBeNull();
   });
+
+  it('does not keep price series on the refresh summary and reads histories one at a time', async () => {
+    const today = '2026-10-01';
+    const now = new Date('2026-10-01T15:00:00.000Z');
+    const { store } = fixture(200);
+    store.db.historyBySymbol.NVDA = nvdaSeries(200, '2026-09-04');
+    let open = 0;
+    let maxOpen = 0;
+    const original = store.getPriceHistory.bind(store);
+    store.getPriceHistory = async (symbol) => {
+      open += 1;
+      maxOpen = Math.max(maxOpen, open);
+      try {
+        return await original(symbol);
+      } finally {
+        open -= 1;
+      }
+    };
+    const summary = await service(store, mockEmail(), {
+      now: () => now,
+      today: () => today,
+      getHistory: async () => ({
+        series: [
+          { date: '2026-01-15', close: 200 },
+          { date: today, close: 190 },
+        ],
+        fetchedAt: now.toISOString(),
+        stale: false,
+      }),
+    }).runCheck();
+    expect(maxOpen).toBe(1);
+    expect(summary.refresh.results.length).toBeGreaterThan(0);
+    expect(summary.refresh.results.every((row) => row.series == null)).toBe(true);
+  });
+
+  it('records a budget failure and rejects instead of running the check', async () => {
+    const { store } = fixture();
+    store.db.check = {
+      at: '2026-08-01T00:00:00.000Z',
+      lastSuccessAt: '2026-08-01T00:00:00.000Z',
+      error: null,
+      last_error: null,
+    };
+    let calls = 0;
+    await expect(service(store, mockEmail(), {
+      getHistory: async () => { calls += 1; return { series: [] }; },
+    }).runCheck({ deadline: Date.now() - 5, budgetMs: 90_000 })).rejects.toThrow(/budget/);
+    expect(calls).toBe(0);
+    const meta = await store.getAlertCheckMeta();
+    expect(meta.last_error).toMatch(/budget/);
+    expect(meta.lastSuccessAt).toBe('2026-08-01T00:00:00.000Z');
+    expect(meta.ok).toBeUndefined();
+  });
 });

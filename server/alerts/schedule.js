@@ -17,6 +17,14 @@ export function startAlertScheduler({
       .then(() => run())
       .then((summary) => {
         if (!summary || summary.skipped) return;
+        if (summary.started === true) {
+          logger.log('[alerts] check started in background');
+          return;
+        }
+        if (summary.alreadyRunning === true) {
+          logger.log('[alerts] check already running');
+          return;
+        }
         logger.log(
           `[alerts] checked ${summary.evaluated ?? 0} holdings, active ${summary.active ?? 0}, emailed ${summary.emailed ?? 0}, pending ${summary.pending ?? 0}`,
         );
