@@ -51,7 +51,9 @@ const boot = listenThenStart({
   port: PORT,
   getStore,
   mount: async (expressApp) => {
-    expressApp.use(express.json());
+    // Prices Apply posts the proposed series back. A max TMX history is a few
+    // hundred KB, over Express's default 100kb, which surfaced as HTTP 413.
+    expressApp.use(express.json({ limit: '2mb' }));
   },
   logger: console,
 });

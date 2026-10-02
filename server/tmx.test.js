@@ -170,6 +170,7 @@ describe('TMX hop fallback and diagnostics', () => {
     const src = readFileSync(new URL('./index.js', import.meta.url), 'utf8');
     expect(src).toContain('tmx: tmxStatus()');
     expect(src).toContain('relay: yahooStatus().relay');
+    expect(src).toContain("express.json({ limit: '2mb' })");
     expect(tmxStatus()).toMatchObject({
       quoteOperation: 'getQuoteBySymbol',
       historyOperation: 'getTimeSeriesData',
