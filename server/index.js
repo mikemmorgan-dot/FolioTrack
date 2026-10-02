@@ -4,7 +4,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getStore } from './store.js';
 import { getQuote, getHistory, lookup, probeAll, providerStatusList } from './providers.js';
-import { getHistory as yahooHistory, yahooStatus } from './yahoo.js';
+import { yahooStatus } from './yahoo.js';
+import { tmxStatus } from './tmx.js';
 import {
   isYahooHistoryEligible,
   yahooSymbolFor,
@@ -14,6 +15,8 @@ import {
   parseYahooPaste,
   YahooSeriesError,
   YAHOO_PRICE_SOURCE,
+  TMX_PRICE_SOURCE,
+  navSourceForApply,
 } from './yahooSeries.js';
 import { createHistoryCache } from './historyCache.js';
 import { createQuoteCache, enrichHoldings, quotePatch } from './enrich.js';
@@ -48,7 +51,9 @@ const boot = listenThenStart({
   port: PORT,
   getStore,
   mount: async (expressApp) => {
-    expressApp.use(express.json());
+    // Prices Apply posts the proposed series back. A max TMX history is a few
+    // hundred KB, over Express's default 100kb, which surfaced as HTTP 413.
+    expressApp.use(express.json({ limit: '2mb' }));
   },
   logger: console,
 });
@@ -158,6 +163,8 @@ app.get('/api/diagnostics', async (req, res) => {
     ...probe,
     providers: providerStatusList(),
     yahoo: yahooStatus(),
+    tmx: tmxStatus(),
+    relay: yahooStatus().relay,
     ts: new Date().toISOString(),
   });
 });
@@ -484,7 +491,7 @@ app.post('/api/instruments/:id/fetch-yahoo-history', async (req, res) => {
     }
     const existing = await store.getNavSeries(inst.id);
     const proposed = await fetchYahooHistoryForSymbol(inst.symbol, {
-      getHistoryImpl: yahooHistory,
+      getHistoryImpl: (symbol, range) => getHistory(symbol, range),
       getCached: (symbol) => store.getPriceHistory(symbol),
       putCached: (symbol, rec) => store.putPriceHistory(symbol, rec),
     });
@@ -534,6 +541,7 @@ app.post('/api/instruments/:id/apply-yahoo-history', async (req, res) => {
       return res.status(400).json({ error: 'Provide series rows or a Yahoo Date/Close paste.' });
     }
     const existing = await store.getNavSeries(inst.id);
+    const navSource = navSourceForApply(req.body?.navSource);
     const plan = planApplySeries(existing, series, {
       confirm: !!req.body?.confirm,
       existingSource: inst.navSource,
@@ -543,18 +551,18 @@ app.post('/api/instruments/:id/apply-yahoo-history', async (req, res) => {
         needsConfirm: true,
         error: plan.error,
         ...plan.summary,
-        source: YAHOO_PRICE_SOURCE,
+        source: navSource,
       });
     }
 
     const result = await store.addNavBatch({
-      navSource: YAHOO_PRICE_SOURCE,
+      navSource,
       points: plan.series.map((p) => ({ instrumentId: inst.id, date: p.date, nav: p.close })),
     });
     const yahooSymbol = yahooSymbolFor(inst.symbol);
     await store.putPriceHistory(yahooSymbol, {
       series: plan.merged || plan.series,
-      provider: 'yahoo',
+      provider: navSource === TMX_PRICE_SOURCE ? 'tmx' : 'yahoo',
       range: 'max',
       fetchedAt: new Date().toISOString(),
     });
@@ -563,7 +571,7 @@ app.post('/api/instruments/:id/apply-yahoo-history', async (req, res) => {
     const chart = navMarket.series.map((p) => ({ date: p.date, value: p.price }));
     res.json({
       applied: true,
-      source: YAHOO_PRICE_SOURCE,
+      source: navSource,
       instrument: updated,
       latest: result.latest,
       count: chart.length,

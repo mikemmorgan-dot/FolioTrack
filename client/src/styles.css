@@ -532,6 +532,13 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
   background: var(--surface-3); border: 1px solid var(--line); color: var(--text);
   border-radius: 12px; padding: 10px 12px; font: inherit; font-size: 13px;
 }
+.yahoo-price-actions { display: flex; flex-direction: column; align-items: stretch; gap: 8px; margin-top: 12px; }
+.yahoo-price-actions .classify-select-back { width: 100%; text-align: center; }
+.phone-fill { display: flex; flex-direction: column; gap: 8px; }
+.phone-fill p { margin: 0; font-size: 13px; line-height: 1.45; color: var(--text-2); }
+.paste-last { display: flex; gap: 8px; align-items: flex-end; }
+.paste-last .field { flex: 1; min-width: 0; margin-bottom: 0; }
+.paste-last .classify-select-back { width: auto; flex: none; }
 a.ext { color: var(--green); text-decoration: none; }
 .rp-run:disabled { color: var(--text-3); }
 .rp-retry {
@@ -594,8 +601,8 @@ a.ext { color: var(--green); text-decoration: none; }
 .nav-pills { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .nav-meta { font-size: 13px; color: var(--text-2); margin-top: 8px; font-variant-numeric: tabular-nums; }
 .nav-models { font-size: 12.5px; color: var(--text-3); margin-top: 4px; line-height: 1.4; }
-.nav-inputs { display: flex; gap: 10px; margin-top: 12px; }
-.nav-inputs .field { flex: 1; margin-bottom: 0; }
+.nav-inputs { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.nav-inputs .field { flex: 1 1 140px; min-width: 0; margin-bottom: 0; }
 
 .stale-line {
   width: 100%; text-align: left;

@@ -1,0 +1,18 @@
+{
+  "data": {
+    "getQuoteBySymbol": {
+      "symbol": "ATD",
+      "name": "Alimentation Couche-Tard Inc.",
+      "price": 76.945,
+      "priceChange": -0.255,
+      "percentChange": -0.330311,
+      "exchangeName": "Toronto Stock Exchange",
+      "exShortName": "TSX",
+      "exchangeCode": "TSX",
+      "marketPlace": null,
+      "prevClose": 77.2,
+      "currency": "CAD",
+      "datetime": "2026-10-02T12:24:52-04:00"
+    }
+  }
+}

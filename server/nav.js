@@ -2,7 +2,7 @@
 // point is instrument data, not an allocation change, so writing one never
 // creates a model version.
 import { currentVersionOf } from './util.js';
-import { isYahooHistoryEligible, yahooSymbolFor } from './yahooSeries.js';
+import { isYahooHistoryEligible, yahooHistoryUrl, yahooSymbolFor } from './yahooSeries.js';
 import { lookupSource } from './factsheet/sources.js';
 
 export function todayToronto() {
@@ -119,6 +119,7 @@ export async function listInUseManualInstruments(store) {
       navSource: inst.navSource || null,
       yahooEligible: isYahooHistoryEligible(inst, lookupSource),
       yahooSymbol: yahooSymbolFor(inst.symbol),
+      historyUrl: yahooHistoryUrl(inst.symbol),
       latestNav: latest?.nav ?? null,
       latestDate: latest?.date ?? null,
       models: modelsUsing,
