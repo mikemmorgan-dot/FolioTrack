@@ -174,6 +174,66 @@ export class PgStore {
     }
     return { latest };
   }
+
+  // One INSERT … unnest for the whole upload, not a round-trip per date.
+  async applyNavSeries(instrumentId, points, { navSource, overwrite = false } = {}) {
+    const inst = await this.getInstrument(instrumentId);
+    if (!inst) {
+      const err = new Error('Unknown instrument');
+      err.status = 404;
+      throw err;
+    }
+    const byDate = new Map();
+    for (const p of points || []) {
+      const date = String(p?.date || '').slice(0, 10);
+      const nav = Number(p?.nav ?? p?.close);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !(nav > 0)) continue;
+      byDate.set(date, nav);
+    }
+    const dates = [...byDate.keys()];
+    const navs = dates.map((date) => byDate.get(date));
+    if (!dates.length) {
+      const latest = await this.latestNav(instrumentId);
+      return { written: 0, latest: latest ? { instrumentId, ...latest } : null };
+    }
+    const conflict = overwrite
+      ? 'ON CONFLICT (instrument_id, date) DO UPDATE SET nav = EXCLUDED.nav'
+      : 'ON CONFLICT (instrument_id, date) DO NOTHING';
+    const client = await this.pool.connect();
+    let written = 0;
+    try {
+      await client.query('BEGIN');
+      const result = await client.query(
+        `INSERT INTO nav_series (instrument_id, date, nav)
+         SELECT $1, u.date::date, u.nav
+         FROM unnest($2::text[], $3::numeric[]) AS u(date, nav)
+         ${conflict}`,
+        [instrumentId, dates, navs]
+      );
+      written = result.rowCount || 0;
+      if (written > 0) {
+        await client.query(
+          `UPDATE instruments SET source='manual' WHERE id=$1 AND source IS DISTINCT FROM 'manual'`,
+          [instrumentId]
+        );
+        if (navSource !== undefined) {
+          await client.query(
+            `UPDATE instruments SET nav_source=$2 WHERE id=$1`,
+            [instrumentId, navSource ? String(navSource).slice(0, 40) : null]
+          );
+        }
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+    const latest = await this.latestNav(instrumentId);
+    return { written, latest: latest ? { instrumentId, ...latest } : null };
+  }
+
   async getNavSeries(instrumentId) {
     const { rows } = await this.pool.query(
       'SELECT date,nav FROM nav_series WHERE instrument_id=$1 ORDER BY date', [instrumentId]

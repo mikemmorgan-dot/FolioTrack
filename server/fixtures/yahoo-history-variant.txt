@@ -1,0 +1,12 @@
+Apple Inc. (AAPL)
+Currency in USD
+Date Open High Low Close Adj Close Volume
+Jan 3, 2022   180.00   182.00   179.00   181.00   181.00   1,000,000
+Jan 4, 2022    181.00     183.00   180.50    182.50   180.10      900,000
+Jan 5, 2022   182.00   183.00   90.00   100.00   100.00   5,000,000
+Feb 4, 2022   2:1 Stock Splits
+Feb 7, 2022   90.00   92.00   89.00   91.00   91.00   2,000,000
+Feb 8, 2022   0.22 Dividend
+Mar 1, 2022   91.00   93.00   90.00   92.00   91.50   800000
+Related Tickers
+:

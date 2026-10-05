@@ -1,15 +1,20 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, num } from '../api.js';
-import { todayToronto, isNavStale, cadenceLabel, navFreshnessRank, YAHOO_PRICE_SOURCE, TMX_PRICE_SOURCE, priceSourceLabel } from '../nav.js';
+import { todayToronto, isNavStale, cadenceLabel, navFreshnessRank, YAHOO_PRICE_SOURCE, TMX_PRICE_SOURCE, UPLOADED_PRICE_SOURCE, priceSourceLabel } from '../nav.js';
 import { YAHOO_PASTE_PLACEHOLDER, formatFetchYahooError, navFieldError, parseNavInput } from '../navField.js';
 import { fetchTmxInBrowser, tmxSupports } from '../tmxBrowser.js';
+import { HistoryDropZone, HistoryPreviewCard } from './HistoryUpload.jsx';
 
-export default function PricesPanel({ onClose, onSaved }) {
+export default function PricesPanel({ onClose, onSaved, onChanged }) {
   const [asOf, setAsOf] = useState(todayToronto);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
+  const [upload, setUpload] = useState(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [histPaste, setHistPaste] = useState('');
+  const previewRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -52,6 +57,129 @@ export default function PricesPanel({ onClose, onSaved }) {
 
   function patch(id, fields) {
     setRows((rs) => rs.map((r) => (r.id === id ? { ...r, ...fields } : r)));
+  }
+
+  const uploadTargetId = upload?.sourceId || upload?.pickedId || null;
+  const uploadTarget = rows.find((r) => r.id === uploadTargetId) || null;
+  const overlap = (upload?.plan && upload.plan.holdingId === uploadTargetId)
+    ? upload.plan
+    : (upload?.preview?.overlap && upload?.preview?.holdingSymbol
+      && uploadTarget
+      && upload.preview.holdingSymbol.toUpperCase() === uploadTarget.symbol.toUpperCase()
+      ? upload.preview.overlap
+      : upload?.plan);
+
+  useEffect(() => {
+    const id = uploadTargetId;
+    const preview = upload?.preview;
+    if (!id || !preview?.series?.length) return undefined;
+    const already = preview.overlap
+      && preview.holdingSymbol
+      && uploadTarget
+      && preview.holdingSymbol.toUpperCase() === uploadTarget.symbol.toUpperCase();
+    if (already) return undefined;
+    let cancel = false;
+    api.applyUploadedHistory(id, {
+      series: preview.series,
+      detectedTicker: preview.ticker,
+      dryRun: true,
+      confirmTicker: true,
+    }).then((plan) => {
+      if (!cancel) setUpload((u) => (u ? { ...u, plan: { ...plan, holdingId: id } } : u));
+    }).catch(() => {});
+    return () => { cancel = true; };
+  }, [uploadTargetId, upload?.preview, uploadTarget]);
+
+  async function ingestHistory({ file, text, instrumentId }) {
+    setUpload({
+      phase: 'parsing',
+      sourceId: instrumentId || null,
+      pickedId: instrumentId || null,
+      tickerConfirmed: !!instrumentId,
+      preview: null,
+      plan: null,
+      error: null,
+      message: null,
+    });
+    try {
+      const preview = file
+        ? await api.parsePriceFile(file, { instrumentId })
+        : await api.parsePriceText(text, { instrumentId });
+      const matched = preview.ticker
+        ? rows.find((r) => r.symbol.toUpperCase() === String(preview.ticker).toUpperCase())
+        : null;
+      const pickedId = instrumentId || matched?.id || null;
+      const picked = rows.find((r) => r.id === pickedId);
+      const tickerConfirmed = !preview.ticker
+        || !!(picked && picked.symbol.toUpperCase() === String(preview.ticker).toUpperCase());
+      setUpload({
+        phase: 'ready',
+        sourceId: instrumentId || null,
+        pickedId,
+        tickerConfirmed,
+        preview,
+        plan: null,
+        error: null,
+        message: null,
+      });
+      requestAnimationFrame(() => previewRef.current?.scrollIntoView({ block: 'nearest' }));
+    } catch (e) {
+      setUpload({
+        phase: 'error',
+        sourceId: instrumentId || null,
+        pickedId: instrumentId || null,
+        tickerConfirmed: false,
+        preview: null,
+        error: e.message || 'Could not read that file.',
+        message: null,
+      });
+    }
+  }
+
+  function onPickHolding(id) {
+    const row = rows.find((r) => r.id === id);
+    const ticker = upload?.preview?.ticker;
+    const match = !ticker || !!(row && row.symbol.toUpperCase() === String(ticker).toUpperCase());
+    setUpload((u) => (u ? { ...u, pickedId: id || null, tickerConfirmed: match, plan: null, error: null } : u));
+  }
+
+  async function applyHistory(mode) {
+    const id = upload?.sourceId || upload?.pickedId;
+    if (!id || !upload?.preview) return;
+    setUpload((u) => ({ ...u, phase: 'applying', error: null }));
+    try {
+      const out = await api.applyUploadedHistory(id, {
+        series: upload.preview.series,
+        mode,
+        detectedTicker: upload.preview.ticker,
+        confirmTicker: !!upload.tickerConfirmed,
+      });
+      const row = rows.find((r) => r.id === id);
+      patch(id, {
+        latestNav: out.quote?.price ?? out.lastClose,
+        latestDate: out.lastDate || out.to,
+        navSource: out.navSource || UPLOADED_PRICE_SOURCE,
+        source: 'manual',
+        yahooFailed: false,
+        yahooMsg: '',
+      });
+      const verb = mode === 'overwrite'
+        ? `Added ${out.added}, overwrote ${out.overwritten}`
+        : `Added ${out.added}, left ${out.skippedExisting} existing date${out.skippedExisting === 1 ? '' : 's'} unchanged`;
+      setUpload((u) => ({
+        ...u,
+        phase: 'done',
+        message: `Saved ${row?.symbol || 'this holding'}. ${verb}. Last ${out.lastClose} on ${out.lastDate}.`,
+      }));
+      onChanged?.();
+    } catch (e) {
+      setUpload((u) => ({
+        ...u,
+        phase: 'ready',
+        tickerConfirmed: e.needsTickerConfirm ? false : u.tickerConfirmed,
+        error: e.message || 'Could not save that history.',
+      }));
+    }
   }
 
   async function fetchYahoo(id, confirm = false, series = null, navSource = null) {
@@ -212,7 +340,7 @@ export default function PricesPanel({ onClose, onSaved }) {
           One NAV update applies to every model that holds the name — instruments are shared, this is not an allocation change.
           Empty new-NAV rows are skipped; you don’t have to fill every name.
           Entering a NAV prices that name from your numbers (and flips it to manual) so quotes don’t wait on the live feed.
-          Stocks and unmapped TSX ETFs can Fetch here too — TMX Money is tried first for .TO and .V, then Yahoo. Apply writes nav_series (merge by date). A failed fetch is not a wall: on a phone, Fill from my phone reads TMX in the browser, or paste a Yahoo CSV.
+          Stocks and unmapped TSX ETFs can Fetch here too — TMX Money is tried first for .TO and .V, then Yahoo. Apply writes nav_series (merge by date). A failed fetch is not a wall: on a phone, Fill from my phone reads TMX in the browser, paste a Yahoo CSV, or upload a Historical Data PDF (Safari Share → Save as PDF). Preview comes first; Only add missing is the default and nothing is overwritten until you choose Overwrite.
           Stale means the last NAV is older than the calendar-day cadence for that type (stocks/ETFs 7, mutual funds 40, alts 100) — not trading days.
           Cash stays at $1 and isn’t listed.
         </p>
@@ -224,6 +352,37 @@ export default function PricesPanel({ onClose, onSaved }) {
         <p className="note" style={{ paddingTop: 0 }}>
           Shared date for every filled row. Optional per-row date overrides it.
         </p>
+
+        <HistoryDropZone
+          dragOver={dragOver}
+          busy={upload?.phase === 'parsing'}
+          paste={histPaste}
+          onPaste={setHistPaste}
+          onPreviewPaste={() => ingestHistory({ text: histPaste, instrumentId: null })}
+          onFile={(file, instrumentId) => ingestHistory({ file, instrumentId })}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragOver(false);
+            const file = e.dataTransfer?.files?.[0];
+            if (file) ingestHistory({ file, instrumentId: null });
+          }}
+        />
+
+        {(upload?.preview || upload?.error || upload?.message || upload?.phase === 'parsing') && (
+          <HistoryPreviewCard
+            upload={upload}
+            rows={rows}
+            overlap={overlap}
+            busy={upload?.phase === 'applying'}
+            boxRef={previewRef}
+            onPick={onPickHolding}
+            onConfirmTicker={() => setUpload((u) => (u ? { ...u, tickerConfirmed: true, error: null } : u))}
+            onApply={applyHistory}
+            onDismiss={() => setUpload(null)}
+          />
+        )}
 
         {loading && <div className="loading">Loading…</div>}
 
@@ -272,6 +431,19 @@ export default function PricesPanel({ onClose, onSaved }) {
                   </label>
                 </div>
                 {navErr && <p className="field-error" role="alert">{navErr}</p>}
+                <label className="classify-select-back hist-file nav-upload">
+                  Upload history PDF
+                  <input
+                    type="file"
+                    accept="application/pdf,.pdf"
+                    aria-label={`Upload history PDF for ${r.symbol}`}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      e.target.value = '';
+                      if (file) ingestHistory({ file, instrumentId: r.id });
+                    }}
+                  />
+                </label>
                 {r.yahooEligible && (
                   <div className="yahoo-price-actions">
                     <button type="button" className="classify-select-back" disabled={r.yahooBusy || r.phoneBusy}

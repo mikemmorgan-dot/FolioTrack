@@ -122,6 +122,43 @@ export class JsonStore {
     }
     return { latest };
   }
+
+  // One merge and one persist for a whole uploaded history. `overwrite` false
+  // leaves dates that are already stored (Only add missing).
+  async applyNavSeries(instrumentId, points, { navSource, overwrite = false } = {}) {
+    const inst = this.db.instruments[instrumentId];
+    if (!inst) {
+      const err = new Error('Unknown instrument');
+      err.status = 404;
+      throw err;
+    }
+    if (!this.db.navSeries[instrumentId]) this.db.navSeries[instrumentId] = [];
+    const byDate = new Map(this.db.navSeries[instrumentId].map((p) => [p.date, Number(p.nav)]));
+    let written = 0;
+    for (const p of points || []) {
+      const date = String(p?.date || '').slice(0, 10);
+      const nav = Number(p?.nav ?? p?.close);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !(nav > 0)) continue;
+      if (byDate.has(date) && !overwrite) continue;
+      byDate.set(date, nav);
+      written += 1;
+    }
+    const series = [...byDate.entries()]
+      .map(([date, nav]) => ({ date, nav }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+    this.db.navSeries[instrumentId] = series;
+    if (written) {
+      this._markSourceManual(instrumentId);
+      if (navSource !== undefined) inst.navSource = navSource ? String(navSource).slice(0, 40) : null;
+      this._persist();
+    }
+    const latest = series.length ? series[series.length - 1] : null;
+    return {
+      written,
+      latest: latest ? { instrumentId, date: latest.date, nav: latest.nav } : null,
+    };
+  }
+
   async getNavSeries(instrumentId) { return this.db.navSeries[instrumentId] || []; }
   async latestNav(instrumentId) {
     const s = this.db.navSeries[instrumentId] || [];

@@ -36,13 +36,16 @@ export function isCashHolding(h) {
 
 // NAV / applied series — not a live provider quote.
 export const YAHOO_PRICE_SOURCE = 'Yahoo Finance';
+export const UPLOADED_PRICE_SOURCE = 'Yahoo PDF';
 export { TMX_PRICE_SOURCE };
 export function isSeriesPrice(h) {
   const src = h?.priceSource;
-  return src === 'manual' || src === YAHOO_PRICE_SOURCE || src === TMX_PRICE_SOURCE || h?.source === 'manual';
+  return src === 'manual' || src === YAHOO_PRICE_SOURCE || src === TMX_PRICE_SOURCE
+    || src === UPLOADED_PRICE_SOURCE || h?.navSource === UPLOADED_PRICE_SOURCE || h?.source === 'manual';
 }
 export function priceSourceLabel(h) {
   if (h?.priceSource === TMX_PRICE_SOURCE || h?.navSource === TMX_PRICE_SOURCE) return 'TMX';
+  if (h?.priceSource === UPLOADED_PRICE_SOURCE || h?.navSource === UPLOADED_PRICE_SOURCE) return 'Yahoo PDF';
   if (h?.priceSource === YAHOO_PRICE_SOURCE || h?.navSource === YAHOO_PRICE_SOURCE) return 'Yahoo Finance';
   if (isSeriesPrice(h)) return 'Manual';
   return 'Live';
