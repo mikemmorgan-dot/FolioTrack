@@ -14,6 +14,8 @@ async function j(url, opts) {
     const err = new Error(body.error || `HTTP ${res.status}`);
     if (body.code) err.code = body.code;
     if (body.retryAfterMs != null) err.retryAfterMs = body.retryAfterMs;
+    if (body.needsTickerConfirm) err.needsTickerConfirm = true;
+    if (body.detectedTicker) err.detectedTicker = body.detectedTicker;
     throw err;
   }
   return res.json();
@@ -58,6 +60,31 @@ export const api = {
     j(`/api/instruments/${id}/fetch-yahoo-history`, { method: 'POST' }),
   applyYahooHistory: (id, body) =>
     j(`/api/instruments/${id}/apply-yahoo-history`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    }),
+  parsePriceText: (text, { instrumentId } = {}) =>
+    j('/api/prices/parse-pdf', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, ...(instrumentId ? { instrumentId } : {}) }),
+    }),
+  parsePriceFile: async (file, { instrumentId } = {}) => {
+    const fd = new FormData();
+    fd.append('file', file, file.name || 'history.pdf');
+    if (instrumentId) fd.append('instrumentId', instrumentId);
+    const res = await fetch('/api/prices/parse-pdf', { method: 'POST', body: fd });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      const err = new Error(body.error || `HTTP ${res.status}`);
+      if (body.needsTickerConfirm) err.needsTickerConfirm = true;
+      throw err;
+    }
+    return res.json();
+  },
+  applyUploadedHistory: (id, body) =>
+    j(`/api/instruments/${id}/apply-uploaded-history`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body || {}),

@@ -31,6 +31,7 @@ import { lookupSource } from './factsheet/sources.js';
 import { fetchBreakdownForSymbol, BreakdownFetchError } from './factsheet/fetchBreakdown.js';
 import { firstAddedToModel, filterSeriesByRange, periodReturnFromSeries, rangeBounds } from './holdingHistory.js';
 import { periodReturnsFromSeries } from './periodReturns.js';
+import { createPriceUploadRouter } from './historyUpload.js';
 import { publishedToPeriodRow } from './factsheet/publishedReturns.js';
 import { buildCompare } from './compare.js';
 import { createEmailSender } from './alerts/email.js';
@@ -53,7 +54,12 @@ const boot = listenThenStart({
   mount: async (expressApp) => {
     // Prices Apply posts the proposed series back. A max TMX history is a few
     // hundred KB, over Express's default 100kb, which surfaced as HTTP 413.
-    expressApp.use(express.json({ limit: '2mb' }));
+    // PDF/CSV upload parses its own body (up to ~10MB) and must not hit this cap.
+    const jsonParser = express.json({ limit: '2mb' });
+    expressApp.use((req, res, next) => {
+      if (req.path === '/api/prices/parse-pdf') return next();
+      return jsonParser(req, res, next);
+    });
   },
   logger: console,
 });
@@ -67,6 +73,8 @@ const quotes = createQuoteCache({ getQuote });
 const cachedQuote = (symbol) => quotes.cachedQuote(symbol);
 
 // ---------------- API ----------------
+app.use(createPriceUploadRouter(store));
+
 app.get('/api/models', async (_req, res) => {
   const models = await store.listModels();
   res.json(models.map((m) => {

@@ -200,6 +200,7 @@ export default function App() {
         <PricesPanel
           onClose={() => setPricesOpen(false)}
           onSaved={async () => { setPricesOpen(false); if (selected) await loadModel(selected); }}
+          onChanged={async () => { if (selected) await loadModel(selected); }}
         />
       )}
     </div>
