@@ -40,7 +40,10 @@ export function isAutoPricedMarket(inst) {
 /** Eligible for a live price_history refresh — never NAV-backed names. */
 export function isRefreshableAutoHolding(inst, navSeries) {
   if (!isAutoPricedMarket(inst)) return false;
-  const path = decidePricePath(inst, navSeries || []);
+  // { hasUsableNav: true } is the aggregate form: any saved NAV point blocks
+  // a live refresh, same as a non-empty series.
+  if (navSeries && navSeries.hasUsableNav) return false;
+  const path = decidePricePath(inst, Array.isArray(navSeries) ? navSeries : []);
   if (path.path === 'nav_series' && path.series.length) return false;
   return true;
 }
@@ -212,11 +215,22 @@ export async function refreshOneAutoHolding(inst, {
   nowMs,
   liveMissUntil,
   bypassMissBackoff = false,
+  lastClose = undefined,
+  pointCount = undefined,
 } = {}) {
   const symbol = String(inst.symbol || '').toUpperCase();
-  const before = getPriceHistory ? await getPriceHistory(inst.symbol) : null;
-  const beforeClose = lastCloseOf(before?.series);
-  const hasHistory = !!before?.series?.length;
+  // pointCount means the caller already knows the last close. Do not pull
+  // the daily rows just to read that date.
+  let beforeClose;
+  let hasHistory;
+  if (pointCount != null) {
+    beforeClose = lastClose || null;
+    hasHistory = Number(pointCount) > 0 || !!beforeClose;
+  } else {
+    const before = getPriceHistory ? await getPriceHistory(inst.symbol) : null;
+    beforeClose = before?.lastClose || lastCloseOf(before?.series);
+    hasHistory = !!(before?.series?.length || before?.pointCount || beforeClose);
+  }
   const state = liveMissUntil?.get(symbol) || null;
 
   if (typeof getHistory !== 'function') {
@@ -242,7 +256,11 @@ export async function refreshOneAutoHolding(inst, {
   try {
     const h = await getHistory(inst.symbol, 'max', { force: !!bypassMissBackoff });
     const skippedHops = skippedCooldownHops(h?.attempts);
-    if (!h?.series?.length) {
+    const afterClose = h?.lastClose || lastCloseOf(h?.series);
+    // omitSeries responses carry lastClose and an empty series. That is still
+    // a stored history, not a total miss.
+    const hasRows = !!h?.series?.length || !!afterClose || Number(h?.pointCount) > 0;
+    if (!hasRows) {
       return finishMiss({
         symbol,
         instrumentId: inst.id,
@@ -258,8 +276,6 @@ export async function refreshOneAutoHolding(inst, {
         attempts: h?.attempts,
       });
     }
-
-    const afterClose = lastCloseOf(h.series);
     const cacheWindow = !!(h.stale && h.fromCache && /recently failed/i.test(h.error || ''));
     if (cacheWindow) {
       return decorate({
@@ -311,6 +327,7 @@ export async function refreshOneAutoHolding(inst, {
     }
 
     const extended = afterClose && afterClose !== beforeClose;
+    const series = h.series?.length ? normalizeSeries(h.series) : undefined;
     return decorate({
       symbol,
       instrumentId: inst.id,
@@ -319,7 +336,7 @@ export async function refreshOneAutoHolding(inst, {
       priceAsOf: afterClose,
       provider: h.provider || null,
       quoteAppended: !!h.quoteAppended,
-      series: normalizeSeries(h.series),
+      series,
       fetchedAt: h.fetchedAt || new Date(nowMs).toISOString(),
       skippedHops,
     });

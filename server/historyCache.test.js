@@ -224,6 +224,44 @@ describe('history cache', () => {
     expect(calls).toBe(2);
   });
 
+  it('loads a bounded window from meta and skips the series when asked', async () => {
+    const calls = [];
+    const cache = createHistoryCache({
+      getPriceHistory: async (symbol, opts) => {
+        calls.push({ symbol, opts });
+        return {
+          symbol,
+          series: SERIES.filter((p) => !opts?.since || p.date >= opts.since),
+          provider: 'yahoo',
+          range: 'max',
+          fetchedAt: '2026-09-01T11:00:00.000Z',
+        };
+      },
+      getPriceHistoryMeta: async () => ({
+        symbol: 'CRWD',
+        provider: 'yahoo',
+        range: 'max',
+        fetchedAt: '2026-09-01T11:00:00.000Z',
+        lastClose: '2026-09-01',
+        pointCount: SERIES.length,
+      }),
+      putPriceHistory: async () => { throw new Error('fresh cache should not write'); },
+      now: () => Date.parse('2026-09-01T12:00:00.000Z'),
+      today: () => '2026-09-01',
+      fetchLive: async () => { throw new Error('fresh cache should not fetch'); },
+    });
+    const slim = await cache.getHistory('CRWD', 'max', { omitSeries: true });
+    expect(slim.series).toEqual([]);
+    expect(slim.lastClose).toBe('2026-09-01');
+    expect(slim.fromCache).toBe(true);
+    expect(calls).toEqual([]);
+
+    const y1 = await cache.getHistory('CRWD', '1y');
+    expect(calls).toEqual([{ symbol: 'CRWD', opts: { since: '2025-09-01' } }]);
+    expect(y1.series[0].date >= '2025-09-01').toBe(true);
+    expect(y1.series.some((p) => p.date < '2025-09-01')).toBe(false);
+  });
+
   it('hard-fails only when there is no stored series', async () => {
     const store = memoryStore();
     const cache = createHistoryCache({

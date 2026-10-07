@@ -77,13 +77,20 @@ export function appendQuotePoint(series, quote, todayISO) {
 
 const RANGE_DAYS = { '1y': 365, '2y': 730, '5y': 1825 };
 
-export function sliceSeriesForRange(series, range, now = Date.now()) {
-  const pts = normalizeSeries(series);
+// First date included in a 1y/2y/5y window. null means the caller asked for
+// the full stored history (range "max" or anything we do not clip).
+export function rangeStartIso(range, now = Date.now()) {
   const days = RANGE_DAYS[range];
-  if (!days) return pts;
+  if (!days) return null;
   const cutoff = new Date(now);
   cutoff.setUTCDate(cutoff.getUTCDate() - days);
-  const cut = cutoff.toISOString().slice(0, 10);
+  return cutoff.toISOString().slice(0, 10);
+}
+
+export function sliceSeriesForRange(series, range, now = Date.now()) {
+  const pts = normalizeSeries(series);
+  const cut = rangeStartIso(range, now);
+  if (!cut) return pts;
   return pts.filter((p) => p.date >= cut);
 }
 
@@ -95,6 +102,7 @@ function ageMs(fetchedAt, now) {
 export function createHistoryCache({
   getPriceHistory,
   putPriceHistory,
+  getPriceHistoryMeta = null,
   fetchLive = liveHistory,
   fetchQuote = liveQuote,
   now = () => Date.now(),
@@ -108,25 +116,96 @@ export function createHistoryCache({
 
   const inflight = new Map();
   const liveFailUntil = new Map();
+  const hasMeta = typeof getPriceHistoryMeta === 'function';
 
   function respond(rec, range, extra = {}) {
     return {
-      symbol: rec.symbol,
-      series: sliceSeriesForRange(rec.series, range, now()),
-      provider: rec.provider || null,
+      symbol: rec?.symbol,
+      series: sliceSeriesForRange(rec?.series, range, now()),
+      provider: rec?.provider || null,
       range,
-      fetchedAt: rec.fetchedAt || null,
+      fetchedAt: rec?.fetchedAt || null,
       stale: false,
       fromCache: false,
       ...extra,
     };
   }
 
-  function isFresh(cached) {
-    if (!cached?.series?.length) return false;
-    if (ageMs(cached.fetchedAt, now()) >= ttlMs) return false;
-    if (lastCloseNeedsRefresh(lastCloseDate(cached.series), today())) return false;
+  function metaLast(meta) {
+    return meta?.lastClose || lastCloseDate(meta?.series) || null;
+  }
+
+  function metaCount(meta) {
+    if (meta?.pointCount != null) return Number(meta.pointCount) || 0;
+    return meta?.series?.length || 0;
+  }
+
+  function isFresh(meta) {
+    if (!metaCount(meta)) return false;
+    if (ageMs(meta.fetchedAt, now()) >= ttlMs) return false;
+    if (lastCloseNeedsRefresh(metaLast(meta), today())) return false;
     return true;
+  }
+
+  function boundOpts(range) {
+    const since = rangeStartIso(range, now());
+    return since ? { since } : {};
+  }
+
+  // Meta tells us fetchedAt and the last close without the daily rows.
+  // When the store has no meta helper, the series comes back on this object
+  // and we keep using it (tests and older stores).
+  async function loadMeta(key) {
+    if (hasMeta) {
+      const meta = await getPriceHistoryMeta(key);
+      return meta || null;
+    }
+    const rec = await getPriceHistory(key);
+    if (!rec) return null;
+    return {
+      symbol: rec.symbol || key,
+      provider: rec.provider || null,
+      range: rec.range || 'max',
+      fetchedAt: rec.fetchedAt || null,
+      lastClose: rec.lastClose || lastCloseDate(rec.series),
+      pointCount: rec.pointCount ?? rec.series?.length ?? 0,
+      series: rec.series || [],
+    };
+  }
+
+  async function readWindow(key, range, meta) {
+    if (meta?.series) {
+      return {
+        symbol: meta.symbol || key,
+        series: meta.series,
+        provider: meta.provider || null,
+        range,
+        fetchedAt: meta.fetchedAt || null,
+      };
+    }
+    const rec = await getPriceHistory(key, boundOpts(range));
+    return rec || {
+      symbol: key,
+      series: [],
+      provider: null,
+      range,
+      fetchedAt: null,
+    };
+  }
+
+  function slim(meta, range, extra = {}) {
+    return {
+      symbol: meta?.symbol,
+      series: [],
+      lastClose: metaLast(meta),
+      pointCount: metaCount(meta),
+      provider: meta?.provider || null,
+      range,
+      fetchedAt: meta?.fetchedAt || null,
+      stale: false,
+      fromCache: false,
+      ...extra,
+    };
   }
 
   async function maybeAppendQuote(key, series) {
@@ -143,6 +222,8 @@ export function createHistoryCache({
   async function fetchAndStore(key, prior) {
     // Always ask for max so one success serves Full history, Since added, and
     // the 1y/2y/5y detail toggle without another live hop.
+    // prior.series is set only when we already loaded the rows (no meta
+    // helper). With meta, the store upserts and keeps dates we do not send.
     const live = await fetchLive(key, 'max');
     let series = mergeSeries(prior?.series, live?.series);
     let quoteAppended = false;
@@ -168,18 +249,82 @@ export function createHistoryCache({
     return { ...rec, attempts: live?.attempts || [] };
   }
 
-  async function getHistory(symbol, range = 'max', { force = false } = {}) {
+  async function materialize(key, range, stored, { omitSeries }) {
+    const attempts = stored.attempts || [];
+    if (hasMeta) {
+      const meta2 = await getPriceHistoryMeta(key);
+      const last = meta2?.lastClose || lastCloseDate(stored.series);
+      const stillStaleClose = lastCloseNeedsRefresh(last, today());
+      if (!stillStaleClose) liveFailUntil.delete(key);
+      if (omitSeries) {
+        return slim(meta2 || { symbol: key, lastClose: last, fetchedAt: stored.fetchedAt, provider: stored.provider }, range, {
+          stale: stillStaleClose,
+          fromCache: false,
+          quoteAppended: !!stored.quoteAppended,
+          attempts,
+          error: stillStaleClose ? 'Live history did not extend the last close' : undefined,
+        });
+      }
+      const rec = await readWindow(key, range, null);
+      const windowLast = lastCloseDate(rec?.series) || last;
+      const still = lastCloseNeedsRefresh(windowLast, today());
+      if (!still) liveFailUntil.delete(key);
+      return respond(rec, range, {
+        stale: still,
+        fromCache: false,
+        quoteAppended: !!stored.quoteAppended,
+        attempts,
+        error: still ? 'Live history did not extend the last close' : undefined,
+      });
+    }
+    const stillStaleClose = lastCloseNeedsRefresh(lastCloseDate(stored.series), today());
+    if (!stillStaleClose) liveFailUntil.delete(key);
+    if (omitSeries) {
+      return slim({
+        symbol: stored.symbol,
+        lastClose: lastCloseDate(stored.series),
+        pointCount: stored.series?.length || 0,
+        provider: stored.provider,
+        fetchedAt: stored.fetchedAt,
+      }, range, {
+        stale: stillStaleClose,
+        fromCache: false,
+        quoteAppended: !!stored.quoteAppended,
+        attempts,
+        error: stillStaleClose ? 'Live history did not extend the last close' : undefined,
+      });
+    }
+    return respond(stored, range, {
+      stale: stillStaleClose,
+      fromCache: false,
+      quoteAppended: !!stored.quoteAppended,
+      attempts,
+      error: stillStaleClose ? 'Live history did not extend the last close' : undefined,
+    });
+  }
+
+  async function getHistory(symbol, range = 'max', { force = false, omitSeries = false } = {}) {
     const key = normalizeSymbol(symbol);
     if (!key) throw new Error('Missing symbol');
-    const cached = await getPriceHistory(key);
-    if (isFresh(cached) && !force) {
-      return respond(cached, range, { stale: false, fromCache: true });
+    const meta = await loadMeta(key);
+    if (isFresh(meta) && !force) {
+      if (omitSeries) return slim(meta, range, { stale: false, fromCache: true });
+      const rec = await readWindow(key, range, meta?.series ? meta : null);
+      return respond(rec, range, { stale: false, fromCache: true });
     }
 
     // After a total live miss, don't walk the chain again for a few minutes if
     // we can still show a stored series. An explicit Retry (force) bypasses this.
-    if (!force && cached?.series?.length && now() < (liveFailUntil.get(key) || 0)) {
-      return respond(cached, range, {
+    if (!force && metaCount(meta) > 0 && now() < (liveFailUntil.get(key) || 0)) {
+      if (omitSeries) {
+        return slim(meta, range, {
+          stale: true,
+          fromCache: true,
+          error: 'Live providers recently failed — showing cached prices',
+        });
+      }
+      const rec = await readWindow(key, range, meta?.series ? meta : null);
+      return respond(rec, range, {
         stale: true,
         fromCache: true,
         error: 'Live providers recently failed — showing cached prices',
@@ -188,41 +333,63 @@ export function createHistoryCache({
 
     let pending = inflight.get(key);
     if (!pending) {
-      pending = fetchAndStore(key, cached).finally(() => inflight.delete(key));
+      // Do not pass a series we never loaded. The store keeps older dates.
+      const prior = meta?.series ? meta : null;
+      pending = fetchAndStore(key, prior).finally(() => inflight.delete(key));
       inflight.set(key, pending);
     }
 
     try {
       const stored = await pending;
-      const attempts = stored.attempts || [];
-      const stillStaleClose = lastCloseNeedsRefresh(lastCloseDate(stored.series), today());
-      if (!stillStaleClose) liveFailUntil.delete(key);
-      return respond(stored, range, {
-        stale: stillStaleClose,
-        fromCache: false,
-        quoteAppended: !!stored.quoteAppended,
-        attempts,
-        error: stillStaleClose ? 'Live history did not extend the last close' : undefined,
-      });
+      return materialize(key, range, stored, { omitSeries });
     } catch (e) {
       liveFailUntil.set(key, now() + failCooldownMs);
       // History failed — still try a live quote so alerts/charts can move
       // forward one day when quotes are reachable but candles are not.
-      if (cached?.series?.length && typeof fetchQuote === 'function') {
+      if (metaCount(meta) > 0 && typeof fetchQuote === 'function') {
         try {
           const q = await fetchQuote(key);
-          const series = appendQuotePoint(cached.series, q, today());
-          if (lastCloseDate(series) !== lastCloseDate(cached.series)) {
+          const quoteDate = String(today()).slice(0, 10);
+          const before = metaLast(meta);
+          const price = Number(q?.price);
+          const extendsClose = price > 0 && /^\d{4}-\d{2}-\d{2}$/.test(quoteDate) && (!before || quoteDate > before);
+          if (extendsClose) {
+            const series = meta?.series
+              ? appendQuotePoint(meta.series, q, quoteDate)
+              : [{ date: quoteDate, close: price }];
             const rec = {
               symbol: key,
               series,
-              provider: q.provider || cached.provider || null,
-              range: cached.range || 'max',
+              provider: q.provider || meta?.provider || null,
+              range: meta?.range || 'max',
               fetchedAt: new Date(now()).toISOString(),
             };
             await putPriceHistory(key, rec);
             liveFailUntil.delete(key);
-            return respond(rec, range, {
+            if (omitSeries) {
+              return slim({
+                symbol: key,
+                lastClose: quoteDate,
+                pointCount: (metaCount(meta) || 0) + 1,
+                provider: rec.provider,
+                fetchedAt: rec.fetchedAt,
+              }, range, {
+                stale: false,
+                fromCache: false,
+                quoteAppended: true,
+                attempts: e.attempts || [],
+              });
+            }
+            if (meta?.series) {
+              return respond(rec, range, {
+                stale: false,
+                fromCache: false,
+                quoteAppended: true,
+                attempts: e.attempts || [],
+              });
+            }
+            const window = await readWindow(key, range, null);
+            return respond(window, range, {
               stale: false,
               fromCache: false,
               quoteAppended: true,
@@ -233,8 +400,19 @@ export function createHistoryCache({
           // fall through to stale cache
         }
       }
-      if (cached?.series?.length) {
-        return respond(cached, range, {
+      if (metaCount(meta) > 0) {
+        if (omitSeries) {
+          return slim(meta, range, {
+            stale: true,
+            fromCache: true,
+            error: e.message,
+            attempts: e.attempts || [],
+          });
+        }
+        const rec = meta?.series
+          ? { symbol: meta.symbol || key, series: meta.series, provider: meta.provider, fetchedAt: meta.fetchedAt }
+          : await readWindow(key, range, null);
+        return respond(rec, range, {
           stale: true,
           fromCache: true,
           error: e.message,

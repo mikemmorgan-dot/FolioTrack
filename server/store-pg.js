@@ -1,9 +1,24 @@
 // store-pg.js — durable Postgres backend. Same API as JsonStore.
-import { makePool, initSchema, seedIfEmpty } from './db.js';
+import { makePool, initSchema, seedIfEmpty, migratePricePoints } from './db.js';
 import { uid, instrumentFromSpec, currentVersionOf, holdingsEqual, breakdownPatchPresent, nextBreakdownFields } from './util.js';
 import { planNavBatch, todayToronto, batchError } from './nav.js';
 import { normalizePublishedReturns } from './factsheet/publishedReturns.js';
 import { coerceAlertSettings, applyAlertSettingsPatch } from './alerts/settings.js';
+import { WEEKS_52_DAYS } from './alerts/drawdown.js';
+import { noteEgress, approxJsonBytes } from './egress.js';
+import {
+  INSTRUMENT_COLUMNS,
+  INSTRUMENT_CORE_SQL,
+  PRICE_SNAPSHOT_SQL,
+  NAV_SNAPSHOT_SQL,
+  PRICE_WINDOW_SQL,
+  NAV_WINDOW_SQL,
+  PRICE_META_SQL,
+  PRICE_META_UPSERT_SQL,
+  PRICE_LEGACY_SERIES_SQL,
+  PRICE_POINTS_UPSERT_SQL,
+  NAV_UPSERT_SQL,
+} from './seriesSql.js';
 
 const numOrNull = (x) => (x == null ? null : Number(x));
 const d = (x) => (x instanceof Date ? x.toISOString().slice(0, 10) : String(x).slice(0, 10));
@@ -30,38 +45,117 @@ function rowToInstrument(r) {
   };
 }
 
+const MEM_CAP = 64;
+
+function priceSymbol(symbol) {
+  return String(symbol || '').trim().toUpperCase();
+}
+
+function boundOrNull(value) {
+  if (!value) return null;
+  const s = String(value).slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+}
+
+// First close on a duplicate date wins. Non-positive closes are dropped.
+function normalizeCloses(series) {
+  const seen = new Set();
+  const out = [];
+  for (const p of series || []) {
+    const date = String(p?.date || '').slice(0, 10);
+    const close = Number(p?.close ?? p?.price ?? p?.nav);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !(close > 0)) continue;
+    if (seen.has(date)) continue;
+    seen.add(date);
+    out.push({ date, close });
+  }
+  out.sort((a, b) => a.date.localeCompare(b.date));
+  return out;
+}
+
+function aggDate(value) {
+  if (value == null) return null;
+  return d(value);
+}
+
 export class PgStore {
-  constructor() { this.pool = makePool(); }
+  constructor() {
+    this.pool = makePool();
+    this._mem = new Map();
+  }
+
+  async q(text, params) {
+    return this.qOn(this.pool, text, params);
+  }
+
+  async qOn(runner, text, params) {
+    const result = await runner.query(text, params);
+    noteEgress(result.rows?.length || 0, approxJsonBytes(result.rows));
+    return result;
+  }
+
+  _remember(key, value) {
+    if (this._mem.has(key)) this._mem.delete(key);
+    this._mem.set(key, value);
+    while (this._mem.size > MEM_CAP) {
+      const oldest = this._mem.keys().next().value;
+      this._mem.delete(oldest);
+    }
+    return value;
+  }
+
+  _recall(key) {
+    if (!this._mem.has(key)) return undefined;
+    const value = this._mem.get(key);
+    this._mem.delete(key);
+    this._mem.set(key, value);
+    return value;
+  }
+
+  _forgetPrice(symbol) {
+    const key = priceSymbol(symbol);
+    const prefix = `px:${key}:`;
+    for (const k of [...this._mem.keys()]) {
+      if (k === `meta:${key}` || k.startsWith(prefix) || k.startsWith(`snap:${key}`)) this._mem.delete(k);
+    }
+  }
+
+  _forgetNav(instrumentId) {
+    for (const k of [...this._mem.keys()]) {
+      if (k.startsWith(`nav:${instrumentId}:`) || k === `nsnap:${instrumentId}`) this._mem.delete(k);
+    }
+  }
 
   async init() {
     await initSchema(this.pool);
+    await migratePricePoints(this.pool);
     await seedIfEmpty(this.pool);
     return this;
   }
 
   async listInstruments() {
-    const { rows } = await this.pool.query('SELECT * FROM instruments ORDER BY symbol');
+    const { rows } = await this.q(`SELECT ${INSTRUMENT_COLUMNS} FROM instruments ORDER BY symbol`);
     return rows.map(rowToInstrument);
   }
   async getInstrument(id) {
-    const { rows } = await this.pool.query('SELECT * FROM instruments WHERE id=$1', [id]);
+    const { rows } = await this.q(`SELECT ${INSTRUMENT_COLUMNS} FROM instruments WHERE id=$1`, [id]);
     return rows[0] ? rowToInstrument(rows[0]) : null;
   }
 
   async ensureInstrument(spec) {
     const s = instrumentFromSpec(spec);
-    const found = await this.pool.query('SELECT * FROM instruments WHERE lower(symbol)=lower($1)', [s.symbol]);
+    const found = await this.q(`SELECT ${INSTRUMENT_COLUMNS} FROM instruments WHERE lower(symbol)=lower($1)`, [s.symbol]);
     if (found.rows[0]) return rowToInstrument(found.rows[0]);
     return this.addInstrument(s);
   }
   async addInstrument(input) {
     const s = instrumentFromSpec(input);
     const id = input.id || uid('inst');
-    const { rows } = await this.pool.query(
+    const { rows } = await this.q(
       `INSERT INTO instruments (id,symbol,name,type,source,currency,sector,country,mer,meta)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        ON CONFLICT (lower(symbol)) DO UPDATE SET name=EXCLUDED.name
-       RETURNING *`,
+       RETURNING ${INSTRUMENT_COLUMNS}`,
       [id, s.symbol, s.name, s.type, s.source, s.currency, s.sector, s.country, s.mer, s.meta ? JSON.stringify(s.meta) : null]
     );
     return rowToInstrument(rows[0]);
@@ -107,19 +201,16 @@ export class PgStore {
     }
     if (!sets.length) return this.getInstrument(id);
     vals.push(id);
-    const { rows } = await this.pool.query(
-      `UPDATE instruments SET ${sets.join(', ')} WHERE id=$${n} RETURNING *`, vals
+    const { rows } = await this.q(
+      `UPDATE instruments SET ${sets.join(', ')} WHERE id=$${n} RETURNING ${INSTRUMENT_COLUMNS}`, vals
     );
     return rows[0] ? rowToInstrument(rows[0]) : null;
   }
 
   async addNav(instrumentId, { date, nav }) {
-    await this.pool.query(
-      `INSERT INTO nav_series (instrument_id,date,nav) VALUES ($1,$2,$3)
-       ON CONFLICT (instrument_id,date) DO UPDATE SET nav=EXCLUDED.nav`,
-      [instrumentId, date, Number(nav)]
-    );
-    await this.pool.query(
+    await this.q(NAV_UPSERT_SQL, [instrumentId, date, Number(nav)]);
+    this._forgetNav(instrumentId);
+    await this.q(
       `UPDATE instruments SET source='manual' WHERE id=$1 AND source IS DISTINCT FROM 'manual'`,
       [instrumentId]
     );
@@ -131,7 +222,7 @@ export class PgStore {
     const ids = [...new Set((points || []).map((p) => p?.instrumentId).filter(Boolean))];
     const instrumentsById = new Map();
     if (ids.length) {
-      const { rows } = await this.pool.query('SELECT * FROM instruments WHERE id = ANY($1)', [ids]);
+      const { rows } = await this.q(`SELECT ${INSTRUMENT_COLUMNS} FROM instruments WHERE id = ANY($1)`, [ids]);
       for (const r of rows) instrumentsById.set(r.id, rowToInstrument(r));
     }
     const planned = planNavBatch(points, { asOf, instrumentsById, fallbackDate: todayToronto() });
@@ -140,28 +231,24 @@ export class PgStore {
 
     const client = await this.pool.connect();
     try {
-      await client.query('BEGIN');
+      await this.qOn(client, 'BEGIN');
       for (const w of planned.writes) {
-        await client.query(
-          `INSERT INTO nav_series (instrument_id,date,nav) VALUES ($1,$2,$3)
-           ON CONFLICT (instrument_id,date) DO UPDATE SET nav=EXCLUDED.nav`,
-          [w.instrumentId, w.date, w.nav]
-        );
+        await this.qOn(client, NAV_UPSERT_SQL, [w.instrumentId, w.date, w.nav]);
       }
       const writtenIds = [...new Set(planned.writes.map((w) => w.instrumentId))];
-      await client.query(
+      await this.qOn(client, 
         `UPDATE instruments SET source='manual' WHERE id = ANY($1) AND source IS DISTINCT FROM 'manual'`,
         [writtenIds]
       );
       if (navSource !== undefined) {
-        await client.query(
+        await this.qOn(client, 
           `UPDATE instruments SET nav_source=$2 WHERE id = ANY($1)`,
           [writtenIds, navSource ? String(navSource).slice(0, 40) : null]
         );
       }
-      await client.query('COMMIT');
+      await this.qOn(client, 'COMMIT');
     } catch (e) {
-      await client.query('ROLLBACK');
+      await this.qOn(client, 'ROLLBACK');
       throw e;
     } finally {
       client.release();
@@ -169,6 +256,7 @@ export class PgStore {
 
     const latest = [];
     for (const id of new Set(planned.writes.map((w) => w.instrumentId))) {
+      this._forgetNav(id);
       const nav = await this.latestNav(id);
       latest.push({ instrumentId: id, date: nav?.date ?? null, nav: nav?.nav ?? null });
     }
@@ -197,13 +285,14 @@ export class PgStore {
       return { written: 0, latest: latest ? { instrumentId, ...latest } : null };
     }
     const conflict = overwrite
-      ? 'ON CONFLICT (instrument_id, date) DO UPDATE SET nav = EXCLUDED.nav'
+      ? `ON CONFLICT (instrument_id, date) DO UPDATE SET nav = EXCLUDED.nav
+         WHERE nav_series.nav IS DISTINCT FROM EXCLUDED.nav`
       : 'ON CONFLICT (instrument_id, date) DO NOTHING';
     const client = await this.pool.connect();
     let written = 0;
     try {
-      await client.query('BEGIN');
-      const result = await client.query(
+      await this.qOn(client, 'BEGIN');
+      const result = await this.qOn(client, 
         `INSERT INTO nav_series (instrument_id, date, nav)
          SELECT $1, u.date::date, u.nav
          FROM unnest($2::text[], $3::numeric[]) AS u(date, nav)
@@ -211,86 +300,225 @@ export class PgStore {
         [instrumentId, dates, navs]
       );
       written = result.rowCount || 0;
-      if (written > 0) {
-        await client.query(
+      // Identical closes are not rewritten, but a re-upload should still
+      // stamp nav source. That is one small instrument row, not the series.
+      const stamp = written > 0 || (overwrite && dates.length > 0);
+      if (stamp) {
+        await this.qOn(client, 
           `UPDATE instruments SET source='manual' WHERE id=$1 AND source IS DISTINCT FROM 'manual'`,
           [instrumentId]
         );
         if (navSource !== undefined) {
-          await client.query(
+          await this.qOn(client, 
             `UPDATE instruments SET nav_source=$2 WHERE id=$1`,
             [instrumentId, navSource ? String(navSource).slice(0, 40) : null]
           );
         }
       }
-      await client.query('COMMIT');
+      await this.qOn(client, 'COMMIT');
     } catch (e) {
-      await client.query('ROLLBACK');
+      await this.qOn(client, 'ROLLBACK');
       throw e;
     } finally {
       client.release();
     }
+    this._forgetNav(instrumentId);
     const latest = await this.latestNav(instrumentId);
     return { written, latest: latest ? { instrumentId, ...latest } : null };
   }
 
-  async getNavSeries(instrumentId) {
-    const { rows } = await this.pool.query(
-      'SELECT date,nav FROM nav_series WHERE instrument_id=$1 ORDER BY date', [instrumentId]
-    );
+  async getNavSeries(instrumentId, opts = {}) {
+    const since = boundOrNull(opts?.since);
+    const until = boundOrNull(opts?.until);
+    const { rows } = await this.q(NAV_WINDOW_SQL, [instrumentId, since, until]);
     return rows.map((r) => ({ date: d(r.date), nav: Number(r.nav) }));
   }
   async latestNav(instrumentId) {
-    const { rows } = await this.pool.query(
+    const { rows } = await this.q(
       'SELECT date,nav FROM nav_series WHERE instrument_id=$1 ORDER BY date DESC LIMIT 1', [instrumentId]
     );
     return rows[0] ? { date: d(rows[0].date), nav: Number(rows[0].nav) } : null;
   }
 
-  async getPriceHistory(symbol) {
-    const { rows } = await this.pool.query(
-      'SELECT symbol, series, provider, range, fetched_at FROM price_history WHERE lower(symbol)=lower($1)',
-      [symbol]
-    );
+  async getInstrumentCore(id) {
+    const { rows } = await this.q(INSTRUMENT_CORE_SQL, [id]);
     if (!rows[0]) return null;
     const r = rows[0];
     return {
+      id: r.id,
       symbol: r.symbol,
-      series: r.series || [],
-      provider: r.provider,
-      range: r.range,
-      fetchedAt: r.fetched_at instanceof Date ? r.fetched_at.toISOString() : String(r.fetched_at),
+      name: r.name,
+      type: r.type,
+      source: r.source,
+      currency: r.currency,
+      navSource: r.nav_source || null,
     };
   }
-  async putPriceHistory(symbol, { series, provider, range, fetchedAt } = {}) {
-    const key = String(symbol || '').trim().toUpperCase();
-    const at = fetchedAt || new Date().toISOString();
-    const { rows } = await this.pool.query(
-      `INSERT INTO price_history (symbol, series, provider, range, fetched_at)
-       VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (symbol) DO UPDATE SET
-         series=EXCLUDED.series, provider=EXCLUDED.provider,
-         range=EXCLUDED.range, fetched_at=EXCLUDED.fetched_at
-       RETURNING symbol, series, provider, range, fetched_at`,
-      [key, JSON.stringify(series || []), provider || null, range || 'max', at]
-    );
-    const r = rows[0];
+
+  _navSnap(row) {
+    if (!row || !Number(row.n)) return null;
     return {
+      n: Number(row.n),
+      firstDate: aggDate(row.first_date),
+      latestDate: aggDate(row.latest_date),
+      latestNav: numOrNull(row.latest_nav),
+      peakDate: aggDate(row.peak_date),
+      peakNav: numOrNull(row.peak_nav),
+    };
+  }
+
+  _priceSnap(row) {
+    if (!row || !Number(row.n)) return null;
+    return {
+      n: Number(row.n),
+      firstDate: aggDate(row.first_date),
+      latestDate: aggDate(row.latest_date),
+      latestClose: numOrNull(row.latest_close),
+      peakDate: aggDate(row.peak_date),
+      peakClose: numOrNull(row.peak_close),
+      fetchedAt: row.fetched_at ? isoTs(row.fetched_at) : null,
+    };
+  }
+
+  async getAlertSnapshot(instrumentId, symbol) {
+    const { rows: navRows } = await this.q(NAV_SNAPSHOT_SQL, [instrumentId]);
+    const nav = this._navSnap(navRows[0]);
+    if (nav?.n > 0) {
+      return {
+        navCount: nav.n,
+        priceCount: 0,
+        priceLastClose: null,
+        historyFetchedAt: null,
+        price: null,
+        nav,
+      };
+    }
+    const key = priceSymbol(symbol);
+    let priceRows = key
+      ? (await this.q(PRICE_SNAPSHOT_SQL, [key, WEEKS_52_DAYS])).rows
+      : [];
+    let price = this._priceSnap(priceRows[0]);
+    if (key && !price?.n) {
+      const meta = await this.getPriceHistoryMeta(key);
+      if (meta?.hasLegacy && !meta.pointCount) {
+        const promoted = await this._promoteLegacySeries(key, meta);
+        if (promoted?.length) {
+          priceRows = (await this.q(PRICE_SNAPSHOT_SQL, [key, WEEKS_52_DAYS])).rows;
+          price = this._priceSnap(priceRows[0]);
+        }
+      }
+    }
+    return {
+      navCount: 0,
+      priceCount: price?.n || 0,
+      priceLastClose: price?.latestDate || null,
+      historyFetchedAt: price?.fetchedAt || null,
+      price,
+      nav: null,
+    };
+  }
+
+  async getPriceHistoryMeta(symbol) {
+    const key = priceSymbol(symbol);
+    if (!key) return null;
+    const cacheKey = `meta:${key}`;
+    const hit = this._recall(cacheKey);
+    if (hit !== undefined) return hit;
+    const { rows } = await this.q(PRICE_META_SQL, [key]);
+    if (!rows[0]) return this._remember(cacheKey, null);
+    const r = rows[0];
+    return this._remember(cacheKey, {
       symbol: r.symbol,
-      series: r.series || [],
       provider: r.provider,
       range: r.range,
-      fetchedAt: r.fetched_at instanceof Date ? r.fetched_at.toISOString() : String(r.fetched_at),
+      fetchedAt: r.fetched_at ? isoTs(r.fetched_at) : null,
+      lastClose: aggDate(r.last_date),
+      pointCount: Number(r.n) || 0,
+      hasLegacy: !!r.has_legacy,
+    });
+  }
+
+  // Boot copies the JSON blob into price_points. If that copy stored nothing
+  // but the blob is still present, read it once, write rows, and stop.
+  async _promoteLegacySeries(key, meta) {
+    const { rows } = await this.q(PRICE_LEGACY_SERIES_SQL, [key]);
+    const points = normalizeCloses(rows[0]?.series);
+    if (!points.length) return null;
+    await this.putPriceHistory(key, {
+      series: points,
+      provider: meta.provider,
+      range: meta.range,
+      fetchedAt: meta.fetchedAt || new Date().toISOString(),
+    });
+    return points;
+  }
+
+  async getPriceHistory(symbol, opts = {}) {
+    const key = priceSymbol(symbol);
+    if (!key) return null;
+    const since = boundOrNull(opts?.since);
+    const until = boundOrNull(opts?.until);
+    const cacheKey = `px:${key}:${since || ''}:${until || ''}`;
+    const hit = this._recall(cacheKey);
+    if (hit !== undefined) return hit;
+    const meta = await this.getPriceHistoryMeta(key);
+    if (!meta) return this._remember(cacheKey, null);
+    if (!meta.pointCount && meta.hasLegacy) {
+      const points = await this._promoteLegacySeries(key, meta);
+      if (points) {
+        const series = points.filter((p) => {
+          if (since && p.date < since) return false;
+          if (until && p.date > until) return false;
+          return true;
+        });
+        return this._remember(cacheKey, {
+          symbol: meta.symbol || key,
+          series,
+          provider: meta.provider,
+          range: meta.range,
+          fetchedAt: meta.fetchedAt,
+        });
+      }
+    }
+    const { rows } = await this.q(PRICE_WINDOW_SQL, [key, since, until]);
+    return this._remember(cacheKey, {
+      symbol: meta.symbol || key,
+      series: rows.map((r) => ({ date: d(r.date), close: Number(r.close) })),
+      provider: meta.provider,
+      range: meta.range,
+      fetchedAt: meta.fetchedAt,
+    });
+  }
+
+  async putPriceHistory(symbol, { series, provider, range, fetchedAt } = {}) {
+    const key = priceSymbol(symbol);
+    const at = fetchedAt || new Date().toISOString();
+    const points = normalizeCloses(series);
+    this._forgetPrice(key);
+    await this.q(PRICE_META_UPSERT_SQL, [key, provider || null, range || 'max', at]);
+    if (points.length) {
+      await this.q(
+        PRICE_POINTS_UPSERT_SQL,
+        [key, points.map((p) => p.date), points.map((p) => p.close)],
+      );
+    }
+    // The series we were handed is already in memory. Do not read it back.
+    return {
+      symbol: key,
+      series: points,
+      provider: provider || null,
+      range: range || 'max',
+      fetchedAt: at,
     };
   }
 
   async getAlertSettings() {
-    const { rows } = await this.pool.query(`SELECT value FROM app_settings WHERE key='alerts'`);
+    const { rows } = await this.q(`SELECT value FROM app_settings WHERE key='alerts'`);
     return coerceAlertSettings(rows[0]?.value || {});
   }
   async saveAlertSettings(patch) {
     const next = applyAlertSettingsPatch(await this.getAlertSettings(), patch);
-    await this.pool.query(
+    await this.q(
       `INSERT INTO app_settings (key, value, updated_at) VALUES ('alerts', $1::jsonb, now())
        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
       [JSON.stringify(next)],
@@ -298,11 +526,11 @@ export class PgStore {
     return next;
   }
   async getAlertCheckMeta() {
-    const { rows } = await this.pool.query(`SELECT value FROM app_settings WHERE key='alertCheck'`);
+    const { rows } = await this.q(`SELECT value FROM app_settings WHERE key='alertCheck'`);
     return rows[0]?.value || null;
   }
   async setAlertCheckMeta(meta) {
-    await this.pool.query(
+    await this.q(
       `INSERT INTO app_settings (key, value, updated_at) VALUES ('alertCheck', $1::jsonb, now())
        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
       [JSON.stringify(meta)],
@@ -310,11 +538,11 @@ export class PgStore {
     return meta;
   }
   async getAlertMissUntil() {
-    const { rows } = await this.pool.query(`SELECT value FROM app_settings WHERE key='alertMissUntil'`);
+    const { rows } = await this.q(`SELECT value FROM app_settings WHERE key='alertMissUntil'`);
     return rows[0]?.value || {};
   }
   async setAlertMissUntil(obj) {
-    await this.pool.query(
+    await this.q(
       `INSERT INTO app_settings (key, value, updated_at) VALUES ('alertMissUntil', $1::jsonb, now())
        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
       [JSON.stringify(obj || {})],
@@ -353,16 +581,16 @@ export class PgStore {
     };
   }
   async getAlertEvent(instrumentId) {
-    const { rows } = await this.pool.query('SELECT * FROM alert_events WHERE instrument_id=$1', [instrumentId]);
+    const { rows } = await this.q('SELECT * FROM alert_events WHERE instrument_id=$1', [instrumentId]);
     return this._rowToAlertEvent(rows[0]);
   }
   async listAlertEvents() {
-    const { rows } = await this.pool.query('SELECT * FROM alert_events ORDER BY first_breached_at DESC NULLS LAST');
+    const { rows } = await this.q('SELECT * FROM alert_events ORDER BY first_breached_at DESC NULLS LAST');
     return rows.map((r) => this._rowToAlertEvent(r));
   }
   async upsertAlertEvent(event) {
     const e = event;
-    const { rows } = await this.pool.query(
+    const { rows } = await this.q(
       `INSERT INTO alert_events (
          instrument_id, symbol, name, status, first_breached_at, last_notified_at, recovered_at,
          reference_price, reference_date, price_at_breach, drawdown_at_breach, current_price,
@@ -416,7 +644,7 @@ export class PgStore {
     };
   }
   async appendAlertHistory(entry) {
-    await this.pool.query(
+    await this.q(
       `INSERT INTO alert_history (
          id, instrument_id, symbol, name, kind, at, drawdown, price, reference_price, reference_date, detail, models
        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)`,
@@ -429,7 +657,7 @@ export class PgStore {
     return entry;
   }
   async listAlertHistory(limit = 40) {
-    const { rows } = await this.pool.query(
+    const { rows } = await this.q(
       'SELECT * FROM alert_history ORDER BY at DESC LIMIT $1',
       [Math.max(1, Number(limit) || 40)],
     );
@@ -437,12 +665,12 @@ export class PgStore {
   }
 
   async _versionsFor(modelKey) {
-    const { rows: vrows } = await this.pool.query(
+    const { rows: vrows } = await this.q(
       'SELECT * FROM versions WHERE model_key=$1 ORDER BY effective_date', [modelKey]
     );
     const versions = [];
     for (const v of vrows) {
-      const { rows: hrows } = await this.pool.query(
+      const { rows: hrows } = await this.q(
         'SELECT instrument_id,weight FROM version_holdings WHERE version_id=$1', [v.id]
       );
       versions.push({
@@ -454,7 +682,7 @@ export class PgStore {
   }
 
   async listModels() {
-    const { rows } = await this.pool.query('SELECT * FROM models ORDER BY risk_rank');
+    const { rows } = await this.q('SELECT * FROM models ORDER BY risk_rank');
     const out = [];
     for (const m of rows) {
       out.push({ key: m.key, name: m.name, riskRank: m.risk_rank, benchmark: m.benchmark, versions: await this._versionsFor(m.key) });
@@ -462,14 +690,14 @@ export class PgStore {
     return out;
   }
   async getModel(key) {
-    const { rows } = await this.pool.query('SELECT * FROM models WHERE key=$1', [key]);
+    const { rows } = await this.q('SELECT * FROM models WHERE key=$1', [key]);
     if (!rows[0]) return null;
     const m = rows[0];
     return { key: m.key, name: m.name, riskRank: m.risk_rank, benchmark: m.benchmark, versions: await this._versionsFor(m.key) };
   }
 
   async addVersion(key, { effectiveDate, note, holdings }) {
-    const model = await this.pool.query('SELECT key FROM models WHERE key=$1', [key]);
+    const model = await this.q('SELECT key FROM models WHERE key=$1', [key]);
     if (!model.rows[0]) return null;
 
     // Resolve instruments (upserting any new tickers) BEFORE opening the tx.
@@ -493,14 +721,14 @@ export class PgStore {
     const id = uid('ver');
     const client = await this.pool.connect();
     try {
-      await client.query('BEGIN');
-      await client.query('INSERT INTO versions (id,model_key,effective_date,note) VALUES ($1,$2,$3,$4)', [id, key, eff, note || '']);
+      await this.qOn(client, 'BEGIN');
+      await this.qOn(client, 'INSERT INTO versions (id,model_key,effective_date,note) VALUES ($1,$2,$3,$4)', [id, key, eff, note || '']);
       for (const h of resolved) {
-        await client.query('INSERT INTO version_holdings (version_id,instrument_id,weight) VALUES ($1,$2,$3)', [id, h.instrumentId, h.weight]);
+        await this.qOn(client, 'INSERT INTO version_holdings (version_id,instrument_id,weight) VALUES ($1,$2,$3)', [id, h.instrumentId, h.weight]);
       }
-      await client.query('COMMIT');
+      await this.qOn(client, 'COMMIT');
     } catch (e) {
-      await client.query('ROLLBACK');
+      await this.qOn(client, 'ROLLBACK');
       throw e;
     } finally {
       client.release();

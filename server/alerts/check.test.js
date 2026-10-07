@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createAlertService, BREACH_PENDING_FRESH } from './check.js';
+import { snapshotFromSeries } from './drawdown.js';
 import { applyAlertSettingsPatch, coerceAlertSettings } from './settings.js';
 import { EMAIL_NOT_CONFIGURED } from './email.js';
 
@@ -680,5 +681,36 @@ describe('alert check', () => {
     expect(meta.last_error).toMatch(/budget/);
     expect(meta.lastSuccessAt).toBe('2026-08-01T00:00:00.000Z');
     expect(meta.ok).toBeUndefined();
+  });
+
+  it('evaluates from a snapshot and does not load full histories', async () => {
+    const { store } = fixture(140);
+    let navReads = 0;
+    let priceReads = 0;
+    store.getNavSeries = async () => { navReads += 1; return []; };
+    store.getPriceHistory = async () => { priceReads += 1; return null; };
+    store.getAlertSnapshot = async (id) => {
+      if (id === 'inst_nvda') {
+        return snapshotFromSeries({
+          historySeries: nvdaSeries(140).series,
+          historyFetchedAt: nvdaSeries(140).fetchedAt,
+        });
+      }
+      if (id === 'inst_ocic') {
+        return snapshotFromSeries({
+          navSeries: [{ date: '2026-01-01', nav: 10 }, { date: TODAY, nav: 8 }],
+        });
+      }
+      return snapshotFromSeries({});
+    };
+    const email = mockEmail();
+    const summary = await service(store, email).runCheck();
+    expect(navReads).toBe(0);
+    expect(priceReads).toBe(0);
+    expect(summary.emailed).toBe(2);
+    const event = await store.getAlertEvent('inst_nvda');
+    expect(event.basis).toBe('52w');
+    expect(event.referencePrice).toBe(200);
+    expect(event.currentPrice).toBe(140);
   });
 });

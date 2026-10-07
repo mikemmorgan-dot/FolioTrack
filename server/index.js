@@ -40,6 +40,7 @@ import { createAlertRouter } from './alerts/http.js';
 import { createAlertCoordinator } from './alerts/runner.js';
 import { startAlertScheduler } from './alerts/schedule.js';
 import { listenThenStart } from './boot.js';
+import { egressMiddleware, openEgressScope } from './egress.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -65,6 +66,10 @@ const boot = listenThenStart({
 });
 
 const { store } = await boot.started;
+
+// Health is registered before this middleware, so a keep-alive ping never
+// reaches it and never opens a database scope.
+app.use(egressMiddleware);
 
 // Quote cache (60s) + in-flight dedupe so a model view doesn't stampede the
 // provider chain. GET /api/models/:key peeks this cache only — it never waits
@@ -182,7 +187,8 @@ app.get('/api/diagnostics', async (req, res) => {
 // stale: true if every live hop fails. Sequential chain + provider cooldown
 // live in providers.js / historyCache.js.
 const history = createHistoryCache({
-  getPriceHistory: (symbol) => store.getPriceHistory(symbol),
+  getPriceHistory: (symbol, opts) => store.getPriceHistory(symbol, opts),
+  getPriceHistoryMeta: (symbol) => store.getPriceHistoryMeta?.(symbol) ?? null,
   putPriceHistory: (symbol, rec) => store.putPriceHistory(symbol, rec),
   fetchLive: (symbol, range) => getHistory(symbol, range),
 });
@@ -705,6 +711,8 @@ const alerts = createAlertService({
   store,
   getHistory: (symbol, range, opts) => cachedHistory(symbol, range || 'max', {
     force: opts?.force === true,
+    // Drawdown reads a SQL snapshot after the write. Do not ship the series.
+    omitSeries: true,
   }),
   email: alertEmail,
 });
@@ -752,7 +760,7 @@ void (async () => {
     console.error(`[boot] provider probe failed: ${e.message}`);
   }
   startAlertScheduler({
-    run: () => alertRuns.start({ refresh: true, kind: 'check' }),
+    run: () => openEgressScope('scheduler alert-check', () => alertRuns.start({ refresh: true, kind: 'check' })),
     logger: console,
   });
 })();

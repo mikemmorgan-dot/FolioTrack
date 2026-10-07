@@ -8,6 +8,7 @@ import { uid, instrumentFromSpec, currentVersionOf, holdingsEqual, breakdownPatc
 import { planNavBatch, todayToronto, batchError } from './nav.js';
 import { normalizePublishedReturns } from './factsheet/publishedReturns.js';
 import { coerceAlertSettings, applyAlertSettingsPatch } from './alerts/settings.js';
+import { snapshotFromSeries } from './alerts/drawdown.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data', 'store.json');
@@ -159,7 +160,17 @@ export class JsonStore {
     };
   }
 
-  async getNavSeries(instrumentId) { return this.db.navSeries[instrumentId] || []; }
+  async getNavSeries(instrumentId, opts = {}) {
+    const since = opts?.since ? String(opts.since).slice(0, 10) : null;
+    const until = opts?.until ? String(opts.until).slice(0, 10) : null;
+    const rows = this.db.navSeries[instrumentId] || [];
+    if (!since && !until) return rows;
+    return rows.filter((p) => {
+      if (since && p.date < since) return false;
+      if (until && p.date > until) return false;
+      return true;
+    });
+  }
   async latestNav(instrumentId) {
     const s = this.db.navSeries[instrumentId] || [];
     return s.length ? s[s.length - 1] : null;
@@ -169,22 +180,81 @@ export class JsonStore {
     if (!this.db.priceHistory) this.db.priceHistory = {};
     return this.db.priceHistory;
   }
-  async getPriceHistory(symbol) {
+  async getPriceHistory(symbol, opts = {}) {
     const key = String(symbol || '').trim().toUpperCase();
-    return this._priceHistoryMap()[key] || null;
+    const rec = this._priceHistoryMap()[key] || null;
+    if (!rec) return null;
+    const since = opts?.since ? String(opts.since).slice(0, 10) : null;
+    const until = opts?.until ? String(opts.until).slice(0, 10) : null;
+    if (!since && !until) return rec;
+    return {
+      ...rec,
+      series: (rec.series || []).filter((p) => {
+        if (since && p.date < since) return false;
+        if (until && p.date > until) return false;
+        return true;
+      }),
+    };
   }
+  async getPriceHistoryMeta(symbol) {
+    const rec = await this.getPriceHistory(symbol);
+    if (!rec) return null;
+    const series = [...(rec.series || [])].sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    const last = series.length ? series[series.length - 1] : null;
+    return {
+      symbol: rec.symbol,
+      provider: rec.provider || null,
+      range: rec.range || 'max',
+      fetchedAt: rec.fetchedAt || null,
+      lastClose: last?.date || null,
+      pointCount: series.length,
+    };
+  }
+  // Merge by date. Dates not in this payload stay, so a one-day quote append
+  // does not rewrite the older closes. A repeated close is left as-is.
   async putPriceHistory(symbol, { series, provider, range, fetchedAt } = {}) {
     const key = String(symbol || '').trim().toUpperCase();
+    const prev = this._priceHistoryMap()[key];
+    const map = new Map();
+    for (const p of prev?.series || []) {
+      const date = String(p?.date || '').slice(0, 10);
+      const close = Number(p?.close);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !(close > 0)) continue;
+      map.set(date, close);
+    }
+    let changed = !prev;
+    for (const p of series || []) {
+      const date = String(p?.date || '').slice(0, 10);
+      const close = Number(p?.close ?? p?.price ?? p?.nav);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !(close > 0)) continue;
+      if (!map.has(date) || map.get(date) !== close) changed = true;
+      map.set(date, close);
+    }
+    const merged = [...map.entries()]
+      .map(([date, close]) => ({ date, close }))
+      .sort((a, b) => a.date.localeCompare(b.date));
     const rec = {
       symbol: key,
-      series: series || [],
-      provider: provider || null,
-      range: range || 'max',
+      series: merged,
+      provider: provider || prev?.provider || null,
+      range: range || prev?.range || 'max',
       fetchedAt: fetchedAt || new Date().toISOString(),
     };
     this._priceHistoryMap()[key] = rec;
-    this._persist();
+    if (changed || prev?.fetchedAt !== rec.fetchedAt || prev?.provider !== rec.provider) this._persist();
     return rec;
+  }
+  async getAlertSnapshot(instrumentId, symbol) {
+    const navSeries = await this.getNavSeries(instrumentId);
+    const navSnap = snapshotFromSeries({ navSeries });
+    if (navSnap.navCount > 0) {
+      return { ...navSnap, price: null, priceCount: 0, priceLastClose: null, historyFetchedAt: null };
+    }
+    const rec = await this.getPriceHistory(symbol);
+    return snapshotFromSeries({
+      historySeries: rec?.series || [],
+      historyFetchedAt: rec?.fetchedAt || null,
+    });
   }
 
   async getAlertSettings() {
