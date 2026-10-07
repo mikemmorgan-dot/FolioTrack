@@ -56,54 +56,105 @@ export function peakSince(points, cutoff) {
 }
 
 /**
+ * Latest close, 52-week high, and (for NAV) the series peak.
+ * The alert check stores this instead of the daily rows. Same rules as
+ * walking the series: first point on a duplicate date wins, ties on the
+ * high take the later date, NAV is the whole series (not a 52-week slice).
+ */
+export function snapshotFromSeries({ historySeries, navSeries, historyFetchedAt = null } = {}) {
+  const history = pointsOf(historySeries);
+  const nav = pointsOf(navSeries);
+  let price = null;
+  if (history.length) {
+    const latest = history[history.length - 1];
+    const cutoff = addDaysISO(latest.date, -WEEKS_52_DAYS);
+    const peak = peakSince(history, cutoff);
+    if (peak) {
+      price = {
+        n: history.length,
+        firstDate: history[0].date,
+        latestDate: latest.date,
+        latestClose: latest.price,
+        peakDate: peak.date,
+        peakClose: peak.price,
+        fetchedAt: historyFetchedAt || null,
+      };
+    }
+  }
+  let navSnap = null;
+  if (nav.length) {
+    const latest = nav[nav.length - 1];
+    const peak = peakSince(nav, null);
+    if (peak) {
+      navSnap = {
+        n: nav.length,
+        firstDate: nav[0].date,
+        latestDate: latest.date,
+        latestNav: latest.price,
+        peakDate: peak.date,
+        peakNav: peak.price,
+      };
+    }
+  }
+  return {
+    navCount: navSnap?.n || 0,
+    priceCount: price?.n || 0,
+    priceLastClose: price?.latestDate || null,
+    historyFetchedAt: price?.fetchedAt || null,
+    price,
+    nav: navSnap,
+  };
+}
+
+export function resolveDrawdownFromSnapshot(snap, { today, historyFetchedAt = null } = {}) {
+  const price = snap?.price;
+  if (price?.n > 0 && price.latestDate && price.peakDate) {
+    const cutoff = addDaysISO(price.latestDate, -WEEKS_52_DAYS);
+    const covers52w = price.firstDate <= cutoff;
+    const basisLabel = covers52w
+      ? `from 52-week high, using cached closes as of ${price.latestDate}`
+      : `from the high of cached closes since ${price.firstDate} (shorter than 52 weeks), as of ${price.latestDate}`;
+    return {
+      basis: '52w',
+      covers52w,
+      basisLabel,
+      currentPrice: price.latestClose,
+      priceAsOf: price.latestDate,
+      referencePrice: price.peakClose,
+      referenceDate: price.peakDate,
+      drawdown: drawdownRatio(price.latestClose, price.peakClose),
+      stale: isPriceStale(price.latestDate, today),
+      historyFetchedAt: historyFetchedAt || price.fetchedAt || snap?.historyFetchedAt || null,
+    };
+  }
+
+  const nav = snap?.nav;
+  if (!nav?.n || !nav.latestDate || !nav.peakDate) return null;
+  return {
+    basis: 'nav',
+    covers52w: false,
+    basisLabel: `from saved NAV series peak, using NAV as of ${nav.latestDate}`,
+    currentPrice: nav.latestNav,
+    priceAsOf: nav.latestDate,
+    referencePrice: nav.peakNav,
+    referenceDate: nav.peakDate,
+    drawdown: drawdownRatio(nav.latestNav, nav.peakNav),
+    stale: isPriceStale(nav.latestDate, today),
+    historyFetchedAt: null,
+  };
+}
+
+/**
  * Reference = highest cached close in the trailing 52 weeks ending on the
  * latest close. If that history is missing, reference = the peak of the
  * saved NAV series (the whole series, not a 52-week slice) and current =
  * the latest NAV.
  */
 export function resolveDrawdown({ historySeries, navSeries, today, historyFetchedAt = null } = {}) {
-  const history = pointsOf(historySeries);
-  if (history.length) {
-    const latest = history[history.length - 1];
-    const cutoff = addDaysISO(latest.date, -WEEKS_52_DAYS);
-    const peak = peakSince(history, cutoff);
-    if (peak) {
-      const covers52w = history[0].date <= cutoff;
-      const basisLabel = covers52w
-        ? `from 52-week high, using cached closes as of ${latest.date}`
-        : `from the high of cached closes since ${history[0].date} (shorter than 52 weeks), as of ${latest.date}`;
-      return {
-        basis: '52w',
-        covers52w,
-        basisLabel,
-        currentPrice: latest.price,
-        priceAsOf: latest.date,
-        referencePrice: peak.price,
-        referenceDate: peak.date,
-        drawdown: drawdownRatio(latest.price, peak.price),
-        stale: isPriceStale(latest.date, today),
-        historyFetchedAt: historyFetchedAt || null,
-      };
-    }
-  }
-
-  const nav = pointsOf(navSeries);
-  if (!nav.length) return null;
-  const latest = nav[nav.length - 1];
-  const peak = peakSince(nav, null);
-  if (!peak) return null;
-  return {
-    basis: 'nav',
-    covers52w: false,
-    basisLabel: `from saved NAV series peak, using NAV as of ${latest.date}`,
-    currentPrice: latest.price,
-    priceAsOf: latest.date,
-    referencePrice: peak.price,
-    referenceDate: peak.date,
-    drawdown: drawdownRatio(latest.price, peak.price),
-    stale: isPriceStale(latest.date, today),
-    historyFetchedAt: null,
-  };
+  return resolveDrawdownFromSnapshot(
+    snapshotFromSeries({ historySeries, navSeries, historyFetchedAt }),
+    { today, historyFetchedAt },
+  );
 }
 
 // Current version of every model, deduped by instrument id. Older versions
@@ -133,10 +184,7 @@ export function skipReason(inst) {
   return null;
 }
 
-export function evaluateHolding({ inst, models, historySeries, navSeries, today, historyFetchedAt = null }) {
-  const skip = skipReason(inst);
-  if (skip) return { skip, instrumentId: inst?.id || null, symbol: inst?.symbol || null };
-  const resolved = resolveDrawdown({ historySeries, navSeries, today, historyFetchedAt });
+function holdingFromResolved(inst, models, resolved) {
   if (!resolved || resolved.drawdown == null || resolved.currentPrice == null) {
     return { skip: 'no-price', instrumentId: inst.id, symbol: inst.symbol, name: inst.name, models: models || [] };
   }
@@ -150,4 +198,24 @@ export function evaluateHolding({ inst, models, historySeries, navSeries, today,
     models: models || [],
     ...resolved,
   };
+}
+
+export function evaluateHolding({ inst, models, historySeries, navSeries, today, historyFetchedAt = null }) {
+  const skip = skipReason(inst);
+  if (skip) return { skip, instrumentId: inst?.id || null, symbol: inst?.symbol || null };
+  const resolved = resolveDrawdown({ historySeries, navSeries, today, historyFetchedAt });
+  return holdingFromResolved(inst, models, resolved);
+}
+
+// NAV points win over a leftover price history, matching the check runner.
+export function evaluateFromSnapshot({ inst, models, snap, today, historyFetchedAt = null }) {
+  const skip = skipReason(inst);
+  if (skip) return { skip, instrumentId: inst?.id || null, symbol: inst?.symbol || null };
+  const preferNav = (snap?.navCount || 0) > 0;
+  const view = preferNav ? { ...snap, price: null, priceCount: 0, priceLastClose: null } : snap;
+  const resolved = resolveDrawdownFromSnapshot(view, {
+    today,
+    historyFetchedAt: historyFetchedAt || snap?.historyFetchedAt || null,
+  });
+  return holdingFromResolved(inst, models, resolved);
 }

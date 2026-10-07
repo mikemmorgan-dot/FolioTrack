@@ -1,16 +1,31 @@
 // db.js — Postgres pool, schema bootstrap, and one-time seed.
 import pg from 'pg';
 import { seedData } from './seed.js';
+import {
+  PRICE_POINTS_TABLE_SQL,
+  PRICE_POINTS_BACKFILL_SQL,
+  PRICE_SERIES_CLEAR_SQL,
+} from './seriesSql.js';
 
 const { Pool } = pg;
 
-export function makePool() {
-  return new Pool({
-    connectionString: process.env.DATABASE_URL,
-    // Neon (and most hosted PG) require SSL. Local PG can opt out with PGSSL=disable.
-    ssl: process.env.PGSSL === 'disable' ? false : { rejectUnauthorized: false },
+// Neon drops idle server connections. Release ours first so the pool does
+// not keep handing out a dead socket and reconnecting on every query.
+// max stays small: the free tier has a low connection cap, and this app is
+// one process.
+export function poolOptions(env = process.env) {
+  return {
+    connectionString: env.DATABASE_URL,
+    ssl: env.PGSSL === 'disable' ? false : { rejectUnauthorized: false },
     max: 5,
-  });
+    idleTimeoutMillis: 20_000,
+    connectionTimeoutMillis: 10_000,
+    keepAlive: true,
+  };
+}
+
+export function makePool() {
+  return new Pool(poolOptions());
 }
 
 const SCHEMA = `
@@ -138,10 +153,22 @@ CREATE TABLE IF NOT EXISTS alert_history (
   models jsonb
 );
 CREATE INDEX IF NOT EXISTS alert_history_at ON alert_history (at DESC);
+
+-- One row per close. Replaces the price_history.series JSON blob, which
+-- had to be sent in full on every read and rewritten in full on every refresh.
+${PRICE_POINTS_TABLE_SQL}
 `;
 
 export async function initSchema(pool) {
   await pool.query(SCHEMA);
+}
+
+// Copy any leftover JSON histories into price_points, then empty the blob
+// so later reads cannot ship it. Safe to run on every boot: the copy is
+// ON CONFLICT DO NOTHING and the clear matches zero rows once series is [].
+export async function migratePricePoints(pool) {
+  await pool.query(PRICE_POINTS_BACKFILL_SQL);
+  await pool.query(PRICE_SERIES_CLEAR_SQL);
 }
 
 // Seed only when empty, so restarts/redeploys never clobber real data.

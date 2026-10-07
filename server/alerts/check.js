@@ -12,9 +12,13 @@
 
 import { uid } from '../util.js';
 import { todayToronto } from '../nav.js';
-import { decidePricePath } from '../navPrice.js';
-import { lastCloseDate } from '../historyCache.js';
-import { collectCurrentHoldings, evaluateHolding, isPriceStale } from './drawdown.js';
+import { logEgress } from '../egress.js';
+import {
+  collectCurrentHoldings,
+  evaluateFromSnapshot,
+  isPriceStale,
+  snapshotFromSeries,
+} from './drawdown.js';
 import { transitionAlert } from './state.js';
 import { buildAlertEmail, buildTestEmail, EMAIL_NOT_CONFIGURED, FOLIOTRACK_URL } from './email.js';
 import {
@@ -86,49 +90,77 @@ export function createAlertService({
     await store.setAlertMissUntil(obj);
   }
 
-  // Last close only. The full series is released before the next holding is read
-  // so a check cannot pin every history in memory at once.
-  async function peekHolding(group) {
-    const inst = await store.getInstrument(group.instrumentId);
-    if (!inst) return { group, inst: null };
-    const navSeries = store.getNavSeries ? await store.getNavSeries(inst.id) : [];
-    const refreshable = isRefreshableAutoHolding(inst, navSeries);
-    let lastClose = null;
-    if (refreshable && store.getPriceHistory) {
-      const stored = await store.getPriceHistory(inst.symbol);
-      lastClose = lastCloseDate(stored?.series);
+  // Latest close + 52-week high (or the NAV peak). Not the daily rows.
+  async function readSnapshot(inst) {
+    if (typeof store.getAlertSnapshot === 'function') {
+      return store.getAlertSnapshot(inst.id, inst.symbol);
     }
-    return { group, inst, refreshable, lastClose };
+    const navSeries = store.getNavSeries ? await store.getNavSeries(inst.id) : [];
+    const navSnap = snapshotFromSeries({ navSeries });
+    if (navSnap.navCount > 0) {
+      return { ...navSnap, price: null, priceCount: 0, priceLastClose: null, historyFetchedAt: null };
+    }
+    let historySeries = [];
+    let historyFetchedAt = null;
+    if (store.getPriceHistory) {
+      const stored = await store.getPriceHistory(inst.symbol);
+      historySeries = stored?.series || [];
+      historyFetchedAt = stored?.fetchedAt || null;
+    }
+    return snapshotFromSeries({ historySeries, historyFetchedAt });
+  }
+
+  async function peekHolding(group) {
+    const inst = typeof store.getInstrumentCore === 'function'
+      ? await store.getInstrumentCore(group.instrumentId)
+      : await store.getInstrument(group.instrumentId);
+    if (!inst) return { group, inst: null };
+    const snap = await readSnapshot(inst);
+    const refreshable = isRefreshableAutoHolding(
+      inst,
+      snap.navCount > 0 ? { hasUsableNav: true } : [],
+    );
+    return {
+      group,
+      inst,
+      refreshable,
+      lastClose: refreshable ? (snap.priceLastClose || null) : null,
+      pointCount: refreshable ? (snap.priceCount || 0) : 0,
+      snap,
+    };
   }
 
   async function loadEvalContext(peek, refreshed) {
     if (!peek?.inst) return null;
     const { inst, group } = peek;
-    const navSeries = store.getNavSeries ? await store.getNavSeries(inst.id) : [];
-    const path = decidePricePath(inst, navSeries || []);
-    // NAV-backed instruments (manual or auto-with-NAV) use nav_series only —
-    // never prefer a frozen leftover price_history over entered NAV.
-    const useNav = path.path === 'nav_series' && path.series.length > 0;
-    let historySeries = [];
-    let historyFetchedAt = null;
-    if (!useNav) {
-      const fresh = refreshed?.get(inst.id);
-      if (fresh) {
-        historySeries = fresh.series || [];
+    let snap = peek.snap;
+    let historyFetchedAt = snap?.historyFetchedAt || null;
+    const fresh = refreshed?.get(inst.id);
+    if (fresh) {
+      refreshed.delete(inst.id);
+      if (fresh.series?.length) {
+        const over = snapshotFromSeries({
+          historySeries: fresh.series,
+          historyFetchedAt: fresh.fetchedAt || null,
+        });
+        snap = {
+          ...snap,
+          price: over.price,
+          priceCount: over.priceCount,
+          priceLastClose: over.priceLastClose,
+          historyFetchedAt: fresh.fetchedAt || over.historyFetchedAt,
+        };
         historyFetchedAt = fresh.fetchedAt || null;
-        refreshed.delete(inst.id);
-      } else if (store.getPriceHistory) {
-        const stored = await store.getPriceHistory(inst.symbol);
-        historySeries = stored?.series || [];
-        historyFetchedAt = stored?.fetchedAt || null;
+      } else if (typeof store.getAlertSnapshot === 'function') {
+        snap = await store.getAlertSnapshot(inst.id, inst.symbol);
+        historyFetchedAt = fresh.fetchedAt || snap?.historyFetchedAt || null;
       }
     }
     return {
       group,
       inst,
-      historySeries,
+      snap,
       historyFetchedAt,
-      navSeries: navSeries || [],
       refreshable: !!peek.refreshable,
     };
   }
@@ -175,14 +207,18 @@ export function createAlertService({
         if (!peek?.inst) continue;
         const result = await refreshOneAutoHolding(peek.inst, {
           getHistory: fetchHistory,
-          getPriceHistory: store.getPriceHistory ? (s) => store.getPriceHistory(s) : null,
+          getPriceHistory: peek.pointCount != null
+            ? null
+            : (store.getPriceHistory ? (s) => store.getPriceHistory(s) : null),
+          lastClose: peek.lastClose,
+          pointCount: peek.pointCount,
           nowMs,
           liveMissUntil,
           bypassMissBackoff,
         });
-        if (result.series?.length && (result.status === 'updated' || result.status === 'unchanged')) {
+        if (result.status === 'updated' || result.status === 'unchanged') {
           refreshed.set(peek.inst.id, {
-            series: result.series,
+            series: result.series?.length ? result.series : null,
             fetchedAt: result.fetchedAt || null,
           });
         }
@@ -233,12 +269,11 @@ export function createAlertService({
         continue;
       }
       try {
-        const { inst, group, historySeries, navSeries, historyFetchedAt } = ctx;
-        const evaluation = evaluateHolding({
+        const { inst, group, snap, historyFetchedAt } = ctx;
+        const evaluation = evaluateFromSnapshot({
           inst,
           models: group.models,
-          historySeries,
-          navSeries,
+          snap,
           today: todayIso,
           historyFetchedAt,
         });
@@ -348,7 +383,15 @@ export function createAlertService({
     }
   }
 
-  async function runAlertCheck({
+  async function runAlertCheck(opts) {
+    try {
+      return await runAlertCheckBody(opts);
+    } finally {
+      logEgress('alert-check');
+    }
+  }
+
+  async function runAlertCheckBody({
     refresh = true,
     deadline = null,
     isCurrent = null,
@@ -425,7 +468,7 @@ export function createAlertService({
         ensureBudget();
         const ctx = await loadEvalContext(peek, refreshed);
         await evaluateContexts([ctx], { nowIso, todayIso, settings, summary });
-        if (ctx) ctx.historySeries = null;
+        if (ctx) ctx.snap = null;
       }
       refreshed?.clear();
 
