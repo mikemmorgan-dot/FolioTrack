@@ -1,0 +1,62 @@
+# Wake the Render free-tier web service before it sleeps (~15 min idle).
+# cron-job.org disables a job after a streak of failures. This schedule does not.
+# GitHub may start the cron a few minutes late, and it turns scheduled workflows
+# off after 60 days without repo activity.
+name: Keep alive
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Ping /api/health until it returns 200
+        env:
+          # Repository variable, then secret, then the production health URL.
+          APP_URL: ${{ vars.APP_URL || secrets.APP_URL || 'https://foliotrack.onrender.com/api/health' }}
+        run: |
+          set -u
+          url="${APP_URL}"
+          url="${url%/}"
+          case "$url" in
+            */api/health) ;;
+            *) url="${url}/api/health" ;;
+          esac
+
+          # About 4 minutes of retries. Each request may wait up to 90s for a
+          # cold start. Render answers 503 until the process is listening.
+          deadline=$((SECONDS + 240))
+          attempt=0
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            attempt=$((attempt + 1))
+            code="$(curl -sS -L -o /dev/null -w '%{http_code}' --max-time 90 "$url" || true)"
+            if [ "$code" = "200" ]; then
+              echo "health ok on attempt ${attempt}"
+              exit 0
+            fi
+            echo "attempt ${attempt} not ready (http ${code:-000})"
+            case "$code" in
+              5*|408|429|000|"") ;;
+              *)
+                echo "health returned HTTP ${code}, which is not a spin-up failure"
+                exit 1
+                ;;
+            esac
+            remaining=$((deadline - SECONDS))
+            if [ "$remaining" -le 0 ]; then
+              break
+            fi
+            if [ "$remaining" -lt 15 ]; then
+              sleep "$remaining"
+            else
+              sleep 15
+            fi
+          done
+          echo "health did not return 200 within 4 minutes"
+          exit 1

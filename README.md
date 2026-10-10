@@ -95,38 +95,69 @@ through the same cache that honors provider cooldown, and it never force-refresh
 A symbol whose live fetch fails entirely is not tried again for 6 hours.
 
 ### Schedule (Render free tier sleeps)
-The process listens before it migrates the database, warms the provider cache,
-or runs the first alert check. `GET` and `HEAD /api/health` return
-`{ ok: true, uptimeSec, time }` immediately and do not touch the database or a
-price provider. The in-process timer still runs a check on startup and every
-**30 minutes** after that, but on the free tier the process sleeps after about
-15 minutes of no HTTP traffic and the timer sleeps with it.
+The process binds its port before database migration, the price-points
+backfill, provider probes, or an alert check. Nothing in startup runs before
+`app.listen`. `GET` and `HEAD /api/health` return `{ ok: true, uptimeSec, time }`
+as soon as the process is listening. That response does not touch the database
+or a price provider, so a keep-alive ping is not stuck behind boot work.
 
-Use **two** cron-job.org jobs. A single job that hits the alert check is what
-got auto-disabled: Render returns **503 while the instance is cold-starting**
-(often longer than cron-job.org’s default ~30s timeout), and a disabled job
-means alerts are not checked at all.
+On the free tier the process sleeps after about 15 minutes with no HTTP
+traffic, and the in-process alert timer sleeps with it. After a cold wake,
+that timer runs a check immediately when the last run is missing or at least
+**30 minutes** old, then every 30 minutes while the process stays awake. A
+missed external alert ping does not skip alerts. A wake that happens sooner
+than 30 minutes after the last run waits out the rest of the interval.
+
+#### GitHub Actions keep-alive (primary)
+
+`.github/workflows/keepalive.yml` requests `GET /api/health` every 10 minutes
+(`*/10 * * * *`) and can also be run by hand (`workflow_dispatch`). Each
+request uses `--max-time 90`. On HTTP 5xx or a timeout it retries every 15
+seconds for about 4 minutes, and the job fails only if health never returns
+200 in that window. A 503 while Render is spinning the instance up is
+expected and is not treated as a dead app. The workflow calls health only,
+so it does not need `ALERT_CRON_TOKEN`.
+
+The URL defaults to `https://foliotrack.onrender.com/api/health`. Set a
+repository **variable** or **secret** named `APP_URL` to override it. A value
+with no `/api/health` path is treated as the site origin and that path is
+appended. Scheduled workflows run from the default branch. GitHub can start
+them a few minutes late, and it disables the schedule after 60 days without
+repo activity.
+
+This is the keep-alive that should stay on. cron-job.org turns a job off
+after a streak of failures (this app was disabled after 26 consecutive 503s).
+A failed GitHub run does not turn the schedule off, so the next 10-minute
+run still tries to wake the service.
+
+#### cron-job.org (backup)
+
+Optional. Treat it as a backup to the GitHub workflow, not the only thing
+waking the app. Two jobs:
 
 | Job | URL | Schedule |
 |---|---|---|
 | Keep app alive | `GET https://foliotrack.onrender.com/api/health` | Every **10 minutes** |
 | Alert check | `GET https://foliotrack.onrender.com/api/alerts/check?token=YOUR_ALERT_CRON_TOKEN` | Every **30 minutes** |
 
-On both jobs:
-
-- Set the request **timeout to 60 seconds**. Health is instant once the process
-  is listening; the alert URL returns **202** as soon as the check is queued
-  and finishes the work in the background (90s budget, at most 8 price refreshes).
-- **Turn on failure notifications** so a run of failures is visible.
-- **Do not rely on auto-disable.** cron-job.org will disable a job after a
-  streak of failures (this app’s job was disabled after 26 consecutive 503s).
-  A 503 during cold start is expected — the proxy has nothing to forward to
-  until the process binds the port — and **one failure should not matter**.
-  The next keep-alive ping wakes the instance.
+On both jobs, set the request **timeout to the longest value the site allows**.
+Health is instant once the process is listening, but Render returns **503
+while the instance is cold-starting**, and a short timeout (the old default
+was about 30 seconds; cold start here is often around 20 seconds and can be
+longer) records a failure. The alert URL returns **202** as soon as the check
+is queued and finishes the work in the background (90s budget, at most 8
+price refreshes). Turn on failure notifications. A disabled cron-job.org job
+will not wake the app, which is why it is only a backup.
 
 `Authorization: Bearer YOUR_ALERT_CRON_TOKEN` works on the alert URL too. If
 `ALERT_CRON_TOKEN` is unset, `/api/alerts/check` rejects every request. Health
 does not use a token.
+
+#### Render Starter
+
+Render's **Starter** plan (and above) does not sleep. On that plan the GitHub
+keep-alive and the cron-job.org wake ping are unnecessary. The in-process
+30 minute timer still runs alerts for as long as the service is up.
 
 Set these on the Render service (Environment), then redeploy:
 
