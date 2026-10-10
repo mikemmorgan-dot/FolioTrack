@@ -96,10 +96,10 @@ A symbol whose live fetch fails entirely is not tried again for 6 hours.
 
 ### Schedule (Render free tier sleeps)
 The process binds its port before database migration, the price-points
-backfill, provider probes, or an alert check. Nothing in startup runs before
-`app.listen`. `GET` and `HEAD /api/health` return `{ ok: true, uptimeSec, time }`
-as soon as the process is listening. That response does not touch the database
-or a price provider, so a keep-alive ping is not stuck behind boot work.
+backfill, provider probes, or an alert check. `GET` and `HEAD /api/health`
+return `{ ok: true, uptimeSec, time }` as soon as the process is listening.
+That response does not touch the database or a price provider, so a keep-alive
+ping is not stuck behind boot work.
 
 On the free tier the process sleeps after about 15 minutes with no HTTP
 traffic, and the in-process alert timer sleeps with it. After a cold wake,
