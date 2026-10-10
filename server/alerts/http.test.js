@@ -3,7 +3,7 @@ import express from 'express';
 import { once } from 'node:events';
 import { createAlertRouter } from './http.js';
 import { applyAlertSettingsPatch, coerceAlertSettings } from './settings.js';
-import { startAlertScheduler, ALERT_INTERVAL_MS } from './schedule.js';
+import { startAlertScheduler, alertRunDelayMs, ALERT_INTERVAL_MS } from './schedule.js';
 import { vi } from 'vitest';
 
 function memoryStore() {
@@ -331,6 +331,51 @@ describe('alert scheduler', () => {
     await vi.advanceTimersByTimeAsync(ALERT_INTERVAL_MS);
     expect(run).toHaveBeenCalledTimes(2);
     expect(ALERT_INTERVAL_MS).toBe(30 * 60 * 1000);
+    stop();
+  });
+
+  it('runs immediately when the last run is missing or older than the interval', async () => {
+    const now = Date.parse('2026-10-10T11:00:00.000Z');
+    expect(alertRunDelayMs(null, now)).toBe(0);
+    expect(alertRunDelayMs('', now)).toBe(0);
+    expect(alertRunDelayMs('not-a-date', now)).toBe(0);
+    expect(alertRunDelayMs(new Date(now - ALERT_INTERVAL_MS).toISOString(), now)).toBe(0);
+    expect(alertRunDelayMs(new Date(now - ALERT_INTERVAL_MS - 1).toISOString(), now)).toBe(0);
+
+    vi.useFakeTimers();
+    const run = vi.fn(async () => ({ evaluated: 1, active: 0, emailed: 0, pending: 0 }));
+    const stop = startAlertScheduler({
+      run,
+      lastRunAt: new Date(now - 4 * 60 * 60 * 1000).toISOString(),
+      now: () => now,
+      logger: { log() {}, error() {} },
+    });
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    stop();
+  });
+
+  it('waits out the remainder when the last run is still inside the interval', async () => {
+    const now = Date.parse('2026-10-10T11:00:00.000Z');
+    const ageMs = 10 * 60 * 1000;
+    expect(alertRunDelayMs(new Date(now - ageMs).toISOString(), now)).toBe(ALERT_INTERVAL_MS - ageMs);
+    expect(alertRunDelayMs(new Date(now + 60 * 1000).toISOString(), now)).toBe(ALERT_INTERVAL_MS);
+
+    vi.useFakeTimers();
+    const run = vi.fn(async () => ({ evaluated: 1, active: 0, emailed: 0, pending: 0 }));
+    const stop = startAlertScheduler({
+      run,
+      lastRunAt: new Date(now - ageMs).toISOString(),
+      now: () => now,
+      logger: { log() {}, error() {} },
+    });
+    await Promise.resolve();
+    expect(run).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(ALERT_INTERVAL_MS - ageMs - 1);
+    expect(run).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(ALERT_INTERVAL_MS);
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2));
     stop();
   });
 });

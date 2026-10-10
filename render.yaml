@@ -37,7 +37,8 @@ services:
       # Optional. Defaults to: FolioTrack <onboarding@resend.dev>
       - key: ALERT_FROM
         sync: false
-      # Secret for GET/POST /api/alerts/check?token=... (cron-job.org / UptimeRobot).
-      # The free instance sleeps, so an external ping every 15–30 min is required.
+      # Secret for GET/POST /api/alerts/check?token=... (optional backup ping).
+      # The free instance sleeps. .github/workflows/keepalive.yml pings /api/health
+      # and does not use this token. Starter plan and above do not sleep.
       - key: ALERT_CRON_TOKEN
         sync: false

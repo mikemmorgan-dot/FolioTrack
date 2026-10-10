@@ -738,8 +738,9 @@ const clientDist = path.join(__dirname, '..', 'client', 'dist');
 app.use(express.static(clientDist));
 app.get('*', (_req, res) => res.sendFile(path.join(clientDist, 'index.html')));
 
-// Provider probe and the first alert check run after listen and after routes
-// are mounted. They are not awaited: a slow probe must not block startup.
+// Provider probe and the alert timer start only after the port is open and
+// routes are mounted. Neither is awaited. A slow probe must not block
+// /api/health, and it must not delay a catch-up check after a cold wake.
 void (async () => {
   if (!String(process.env.RESEND_API_KEY || '').trim()) {
     console.warn('[alerts] RESEND_API_KEY is not set — breaches will be recorded as pending - email not configured');
@@ -747,10 +748,17 @@ void (async () => {
   if (!String(process.env.ALERT_CRON_TOKEN || '').trim()) {
     console.warn('[alerts] ALERT_CRON_TOKEN is not set — /api/alerts/check will reject every request');
   }
+  // Hydrate already loaded the last run. If that run is missing or older
+  // than the interval (the process was asleep, or the external ping never
+  // arrived), check now. A recent run waits out the remainder.
+  startAlertScheduler({
+    run: () => openEgressScope('scheduler alert-check', () => alertRuns.start({ refresh: true, kind: 'check' })),
+    lastRunAt: alertRuns.status().lastRunAt,
+    logger: console,
+  });
   try {
-    // State the Yahoo verdict in the deploy log so it never has to be guessed.
-    // Probe first so its cooldowns are in place before the alert check asks
-    // the history cache for anything stale.
+    // Deploy log only. The alert check uses the same provider cooldowns and
+    // does not wait for this probe.
     const probe = await probeAll();
     console.log(`[data] ${probe.verdict}`);
     for (const r of probe.results) {
@@ -759,8 +767,4 @@ void (async () => {
   } catch (e) {
     console.error(`[boot] provider probe failed: ${e.message}`);
   }
-  startAlertScheduler({
-    run: () => openEgressScope('scheduler alert-check', () => alertRuns.start({ refresh: true, kind: 'check' })),
-    logger: console,
-  });
 })();
