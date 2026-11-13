@@ -1,0 +1,52 @@
+# OCR scanned presidential and vice-presidential OGE 278-T filings.
+# The Render service is Node and has no tesseract. This job writes trades
+# back to the same Neon database. The app's next digest emails them once.
+#
+# GitHub may start the cron a few minutes late, and it turns scheduled
+# workflows off after 60 days without repository activity.
+name: Presidential OCR
+
+on:
+  schedule:
+    - cron: '30 11 * * *'
+  workflow_dispatch:
+    inputs:
+      filing_key:
+        description: 'OGE document id to OCR again. Leave blank for the pending queue.'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: presidential-ocr
+  cancel-in-progress: false
+
+jobs:
+  ocr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install tesseract and poppler
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr poppler-utils
+
+      - name: Install server dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: OCR pending 278-T filings
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OCR_FILING_KEY: ${{ github.event.inputs.filing_key }}
+          POLITICIAN_FETCH_DELAY_MS: '1200'
+        run: node politicians/presidentialOcrCli.js

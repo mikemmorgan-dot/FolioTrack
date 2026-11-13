@@ -535,18 +535,24 @@ describe('poll dedupe', () => {
 
     const env = { ...process.env, POLITICIAN_FETCH_DELAY_MS: '0', POLITICIAN_DOCS_PER_RUN: '5', POLITICIAN_BACKFILL_YEARS: '1' };
     const now = () => new Date('2026-11-13T15:00:00Z');
+    const quiet = { log() {}, warn() {}, error() {} };
     const first = await runPoliticianPoll({
-      store, fetchImpl, email, now, sleep: async () => {}, logger: { log() {}, warn() {}, error() {} }, env,
+      store, fetchImpl, email, now, sleep: async () => {}, logger: quiet, env,
+      ocrTools: async () => false,
     });
     expect(first.digest.reason).toBe('backfill');
     expect(email.send).not.toHaveBeenCalled();
     const afterFirst = store.db.politicianTrades.length;
     expect(afterFirst).toBe(4);
     expect(store.db.politicianFilings['senate:929216d5-5dbd-429c-858c-1e9332924627'].parseStatus).toBe('needs_manual_review');
-    expect(store.db.politicianFilings['oge:0BDCCCE7DE13AEFA85258E8A002DE2B5'].parseStatus).toBe('needs_manual_review');
+    const oge = store.db.politicianFilings['oge:0BDCCCE7DE13AEFA85258E8A002DE2B5'];
+    expect(oge.parseStatus).toBe('pending_ocr');
+    expect(oge.ocrDone).toBe(false);
+    expect(calls.some((line) => line.includes('278T'))).toBe(false);
 
     await runPoliticianPoll({
-      store, fetchImpl, email, now, sleep: async () => {}, logger: { log() {}, warn() {}, error() {} }, env,
+      store, fetchImpl, email, now, sleep: async () => {}, logger: quiet, env,
+      ocrTools: async () => false,
     });
     expect(store.db.politicianTrades).toHaveLength(afterFirst);
     expect(email.send).not.toHaveBeenCalled();

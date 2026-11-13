@@ -1,5 +1,7 @@
-# Render free tier. tesseract and poppler run as child processes, one page at
-# a time, so a scanned 278-T does not load an OCR engine into the Node heap.
+# Optional Docker deploy. The live Render service stays on the Node runtime;
+# presidential 278-Ts are OCR'd by .github/workflows/presidential-ocr.yml.
+# When this image is what runs, tesseract and poppler are on PATH and the
+# app reads a scanned 278-T itself, one page at a time, outside the Node heap.
 FROM node:20-bookworm-slim
 
 RUN apt-get update \

@@ -15,6 +15,7 @@ import {
   parseHouseIndexXml,
   parseHousePtrText,
 } from './parseHouse.js';
+import { claimFresh, ocrSettled, pendingOcrResult } from './ocrPending.js';
 import { OGE_API, parseOgeApiRow } from './parseOge.js';
 import { parseSenatePtrHtml, parseSenateSearchRow, reviewPaperFiling, SENATE_BASE } from './parseSenate.js';
 import { buildFilingRecord, buildTradeRows, heldIndex, splitStateDst } from './records.js';
@@ -129,7 +130,12 @@ function todayIso(now) {
   }).format(now);
 }
 
-async function saveBundle(store, filing, parsed) {
+function reviewOf(status, record) {
+  if (status === 'needs_manual_review' || status === 'partial') return record;
+  return null;
+}
+
+export async function saveBundle(store, filing, parsed, { protectClaim = false } = {}) {
   const record = {
     ...filing,
     parseStatus: parsed.status,
@@ -141,37 +147,25 @@ async function saveBundle(store, filing, parsed) {
   const trades = buildTradeRows(record, parsed);
   const result = await store.insertPoliticianBundle(record, trades);
   if (!result.created) {
-    await store.updatePoliticianFiling(record);
+    const updated = await store.updatePoliticianFiling(record, { protectClaim });
+    if (updated?.skipped) return { created: false, trades: [], review: null, skipped: true };
     const extra = await store.insertPoliticianTrades(trades);
     return {
       created: false,
       trades: extra.inserted ? trades.slice(0, extra.inserted) : [],
-      review: parsed.status !== 'parsed' ? record : null,
+      review: reviewOf(parsed.status, record),
     };
   }
   return {
     ...result,
     trades: result.created ? trades : [],
-    review: parsed.status !== 'parsed' ? record : null,
+    review: reviewOf(parsed.status, record),
   };
 }
 
-function ocrSettled(filing, tools) {
-  if (!filing || filing.ocrDone !== true) return false;
-  if (tools && /OCR tools are not installed/.test(filing.parseNote || '')) return false;
-  return true;
-}
-
-async function readOgePdf(bytes, now) {
+export async function readOgePdf(bytes, now) {
   const tools = await ocrToolsAvailable();
-  if (!tools) {
-    return {
-      status: 'needs_manual_review',
-      trades: [],
-      note: 'Scanned 278-T. OCR tools are not installed on this host, so no rows were guessed.',
-      ocrDone: true,
-    };
-  }
+  if (!tools) return pendingOcrResult();
   const temp = await writePdfTemp(bytes);
   try {
     const result = await ocrPdfFile(temp.pdfPath, { now });
@@ -491,7 +485,7 @@ function dateSpan(rows) {
   return { oldest: dates[0] || null, newest: dates[dates.length - 1] || null };
 }
 
-async function ingestOge({ fetchImpl, store, windowStart, cap, maxPdfBytes, delayMs, sleep, deadline, logger }) {
+export async function loadOgeCandidates({ fetchImpl, windowStart, sleep, delayMs }) {
   const page0 = await ogePage(fetchImpl, 0);
   let rows = page0.data.slice();
   const span = dateSpan(page0.data);
@@ -511,75 +505,85 @@ async function ingestOge({ fetchImpl, store, windowStart, cap, maxPdfBytes, dela
     if (parsed.filedDate && parsed.filedDate < windowStart) continue;
     candidates.push(parsed);
   }
-  logger.log(`[politicians] oge index rows=${rows.length} in window=${candidates.length}`);
-  const tools = await ocrToolsAvailable();
+  return candidates;
+}
+
+const REQUEST_NOTE = 'OGE has not posted this 278-T for download. The link requests the document.';
+
+function requestParsed() {
+  return {
+    status: 'needs_manual_review',
+    trades: [],
+    note: REQUEST_NOTE,
+    ocrDone: true,
+  };
+}
+
+export async function downloadOgePdf(fetchImpl, sourceUrl, maxPdfBytes) {
+  const head = await http(fetchImpl, sourceUrl, { method: 'HEAD' });
+  const length = Number(head.headers?.get?.('content-length'));
+  if (head.status === 429 || head.status >= 500) throw new SourceHttpError('oge', head.status);
+  if (head.status === 404) {
+    return {
+      parsed: {
+        status: 'needs_manual_review',
+        trades: [],
+        note: 'OGE did not return this 278-T PDF.',
+        ocrDone: true,
+      },
+    };
+  }
+  if (Number.isFinite(length) && length > maxPdfBytes) {
+    const size = `${Math.max(1, Math.round(length / 1e6))} MB`;
+    return {
+      parsed: {
+        status: 'needs_manual_review',
+        trades: [],
+        note: `The 278-T PDF is ${size}, over the ${Math.round(maxPdfBytes / 1e6)} MB cap, so it was not OCR’d.`,
+        ocrDone: true,
+      },
+    };
+  }
+  if (head.status !== 200 && head.status !== 405) {
+    return {
+      parsed: {
+        status: 'needs_manual_review',
+        trades: [],
+        note: `OGE returned HTTP ${head.status} for this 278-T.`,
+        ocrDone: true,
+      },
+    };
+  }
+  const res = await http(fetchImpl, sourceUrl, { timeoutMs: 120_000 });
+  if (res.status === 429 || res.status >= 500) throw new SourceHttpError('oge', res.status);
+  if (res.status !== 200) {
+    return {
+      parsed: {
+        status: 'needs_manual_review',
+        trades: [],
+        note: `OGE returned HTTP ${res.status} for this 278-T.`,
+        ocrDone: true,
+      },
+    };
+  }
+  return { bytes: await readBytes(res) };
+}
+
+async function ingestOge({
+  fetchImpl, store, windowStart, cap, maxPdfBytes, delayMs, sleep, deadline, logger, tools, readPdf,
+}) {
+  const haveTools = typeof tools === 'boolean' ? tools : await ocrToolsAvailable();
+  const readPdfFn = readPdf || readOgePdf;
+  const candidates = await loadOgeCandidates({ fetchImpl, windowStart, sleep, delayMs });
+  logger.log(`[politicians] oge index in window=${candidates.length}`);
   const stored = await store.getPoliticianFilings('oge', candidates.map((c) => c.filingKey));
-  const settled = new Set(stored.filter((row) => ocrSettled(row, tools)).map((row) => row.filingKey));
+  const settled = new Set(stored.filter((row) => ocrSettled(row, haveTools)).map((row) => row.filingKey));
   const fresh = [];
   const reviews = [];
   let downloaded = 0;
   let caughtUp = true;
-  for (const candidate of candidates) {
-    if (settled.has(candidate.filingKey)) continue;
-    if (past(deadline)) {
-      caughtUp = false;
-      break;
-    }
-    let parsed;
-    if (candidate.request) {
-      parsed = {
-        status: 'needs_manual_review',
-        trades: [],
-        note: 'OGE has not posted this 278-T for download. The link requests the document.',
-        ocrDone: true,
-      };
-    } else if (downloaded >= cap) {
-      caughtUp = false;
-      break;
-    } else {
-      downloaded += 1;
-      await sleep(delayMs);
-      const head = await http(fetchImpl, candidate.sourceUrl, { method: 'HEAD' });
-      const length = Number(head.headers?.get?.('content-length'));
-      if (head.status === 429 || head.status >= 500) throw new SourceHttpError('oge', head.status);
-      if (head.status === 404) {
-        parsed = {
-          status: 'needs_manual_review',
-          trades: [],
-          note: 'OGE did not return this 278-T PDF.',
-          ocrDone: true,
-        };
-      } else if (Number.isFinite(length) && length > maxPdfBytes) {
-        const size = `${Math.max(1, Math.round(length / 1e6))} MB`;
-        parsed = {
-          status: 'needs_manual_review',
-          trades: [],
-          note: `The 278-T PDF is ${size}, over the ${Math.round(maxPdfBytes / 1e6)} MB cap, so it was not OCR’d.`,
-          ocrDone: true,
-        };
-      } else if (head.status !== 200 && head.status !== 405) {
-        parsed = {
-          status: 'needs_manual_review',
-          trades: [],
-          note: `OGE returned HTTP ${head.status} for this 278-T.`,
-          ocrDone: true,
-        };
-      } else {
-        const res = await http(fetchImpl, candidate.sourceUrl, { timeoutMs: 120_000 });
-        if (res.status === 429 || res.status >= 500) throw new SourceHttpError('oge', res.status);
-        if (res.status !== 200) {
-          parsed = {
-            status: 'needs_manual_review',
-            trades: [],
-            note: `OGE returned HTTP ${res.status} for this 278-T.`,
-            ocrDone: true,
-          };
-        } else {
-          parsed = await readOgePdf(await readBytes(res), new Date());
-          if (parsed.error) logger.warn(`[politicians] oge ${candidate.filingKey} ocr: ${parsed.error}`);
-        }
-      }
-    }
+
+  const remember = async (candidate, parsed, { protectClaim = false } = {}) => {
     const filing = buildFilingRecord({
       source: 'oge',
       filingKey: candidate.filingKey,
@@ -590,9 +594,66 @@ async function ingestOge({ fetchImpl, store, windowStart, cap, maxPdfBytes, dela
       sourceUrl: candidate.sourceUrl,
       parsed,
     });
-    const saved = await saveBundle(store, filing, parsed);
+    const saved = await saveBundle(store, filing, parsed, { protectClaim });
+    if (saved.skipped) return;
     fresh.push(...saved.trades);
     if (saved.review) reviews.push(saved.review);
+  };
+
+  for (const candidate of candidates) {
+    if (settled.has(candidate.filingKey)) continue;
+    if (past(deadline)) {
+      caughtUp = false;
+      break;
+    }
+    if (candidate.request) {
+      await remember(candidate, requestParsed());
+      continue;
+    }
+    if (!haveTools) {
+      const existing = stored.find((row) => row.filingKey === candidate.filingKey);
+      if (claimFresh(existing)) continue;
+      logger.log(`[politicians] oge ${candidate.filingKey} pending OCR (no tesseract on this host)`);
+      await remember(candidate, pendingOcrResult(), { protectClaim: true });
+      continue;
+    }
+    if (downloaded >= cap) {
+      caughtUp = false;
+      break;
+    }
+    const draft = buildFilingRecord({
+      source: 'oge',
+      filingKey: candidate.filingKey,
+      first: candidate.first,
+      last: candidate.last,
+      office: candidate.office,
+      filedDate: candidate.filedDate,
+      sourceUrl: candidate.sourceUrl,
+      parsed: { status: 'ocr_running', note: 'OCR in progress', ocrDone: false },
+    });
+    const claim = await store.claimPoliticianOcr(draft);
+    if (!claim.claimed) continue;
+    downloaded += 1;
+    await sleep(delayMs);
+    let parsed;
+    try {
+      const pdf = await downloadOgePdf(fetchImpl, candidate.sourceUrl, maxPdfBytes);
+      parsed = pdf.parsed || await readPdfFn(pdf.bytes, new Date());
+      if (parsed.error) logger.warn(`[politicians] oge ${candidate.filingKey} ocr failed`);
+    } catch (err) {
+      if (err instanceof SourceHttpError) {
+        await store.releasePoliticianOcrClaim(draft.id);
+        throw err;
+      }
+      parsed = {
+        status: 'needs_manual_review',
+        trades: [],
+        note: 'The 278-T could not be OCR’d, so no rows were guessed.',
+        ocrDone: true,
+      };
+      logger.warn(`[politicians] oge ${candidate.filingKey} ocr failed`);
+    }
+    await remember(candidate, parsed);
   }
   logger.log(`[politicians] oge downloaded=${downloaded} newTrades=${fresh.length} review=${reviews.length} caughtUp=${caughtUp}`);
   return { newTrades: fresh, newReviews: reviews, caughtUp, downloaded };
@@ -629,8 +690,11 @@ export async function runPoliticianPoll({
   env = process.env,
   deadline = null,
   force = false,
+  ocrTools = ocrToolsAvailable,
+  readPdf = null,
 } = {}) {
   const cfg = politicianConfig(env);
+  const haveTools = await ocrTools();
   const existing = await store.getPoliticianPollState();
   const backfill = existing.backfillComplete !== true;
   if (!backfill && !force) {
@@ -668,6 +732,7 @@ export async function runPoliticianPoll({
     ['oge', () => ingestOge({
       fetchImpl, store, windowStart, cap, maxPdfBytes: cfg.maxPdfBytes,
       delayMs: cfg.delayMs, sleep, deadline: stopAt, logger,
+      tools: haveTools, readPdf,
     })],
   ];
 
@@ -714,11 +779,36 @@ export async function runPoliticianPoll({
   const settings = await store.getPoliticianAlertSettings();
   let digest = { sent: false, reason: 'backfill' };
   if (alertsWereArmed && email) {
+    let pending = [];
+    try {
+      pending = await store.listDigestPendingTrades(80);
+    } catch (err) {
+      logger.error('[politicians] pending digest trades failed');
+    }
+    // Held-tickers-only must not drop the other workflow trades forever.
+    // Leave them flagged until a digest is allowed to include them.
+    let queued = pending;
+    if (settings.politicianAlertsHeldOnly && pending.length) {
+      const symbols = await store.listHeldPoliticianSymbols();
+      const held = new Set(symbols.map((row) => row.tickerNorm).filter(Boolean));
+      queued = pending.filter((trade) => (
+        trade.tickerNorm
+        && held.has(trade.tickerNorm)
+        && (trade.assetClass === 'stock' || trade.assetClass === 'etf' || trade.assetClass === 'fund')
+      ));
+    }
+    const seen = new Set();
+    const merged = [];
+    for (const trade of [...newTrades, ...queued]) {
+      if (trade?.id && seen.has(trade.id)) continue;
+      if (trade?.id) seen.add(trade.id);
+      merged.push(trade);
+    }
     try {
       digest = await sendDigest({
         store,
         email,
-        trades: newTrades,
+        trades: merged,
         reviews: newReviews,
         heldOnly: settings.politicianAlertsHeldOnly,
         enabled: settings.politicianAlertsEnabled,
@@ -727,6 +817,13 @@ export async function runPoliticianPoll({
     } catch (err) {
       digest = { sent: false, reason: err.message };
       logger.error(`[politicians] digest failed: ${err.message}`);
+    }
+    if (digest.sent && queued.length) {
+      try {
+        await store.clearDigestPending(queued.map((trade) => trade.id));
+      } catch (err) {
+        logger.error('[politicians] could not clear digest flags');
+      }
     }
   } else if (!alertsWereArmed) {
     logger.log('[politicians] digest held until the backfill window has been walked once');

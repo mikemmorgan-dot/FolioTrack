@@ -75,6 +75,7 @@ export function buildTradeRows(filing, parsed) {
       ocrConfidence: Number.isFinite(Number(trade.ocrConfidence))
         ? Math.round(Number(trade.ocrConfidence))
         : null,
+      digestPending: trade.digestPending === true,
     };
   });
 }

@@ -205,7 +205,7 @@ by OCR show an **OCR** label and the confidence.
 |---|---|---|
 | House Clerk | `{year}FD.zip` → `FD.xml` (FilingType `P` only). PDF at `/public_disc/ptr-pdfs/{year}/{DocID}.pdf`. | Machine-generated PTRs (DocIDs that start with `2`). The text layer has the asset, owner code (`SP` / `JT` / `DC` / blank = self), `P`/`S`/`E`, both dates, and a statutory range. DocIDs that start with `8` or `9` are usually scans with no text layer and stay on manual review. |
 | Senate eFD | Accept the prohibition agreement, then `POST /search/report/data/` for senator PTRs (`report_types=[11]`, `filer_types=[1]`). | Electronic reports are HTML tables (date, owner, ticker, asset, type, amount). `/search/view/paper/{uuid}/` is a scan and is not downloaded. |
-| President / Vice President | `GET https://extapps2.oge.gov/201/Presiden.nsf/API.xsp/v3/rest`. Title must be exactly President or Vice President, type 278 Transaction. | Scanned 278-T PDFs are rendered one page at a time (`pdftoppm`) and read with the `tesseract` CLI in a child process. A row is kept only when the date parses, the amount is a statutory bucket, and the type word is purchase, sale, or exchange (a single-character slip such as `purchaso` is accepted only when it cannot be another type). Low confidence or a failed check stays on review. PDFs over `POLITICIAN_MAX_PDF_BYTES` (default 32 MB) are linked and not read. The largest filing measured in Nov 2026 was about 27 MB. |
+| President / Vice President | `GET https://extapps2.oge.gov/201/Presiden.nsf/API.xsp/v3/rest`. Title must be exactly President or Vice President, type 278 Transaction. | Scanned 278-T PDFs are rendered one page at a time (`pdftoppm`) and read with the `tesseract` CLI. On the Render Node service the filing is stored as **pending OCR** and the GitHub Actions workflow below reads it. A row is kept only when the date parses, the amount is a statutory bucket, and the type word is purchase, sale, or exchange (a single-character slip such as `purchaso` is accepted only when it cannot be another type). Confidence below 60, or a failed check, is not stored. PDFs over `POLITICIAN_MAX_PDF_BYTES` (default 32 MB) are linked and not read. The largest filing measured in Nov 2026 was about 27 MB. |
 
 Party is not on the filing. House party comes from the Clerk member list
 (`clerk.house.gov/xml/lists/MemberData.xml`) and Senate party from
@@ -236,24 +236,53 @@ year (`POLITICIAN_BACKFILL_YEARS`, default 2). After that, digests go to the
 existing alert address. Turn them off, or limit them to held tickers, under
 Settings → Politician trade alerts.
 
-The image is Docker (`Dockerfile`) so Render has `tesseract` and `pdftoppm`.
-Without those binaries the rest of the app still runs and presidential scans
-stay on review. `tesseract.js` was not used: on this same page it validated
-almost no rows and held about 380MB in the Node process. The CLI is a child
-process. A measured 4-page 278-T (827KB, received Aug 2025) took **9.4
-seconds** here and moved Node RSS by about **10MB**. It kept **24** rows and
-flagged **15**. One kept row read 8/4/2025 where the page shows 8/1/2025;
-that date was not rewritten.
+Presidential 278-Ts are scans. The live Render service stays on the Node
+runtime (`foliotrack.onrender.com`), which has no `tesseract`. The app stores
+those filings as **pending OCR** and does not guess rows. Filings already
+marked needs-review because the OCR tools were missing are picked up the same
+way. House and Senate parsing is unchanged.
+
+**GitHub Actions** (`.github/workflows/presidential-ocr.yml`) runs daily at
+11:30 UTC, and when you start it by hand. The runner installs `tesseract-ocr`
+and `poppler-utils`, OCRs pending President and Vice President filings (and
+any new 278-T in the OGE index that is not stored yet), and writes trades
+back to the same Neon database. A filing is marked done so the next run skips
+it. To read one filing again, run the workflow and set `filing_key` to the
+OGE document id (the hex id in the PDF URL). Stored rows are not replaced, so
+the digest does not send them a second time.
+
+The app's next politician digest includes those new trades once. They are
+flagged when the workflow inserts them and cleared when the email sends. A
+failed send leaves the flag set.
+
+`Dockerfile` still installs `tesseract` and `poppler-utils` for a Docker
+deploy. When those binaries are on PATH the app OCRs during the poll and
+claims the filing first, so the workflow does not read it again.
+
+`tesseract.js` was not used: on a real page it validated almost no rows and
+held about 380MB in the Node process. The CLI is a child process. A measured
+4-page 278-T (827KB, received Aug 2025) took **9.4 seconds** on a dev machine
+and moved Node RSS by about **10MB**. It kept **24** rows and flagged **15**.
+One kept row read 8/4/2025 where the page shows 8/1/2025; that date was not
+rewritten. The Actions log prints seconds per filing.
+
+**One setup step.** Add a repository secret named `DATABASE_URL` with the
+same Neon connection string the Render service uses:
+
+GitHub → Settings → Secrets and variables → Actions → New repository secret.
+
+Name: `DATABASE_URL`. If the secret is missing, the job fails and prints this
+step. It does not print the URL.
 
 ### Backfill time (estimate)
 About **1,000 House PTRs** (515 in the 2025 index and 468 in the 2026 index
 checked on 13 Nov 2026) plus on the order of **several hundred** senator
 PTRs, at roughly 2 seconds each, is around an hour of downloading. Presidential
-OCR is the slower part: the CLI took about **3 seconds per page** on a normal
-CPU for a real 4-page 278-T. Render's free CPU is slower; call it around 8–15
-seconds a page. Twenty filings averaging 10 pages is on the order of an hour.
-**Estimate: about 2–4 hours of awake time** if the keep-alive stays up. A
-killed process resumes from the cursor instead of starting over.
+PDFs are not OCR'd on Render, so that work is not part of the awake time.
+**Estimate: about 1–2 hours of awake time** if the keep-alive stays up. A
+killed process resumes from the cursor instead of starting over. The Actions
+job reads the scans separately: about 3 seconds a page on a normal CPU, and
+the workflow allows 45 minutes for up to 20 filings.
 
 On the 2026 House index, **108 of 439** people on the current Clerk roster
 had at least one PTR. The other members had not filed one that year. Every
@@ -284,10 +313,14 @@ well under 20 MB** in Neon, including indexes.
 
 Reads are paged (40 rows) or aggregated (`count`, `GROUP BY ticker`). A poll
 asks only whether the filing ids it is about to download already exist. It
-does not `SELECT` the trade table. **Estimate: a daily poll is under 100 KB
-of Neon egress. A feed page is a few tens of KB.** The House zip is about
+does not `SELECT` the trade table. The OCR job reads pending filing rows
+(narrow columns, at most 20) and, on the app's next digest, the trades it
+flagged (at most 80). It does not read price history. **Estimate: a daily
+poll is under 100 KB of Neon egress, and the OCR job is a few KB plus the
+rows it writes. A feed page is a few tens of KB.** The House zip is about
 0.6 MB of ordinary HTTP, not Neon. A 278-T is downloaded once (up to 32 MB)
-and OCR'd from disk, one page at a time.
+by Actions, or by the app when the Docker image is what is running, and
+OCR'd from disk, one page at a time.
 
 No client names or account values are stored or emailed.
 

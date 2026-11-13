@@ -5,7 +5,9 @@
 // tesseract CLI plus poppler (one page at a time, in a child process) read
 // the same page well and leaves the Node heap alone, which matters in a
 // 512MB Render instance. The Docker image installs both tools. If they are
-// missing, the filing stays "needs review" and the rest of the app still runs.
+// missing, the filing stays "pending OCR" for the GitHub Actions job and
+// the rest of the app still runs. A Docker host that has both tools still
+// reads the PDF in-process.
 
 import { spawn } from 'node:child_process';
 import { access, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
