@@ -125,6 +125,14 @@ export const api = {
     const qs = p.toString();
     return j(`/api/politician-trades/people/${encodeURIComponent(personKey)}${qs ? `?${qs}` : ''}`);
   },
+  politicianSummary: (query = {}) => {
+    const p = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value != null && value !== '') p.set(key, String(value));
+    }
+    const qs = p.toString();
+    return j(`/api/politician-trades/summary${qs ? `?${qs}` : ''}`);
+  },
   politicianHeld: () => j('/api/politician-trades/held'),
   politicianStatus: () => j('/api/politician-trades/status'),
   politicianSettings: () => j('/api/politician-trades/settings'),

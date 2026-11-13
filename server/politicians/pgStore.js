@@ -4,6 +4,13 @@
 import { canonicalTicker } from './normalize.js';
 import { applyPoliticianAlertPatch, coercePoliticianAlertSettings } from './settings.js';
 import { normalizeFeedQuery } from './memoryStore.js';
+import {
+  SUMMARY_CLUSTER_SQL,
+  SUMMARY_EXCLUDED_SQL,
+  SUMMARY_RANK_SQL,
+  normalizeSummaryQuery,
+  summaryFromSql,
+} from './summary.js';
 
 function day(value) {
   if (value == null || value === '') return null;
@@ -305,6 +312,21 @@ export function installPgPolitician(Store) {
       modelKey: r.model_key,
       modelName: r.model_name,
     }));
+  };
+  Store.prototype.summarizePoliticianTrades = async function summarizePoliticianTrades(query = {}) {
+    const q = normalizeSummaryQuery(query);
+    const params = [q.from, q.to, q.filer, q.clusterMin];
+    const [ranks, clusters, excluded] = await Promise.all([
+      this.q(SUMMARY_RANK_SQL, params.slice(0, 3)),
+      this.q(SUMMARY_CLUSTER_SQL, params),
+      this.q(SUMMARY_EXCLUDED_SQL, params.slice(0, 3)),
+    ]);
+    return summaryFromSql({
+      rankRows: ranks.rows,
+      clusterRows: clusters.rows,
+      excluded: excluded.rows[0]?.n,
+      query,
+    });
   };
   Store.prototype.summarizeHeldTrades = async function summarizeHeldTrades(norms) {
     const list = (norms || []).filter(Boolean);

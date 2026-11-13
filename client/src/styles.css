@@ -796,3 +796,24 @@ a.ext { color: var(--green); text-decoration: none; }
 }
 .ptr-stat-n { display: block; font-size: 22px; color: var(--text); font-weight: 700; letter-spacing: -0.03em; }
 .ptr-top { display: flex; flex-wrap: wrap; gap: 6px; }
+.ptr-summary { margin-top: 4px; }
+.ptr-rank {
+  width: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  text-align: left; background: var(--surface); color: var(--text);
+  border: none; border-radius: 12px; padding: 12px 14px; margin: 0 0 8px; min-height: 44px;
+}
+.ptr-rank-in-card { background: transparent; padding: 0; margin: 0; }
+.ptr-rank-top { width: 100%; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; align-items: baseline; }
+.ptr-rank-ticker { font-size: 16px; font-weight: 700; letter-spacing: -0.01em; }
+.ptr-rank-amt {
+  margin-left: auto; font-size: 13px; font-weight: 700; color: var(--text); text-align: right;
+  font-variant-numeric: tabular-nums; line-height: 1.35;
+}
+.ptr-buyers { list-style: none; margin: 12px 0 0; padding: 0; }
+.ptr-buyers li { padding-top: 10px; margin-top: 10px; border-top: 1px solid var(--line); }
+.ptr-feed-toggle {
+  width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  background: var(--surface); color: var(--text); border: none; border-radius: 12px;
+  padding: 14px; margin: 8px 0 10px; font-size: 17px; font-weight: 700; min-height: 48px;
+}
+.ptr-feed-toggle span:last-child { font-size: 14px; color: var(--green); }

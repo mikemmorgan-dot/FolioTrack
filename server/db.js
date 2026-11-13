@@ -213,6 +213,11 @@ CREATE TABLE IF NOT EXISTS politician_trades (
 CREATE INDEX IF NOT EXISTS politician_trades_disclosed ON politician_trades (disclosed_date DESC, id DESC);
 CREATE INDEX IF NOT EXISTS politician_trades_person ON politician_trades (person_key, disclosed_date DESC);
 CREATE INDEX IF NOT EXISTS politician_trades_ticker ON politician_trades (ticker_norm) WHERE ticker_norm IS NOT NULL;
+-- Summary rankings and cluster buys filter this date range and side, then GROUP BY ticker.
+CREATE INDEX IF NOT EXISTS politician_trades_window
+  ON politician_trades (disclosed_date, tx_type)
+  WHERE ticker_norm IS NOT NULL;
+CREATE INDEX IF NOT EXISTS politician_filings_filed ON politician_filings (filed_date);
 ALTER TABLE politician_filings ADD COLUMN IF NOT EXISTS ocr_done boolean NOT NULL DEFAULT false;
 ALTER TABLE politician_filings ADD COLUMN IF NOT EXISTS ocr_page int;
 ALTER TABLE politician_filings ADD COLUMN IF NOT EXISTS page_count int;
