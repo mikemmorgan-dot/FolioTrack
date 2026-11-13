@@ -19,6 +19,11 @@ const SIDES = [
   { id: 'sell', label: 'Sell' },
   { id: 'exchange', label: 'Exchange' },
 ];
+const FILERS = [
+  { id: '', label: 'All' },
+  { id: 'member', label: 'Members' },
+  { id: 'candidate', label: 'Candidates' },
+];
 
 function pretty(iso) {
   if (!iso) return '—';
@@ -82,8 +87,9 @@ function TradeCard({ item, onPerson }) {
         <button type="button" className="ptr-who" onClick={() => onPerson(item.personKey)}>
           {item.personName}
         </button>
-        <div className="ptr-meta">{officeName(item.office)}{party ? ` · ${party}` : ''}</div>
+        <div className="ptr-meta">{officeName(item.office)}{party ? ` · ${party}` : ''}{item.filerStatus === 'candidate' ? ' · Candidate' : ''}</div>
         <div className="ptr-tags">
+          {item.filerStatus === 'candidate' && <span className="pill amber">Candidate</span>}
           <span className="pill amber">Needs review</span>
         </div>
         <p className="ptr-note">{item.parseNote || 'This filing could not be read. Open the source and review it by hand.'}</p>
@@ -98,13 +104,14 @@ function TradeCard({ item, onPerson }) {
         {item.personName}
       </button>
       <div className="ptr-meta">
-        {officeName(item.office)}{party ? ` · ${party}` : ''}{item.state ? ` · ${item.state}` : ''}
+        {officeName(item.office)}{party ? ` · ${party}` : ''}{item.state ? ` · ${item.state}` : ''}{item.filerStatus === 'candidate' ? ' · Candidate' : ''}
       </div>
       <div className="ptr-line">
         <span className="ptr-side">{item.ticker || 'No ticker'}</span>
         <span className="ptr-side-label">{sideName(item)}</span>
       </div>
       <div className="ptr-tags">
+        {item.filerStatus === 'candidate' && <span className="pill amber">Candidate</span>}
         {held.length > 0 && <span className="pill green">In your models</span>}
         {item.ocr && <span className="pill neutral">OCR{item.ocrConfidence != null ? ` ${item.ocrConfidence}` : ''}</span>}
       </div>
@@ -153,7 +160,7 @@ function PersonView({ personKey, onBack }) {
         {person && (
           <>
             <p className="ed-hint">
-              {officeName(person.office)}{party ? ` · ${party}` : ''}{person.state ? ` · ${person.state}` : ''}
+              {officeName(person.office)}{party ? ` · ${party}` : ''}{person.state ? ` · ${person.state}` : ''}{person.filerStatus === 'candidate' ? ' · Candidate' : ''}
             </p>
             <div className="ptr-stats">
               <div><span className="ptr-stat-n">{data.counts?.buy ?? 0}</span><span>Buys</span></div>
@@ -190,6 +197,7 @@ export default function PoliticianTrades({ onClose, initialTicker = '' }) {
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [heldOnly, setHeldOnly] = useState(false);
+  const [filer, setFiler] = useState('');
   const [offset, setOffset] = useState(0);
   const [items, setItems] = useState([]);
   const [page, setPage] = useState(null);
@@ -201,7 +209,7 @@ export default function PoliticianTrades({ onClose, initialTicker = '' }) {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshNote, setRefreshNote] = useState('');
 
-  const filters = { q, office, party, side, from, to, heldOnly: heldOnly ? '1' : '', offset, limit: 40 };
+  const filters = { q, office, party, side, filer, from, to, heldOnly: heldOnly ? '1' : '', offset, limit: 40 };
 
   useEffect(() => {
     let cancel = false;
@@ -218,7 +226,7 @@ export default function PoliticianTrades({ onClose, initialTicker = '' }) {
     return () => { cancel = true; };
     // filters is a new object every render; the fields below are the real deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, office, party, side, from, to, heldOnly, offset]);
+  }, [q, office, party, side, filer, from, to, heldOnly, offset]);
 
   useEffect(() => {
     api.politicianStatus().then(setStatus).catch(() => {});
@@ -293,13 +301,14 @@ export default function PoliticianTrades({ onClose, initialTicker = '' }) {
       </header>
       <div className="editor-body">
         <p className="ed-hint">
-          Public stock trades from current House members, senators, the President, and the Vice President.
+          Public stock trades from House members and House candidates, senators, the President, and the Vice President. House candidates stay in the feed and are labeled Candidate.
           Amounts stay the reported range. Scanned presidential filings are OCR’d one page at a time; a row that does not validate stays linked for review. An OCR label marks rows read from a scan.
         </p>
         <label className="field"><span>Search name or ticker</span>
           <input value={q} onChange={(e) => { setOffset(0); setItems([]); setQ(e.target.value); }} placeholder="Pelosi or AAPL" />
         </label>
         <ChipRow label="Office" options={OFFICES} value={office} onChange={resetAnd(setOffice)} />
+        <ChipRow label="Filer" options={FILERS} value={filer} onChange={resetAnd(setFiler)} />
         <ChipRow label="Party" options={PARTIES} value={party} onChange={resetAnd(setParty)} />
         <ChipRow label="Transaction" options={SIDES} value={side} onChange={resetAnd(setSide)} />
         <div className="ptr-dates">

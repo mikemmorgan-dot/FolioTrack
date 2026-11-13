@@ -76,7 +76,7 @@ function firstToken(value) {
 
 export function matchHouseParty(filing, roster) {
   const sd = String(filing?.stateDst || '');
-  if (!/^[A-Z]{2}\d{2}$/.test(sd)) return { party: null, state: null, district: null };
+  if (!/^[A-Z]{2}\d{2}$/.test(sd)) return { party: null, state: null, district: null, matched: false };
   const state = sd.slice(0, 2);
   const district = Number.parseInt(sd.slice(2), 10);
   const last = nameFold(filing.last);
@@ -85,8 +85,22 @@ export function matchHouseParty(filing, roster) {
   const hits = pool.length > 1 && first
     ? pool.filter((m) => m.firstFold === first)
     : pool;
-  if (hits.length !== 1) return { party: null, state, district: String(district).padStart(2, '0') };
-  return { party: hits[0].party, state, district: String(district).padStart(2, '0') };
+  if (hits.length !== 1) return { party: null, state, district: String(district).padStart(2, '0'), matched: false };
+  return { party: hits[0].party, state, district: String(district).padStart(2, '0'), matched: true };
+}
+
+const PDF_FILER_STATUS = new Set(['member', 'candidate', 'officer', 'employee']);
+
+// The PDF "Status:" line is the filing's own answer. When a scan has no
+// line, a unique Clerk roster hit (or an Hon. prefix, which the index uses
+// for sitting members whose name did not match the roster) is a member.
+// Anything else is a candidate and is kept, labeled.
+export function classifyHouseFiler({ pdfStatus = null, filing = {}, matched = false } = {}) {
+  const fromPdf = String(pdfStatus || '').trim().toLowerCase();
+  if (PDF_FILER_STATUS.has(fromPdf)) return fromPdf;
+  if (matched) return 'member';
+  if (/^hon\.?$/i.test(String(filing.prefix || '').trim())) return 'member';
+  return 'candidate';
 }
 
 export function matchSenateParty(filing, roster) {

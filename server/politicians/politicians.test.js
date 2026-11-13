@@ -11,12 +11,12 @@ import {
   politicianBucket,
 } from './memoryStore.js';
 import { canonicalTicker, tickersMatch } from './normalize.js';
-import { parseHouseIndexXml, parseHousePtrText } from './parseHouse.js';
+import { parseHouseFilerStatus, parseHouseIndexXml, parseHousePtrText } from './parseHouse.js';
 import { parseOge278Text, parseOgeApiRow } from './parseOge.js';
 import { parseSenatePtrHtml, parseSenateSearchRow } from './parseSenate.js';
 import { buildFeedFilter } from './pgStore.js';
 import { buildFilingRecord, buildTradeRows } from './records.js';
-import { matchHouseParty, parseHouseRoster } from './roster.js';
+import { classifyHouseFiler, matchHouseParty, parseHouseRoster } from './roster.js';
 import { nextPollDelayMs, politicianRunDelayMs, startPoliticianScheduler } from './schedule.js';
 import { ocrTransactionType, rowsFromOcrWords } from './ocrRows.js';
 import { readZipEntries, zipText } from './zip.js';
@@ -91,6 +91,7 @@ describe('house filings', () => {
     ]);
     expect(parsed.trades[0].asset).toMatch(/Warner Bros/);
     expect(parsed.trades[0].asset).not.toMatch(/Cash proceeds/);
+    expect(parsed.filerStatus).toBe('member');
   });
 
   it('does not treat a wrapped description as part of the asset, and leaves a non-equity without a ticker', () => {
@@ -206,6 +207,11 @@ describe('feed sql', () => {
     expect(params.some((p) => String(p).includes('\\%'))).toBe(true);
     expect(whereSql).toMatch(/office IN \('president', 'vice-president'\)/);
     expect(whereSql).toMatch(/asset_class IN \('stock', 'etf', 'fund'\)/);
+    const members = buildFeedFilter(normalizeFeedQuery({ filer: 'member' }), []);
+    expect(members.whereSql).toMatch(/filer_status IS DISTINCT FROM 'candidate'/);
+    const candidates = buildFeedFilter(normalizeFeedQuery({ filer: 'candidate' }), []);
+    expect(candidates.whereSql).toBe(`WHERE filer_status = 'candidate'`);
+    expect(buildFeedFilter(normalizeFeedQuery({}), []).whereSql).not.toMatch(/filer_status/);
   });
 });
 
@@ -299,6 +305,53 @@ describe('dedupe and feed', () => {
     expect(matchHouseParty({ last: 'Pelosi', first: 'Nancy', stateDst: 'CA11' }, roster).party).toBe('D');
     expect(matchHouseParty({ last: 'Smith', first: 'Pat', stateDst: 'CA11' }, roster).party).toBeNull();
   });
+
+  it('keeps House candidate PTRs and labels them from the form or the roster', () => {
+    expect(parseHouseFilerStatus('Status: Candidate')).toBe('candidate');
+    expect(parseHouseFilerStatus('Status: Member')).toBe('member');
+    const roster = parseHouseRoster(`
+      <member><lastname>Pelosi</lastname><firstname>Nancy</firstname><party>D</party>
+        <state postal-code="CA"></state><district>11</district></member>
+    `);
+    const seat = matchHouseParty({ last: 'Pelosi', first: 'Nancy', stateDst: 'CA11' }, roster);
+    expect(classifyHouseFiler({
+      pdfStatus: 'candidate',
+      filing: { prefix: 'Hon.' },
+      matched: seat.matched,
+    })).toBe('candidate');
+    expect(classifyHouseFiler({ pdfStatus: 'member', matched: false, filing: { prefix: '' } })).toBe('member');
+    expect(classifyHouseFiler({ matched: seat.matched, filing: { prefix: '' } })).toBe('member');
+    expect(classifyHouseFiler({ matched: false, filing: { prefix: 'Hon.' } })).toBe('member');
+    expect(classifyHouseFiler({ matched: false, filing: { prefix: '' } })).toBe('candidate');
+  });
+
+  it('filters the feed to members or candidates and defaults to all', async () => {
+    const store = memoryStore();
+    const member = buildFilingRecord({
+      source: 'house', filingKey: '2026:1', first: 'Nancy', last: 'Pelosi', office: 'house',
+      filerStatus: 'member', filedDate: '2026-11-06', sourceUrl: 'https://example.test/member',
+      parsed: { status: 'parsed' },
+    });
+    const candidate = buildFilingRecord({
+      source: 'house', filingKey: '2026:2', first: 'Ada', last: 'Lovelace', office: 'house',
+      filerStatus: 'candidate', filedDate: '2026-11-01', sourceUrl: 'https://example.test/candidate',
+      parsed: { status: 'parsed' },
+    });
+    const row = {
+      owner: 'self', ticker: 'AAPL', asset: 'Apple', assetClass: 'stock',
+      txType: 'buy', txDate: '2026-10-01', amountRange: '$1,001 - $15,000',
+    };
+    await store.insertPoliticianBundle(member, buildTradeRows(member, { trades: [row] }));
+    await store.insertPoliticianBundle(candidate, buildTradeRows(candidate, { trades: [{ ...row, txDate: '2026-09-01' }] }));
+    const all = await store.listPoliticianFeed({});
+    expect(all.total).toBe(2);
+    const members = await store.listPoliticianFeed({ filer: 'member' });
+    expect(members.items.map((item) => item.personName)).toEqual(['Nancy Pelosi']);
+    const candidates = await store.listPoliticianFeed({ filer: 'candidate' });
+    expect(candidates.items.map((item) => item.filerStatus)).toEqual(['candidate']);
+    const person = await store.getPolitician(candidate.personKey);
+    expect(person.person.filerStatus).toBe('candidate');
+  });
 });
 
 describe('digest email', () => {
@@ -325,6 +378,15 @@ describe('digest email', () => {
     expect(message.text).toMatch(/Growth/);
     expect(message.text).not.toMatch(/account/i);
     expect(message.html.match(/Source filing/g)).toHaveLength(2);
+  });
+
+  it('labels a House candidate in the digest', () => {
+    const message = buildPoliticianDigest({
+      trades: [{ ...trades[1], office: 'house', filerStatus: 'candidate', personName: 'Ada Lovelace' }],
+      heldByNorm: held,
+    });
+    expect(message.text).toMatch(/Ada Lovelace \(House, Candidate, Republican\)/);
+    expect(message.html).toMatch(/Candidate/);
   });
 
   it('drops other tickers when held-only is on, and skips an empty digest', () => {

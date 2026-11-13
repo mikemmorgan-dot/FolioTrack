@@ -15,18 +15,19 @@ function day(value) {
 const FEED_SQL = `
 SELECT kind, id, disclosed_date, person_key, person_name, office, party, state,
        owner, ticker, ticker_norm, asset, asset_class, tx_type, partial,
-       tx_date, lag_days, amount_range, source_url, parse_note, ocr, ocr_confidence
+       tx_date, lag_days, amount_range, source_url, parse_note, ocr, ocr_confidence,
+       filer_status
 FROM (
   SELECT 'trade'::text AS kind, t.id, t.disclosed_date, t.person_key, t.person_name,
          t.office, t.party, t.state, t.owner, t.ticker, t.ticker_norm, t.asset,
          t.asset_class, t.tx_type, t.partial, t.tx_date, t.lag_days, t.amount_range,
-         t.source_url, NULL::text AS parse_note, t.ocr, t.ocr_confidence
+         t.source_url, NULL::text AS parse_note, t.ocr, t.ocr_confidence, t.filer_status
   FROM politician_trades t
   UNION ALL
   SELECT 'review'::text, f.id, f.filed_date, f.person_key, f.person_name,
          f.office, f.party, f.state, NULL::text, NULL::text, NULL::text, NULL::text,
          NULL::text, NULL::text, false, NULL::date, NULL::int, NULL::text,
-         f.source_url, f.parse_note, false, NULL::int
+         f.source_url, f.parse_note, false, NULL::int, f.filer_status
   FROM politician_filings f
   WHERE f.parse_status IN ('needs_manual_review', 'partial')
 ) feed
@@ -40,6 +41,7 @@ function rowToItem(r) {
     personName: r.person_name,
     office: r.office,
     party: r.party || null,
+    filerStatus: r.filer_status || null,
     state: r.state || null,
     owner: r.owner || null,
     ticker: r.ticker || null,
@@ -74,6 +76,8 @@ export function buildFeedFilter(query, heldNorms) {
   if (query.office === 'president') where.push(`office IN ('president', 'vice-president')`);
   else if (query.office) add('office = $?', query.office);
   if (query.party) add('party = $?', query.party);
+  if (query.filer === 'candidate') where.push(`filer_status = 'candidate'`);
+  else if (query.filer === 'member') where.push(`filer_status IS DISTINCT FROM 'candidate'`);
   if (query.personKey) add('person_key = $?', query.personKey);
   if (query.from) add('disclosed_date >= $?::date', query.from);
   if (query.to) add('disclosed_date <= $?::date', query.to);
@@ -160,16 +164,16 @@ export function installPgPolitician(Store) {
       const inserted = await this.qOn(
         client,
         `INSERT INTO politician_filings (
-           id, source, filing_key, person_key, person_name, office, party, state, district,
+           id, source, filing_key, person_key, person_name, office, party, filer_status, state, district,
            filed_date, source_url, parse_status, parse_note, ocr_done, ocr_page, page_count
          ) VALUES (
-           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,$11,$12,$13,$14,$15,$16
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::date,$12,$13,$14,$15,$16,$17
          )
          ON CONFLICT (source, filing_key) DO NOTHING
          RETURNING id`,
         [
           filing.id, filing.source, filing.filingKey, filing.personKey, filing.personName,
-          filing.office, filing.party || null, filing.state || null, filing.district || null,
+          filing.office, filing.party || null, filing.filerStatus || null, filing.state || null, filing.district || null,
           filing.filedDate || null, filing.sourceUrl, filing.parseStatus, filing.parseNote || null,
           filing.ocrDone === true, filing.ocrPage ?? null, filing.pageCount ?? null,
         ],
@@ -183,14 +187,14 @@ export function installPgPolitician(Store) {
         await this.qOn(
           client,
           `INSERT INTO politician_trades (
-             id, filing_id, row_index, person_key, person_name, office, party, state,
+             id, filing_id, row_index, person_key, person_name, office, party, filer_status, state,
              owner, ticker, ticker_norm, asset, asset_class, tx_type, partial,
              tx_date, disclosed_date, lag_days, amount_range, source_url, ocr, ocr_confidence
            )
            SELECT * FROM unnest(
-             $1::text[], $2::text[], $3::int[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[],
-             $9::text[], $10::text[], $11::text[], $12::text[], $13::text[], $14::text[], $15::boolean[],
-             $16::date[], $17::date[], $18::int[], $19::text[], $20::text[], $21::boolean[], $22::int[]
+             $1::text[], $2::text[], $3::int[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[],
+             $10::text[], $11::text[], $12::text[], $13::text[], $14::text[], $15::text[], $16::boolean[],
+             $17::date[], $18::date[], $19::int[], $20::text[], $21::text[], $22::boolean[], $23::int[]
            )
            ON CONFLICT (filing_id, row_index) DO NOTHING`,
           [
@@ -201,6 +205,7 @@ export function installPgPolitician(Store) {
             col((t) => t.personName),
             col((t) => t.office),
             col((t) => t.party || null),
+            col((t) => t.filerStatus || null),
             col((t) => t.state || null),
             col((t) => t.owner),
             col((t) => t.ticker || null),
@@ -250,7 +255,8 @@ export function installPgPolitician(Store) {
   Store.prototype.updatePoliticianFiling = async function updatePoliticianFiling(filing) {
     await this.q(
       `UPDATE politician_filings
-       SET parse_status = $2, parse_note = $3, ocr_done = $4, ocr_page = $5, page_count = $6
+       SET parse_status = $2, parse_note = $3, ocr_done = $4, ocr_page = $5, page_count = $6,
+           filer_status = $7
        WHERE id = $1`,
       [
         filing.id,
@@ -259,6 +265,7 @@ export function installPgPolitician(Store) {
         filing.ocrDone === true,
         filing.ocrPage ?? null,
         filing.pageCount ?? null,
+        filing.filerStatus || null,
       ],
     );
     return filing;
@@ -268,19 +275,19 @@ export function installPgPolitician(Store) {
     const col = (fn) => trades.map(fn);
     const result = await this.q(
       `INSERT INTO politician_trades (
-         id, filing_id, row_index, person_key, person_name, office, party, state,
+         id, filing_id, row_index, person_key, person_name, office, party, filer_status, state,
          owner, ticker, ticker_norm, asset, asset_class, tx_type, partial,
          tx_date, disclosed_date, lag_days, amount_range, source_url, ocr, ocr_confidence
        )
        SELECT * FROM unnest(
-         $1::text[], $2::text[], $3::int[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[],
-         $9::text[], $10::text[], $11::text[], $12::text[], $13::text[], $14::text[], $15::boolean[],
-         $16::date[], $17::date[], $18::int[], $19::text[], $20::text[], $21::boolean[], $22::int[]
+         $1::text[], $2::text[], $3::int[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[],
+         $10::text[], $11::text[], $12::text[], $13::text[], $14::text[], $15::text[], $16::boolean[],
+         $17::date[], $18::date[], $19::int[], $20::text[], $21::text[], $22::boolean[], $23::int[]
        )
        ON CONFLICT (filing_id, row_index) DO NOTHING`,
       [
         col((t) => t.id), col((t) => t.filingId), col((t) => t.rowIndex), col((t) => t.personKey),
-        col((t) => t.personName), col((t) => t.office), col((t) => t.party || null), col((t) => t.state || null),
+        col((t) => t.personName), col((t) => t.office), col((t) => t.party || null), col((t) => t.filerStatus || null), col((t) => t.state || null),
         col((t) => t.owner), col((t) => t.ticker || null), col((t) => t.tickerNorm || null), col((t) => t.asset),
         col((t) => t.assetClass), col((t) => t.txType), col((t) => t.partial === true),
         col((t) => t.txDate || null), col((t) => t.disclosedDate || null),
@@ -344,7 +351,7 @@ export function installPgPolitician(Store) {
   };
   Store.prototype.getPolitician = async function getPolitician(personKey, query = {}) {
     const { rows } = await this.q(
-      `SELECT person_name, office, party, state
+      `SELECT person_name, office, party, state, filer_status
        FROM politician_filings
        WHERE person_key = $1
        ORDER BY filed_date DESC NULLS LAST
@@ -379,6 +386,7 @@ export function installPgPolitician(Store) {
         personName: rows[0].person_name,
         office: rows[0].office,
         party: rows[0].party || null,
+        filerStatus: rows[0].filer_status || null,
         state: rows[0].state || null,
       },
       counts: {

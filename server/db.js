@@ -168,6 +168,7 @@ CREATE TABLE IF NOT EXISTS politician_filings (
   person_name text NOT NULL,
   office text NOT NULL,
   party text,
+  filer_status text,
   state text,
   district text,
   filed_date date,
@@ -190,6 +191,7 @@ CREATE TABLE IF NOT EXISTS politician_trades (
   person_name text NOT NULL,
   office text NOT NULL,
   party text,
+  filer_status text,
   state text,
   owner text NOT NULL,
   ticker text,
@@ -216,6 +218,8 @@ ALTER TABLE politician_filings ADD COLUMN IF NOT EXISTS ocr_page int;
 ALTER TABLE politician_filings ADD COLUMN IF NOT EXISTS page_count int;
 ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS ocr boolean NOT NULL DEFAULT false;
 ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS ocr_confidence int;
+ALTER TABLE politician_filings ADD COLUMN IF NOT EXISTS filer_status text;
+ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS filer_status text;
 `;
 
 export async function initSchema(pool) {

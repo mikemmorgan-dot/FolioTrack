@@ -18,7 +18,7 @@ import {
 import { OGE_API, parseOgeApiRow } from './parseOge.js';
 import { parseSenatePtrHtml, parseSenateSearchRow, reviewPaperFiling, SENATE_BASE } from './parseSenate.js';
 import { buildFilingRecord, buildTradeRows, heldIndex, splitStateDst } from './records.js';
-import { matchHouseParty, matchSenateParty, parseHouseRoster, parseSenateRoster } from './roster.js';
+import { classifyHouseFiler, matchHouseParty, matchSenateParty, parseHouseRoster, parseSenateRoster } from './roster.js';
 import { readZipEntries, zipText } from './zip.js';
 import { buildPoliticianDigest } from './digest.js';
 
@@ -300,6 +300,11 @@ async function ingestHouse({ fetchImpl, store, roster, years, cap, delayMs, slee
       last: candidate.last,
       office: 'house',
       party: party.party,
+      filerStatus: classifyHouseFiler({
+        pdfStatus: parsed.filerStatus,
+        filing: candidate,
+        matched: party.matched === true,
+      }),
       state: party.state || where.state,
       district: party.district || where.district,
       filedDate: candidate.filedDate,

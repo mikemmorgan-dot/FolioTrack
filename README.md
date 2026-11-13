@@ -185,9 +185,10 @@ in over 2 hours. The header menu shows a red dot while any holding is breached.
 Menu → **Politician trades**. The feed lists filings newest disclosure first.
 Open a name for that filer's trades, buy and sell counts, and most-traded
 tickers. Coverage is every House PTR in the Clerk index for the backfill
-window (the complete list, so a current member who filed is included), every
-Senate eFD PTR from a senator, and OGE 278-T reports whose title is exactly
-President or Vice President. A holding in the **current** model version gets
+window (sitting members and candidates), every Senate eFD PTR from a senator,
+and OGE 278-T reports whose title is exactly President or Vice President.
+The feed filter is **Members / Candidates / All**, and All is the default.
+A holding in the **current** model version gets
 a badge when a parsed stock, ETF, or mutual-fund trade uses that ticker.
 `.TO` / `.V` names do not match a US listing of the same company.
 
@@ -260,6 +261,17 @@ FilingType `P` row is still stored, so a member who did file is not dropped
 because of a name mismatch. The Senate pull is `filer_types=[1]` (senators,
 not candidates or former senators). There are 100 senators on the Senate
 contact list.
+
+House candidate PTRs are kept and labeled. Each filing and trade stores
+`filer_status` (`member`, `candidate`, `officer`, or `employee`). The PTR
+header line `Status: Member` or `Status: Candidate` wins. When a scan has no
+status line, a unique Clerk roster match (last name, state, and district,
+plus first name when more than one person shares the seat) is a member, and
+so is an `Hon.` prefix (the index uses that for sitting members whose name
+did not match the roster). A House PTR with none of those is a candidate.
+The **Candidate** label is on the feed card, the per-person page, and the
+digest. Senators, the President, and the Vice President are stored as
+members. The Members filter is everyone who is not labeled Candidate.
 
 Options, crypto, and bonds are stored and shown. They do not light up a
 model holding. Spouse, joint, and child trades are included and labeled.

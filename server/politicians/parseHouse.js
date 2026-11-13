@@ -176,13 +176,21 @@ function finishRow(raw) {
   };
 }
 
+export function parseHouseFilerStatus(text) {
+  const flat = String(text || '').replace(/\u0000/g, ' ');
+  const match = flat.match(/Status:\s*(Member|Candidate|Officer|Employee)\b/i);
+  return match ? match[1].toLowerCase() : null;
+}
+
 export function parseHousePtrText(text) {
   const cleaned = cleanPdfText(text);
   const lines = cleaned.split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const filerStatus = parseHouseFilerStatus(text);
   if (!lines.length) {
     return {
       status: 'needs_manual_review',
       trades: [],
+      filerStatus,
       note: 'No text layer. The filing looks scanned and was not guessed.',
     };
   }
@@ -250,6 +258,7 @@ export function parseHousePtrText(text) {
     return {
       status: 'needs_manual_review',
       trades: [],
+      filerStatus,
       note: sawStart
         ? 'A transaction table was present but no row had a reliable date, type, and amount range.'
         : 'Filing text did not contain a readable transaction table.',
@@ -258,6 +267,7 @@ export function parseHousePtrText(text) {
   return {
     status: 'parsed',
     trades: rows,
+    filerStatus,
     note: dropped ? `${dropped} row${dropped === 1 ? '' : 's'} skipped because the amount or date was not readable.` : null,
   };
 }

@@ -43,7 +43,8 @@ export function normalizeFeedQuery(query = {}) {
   const to = dayOk(query.to) ? query.to : '';
   const personKey = String(query.personKey || '').trim().slice(0, 120);
   const heldOnly = query.heldOnly === true || query.heldOnly === '1';
-  return { limit, offset, office, party, side, q, ticker, from, to, personKey, heldOnly };
+  const filer = query.filer === 'member' || query.filer === 'candidate' ? query.filer : '';
+  return { limit, offset, office, party, side, q, ticker, from, to, personKey, heldOnly, filer };
 }
 
 function officeOk(rowOffice, filter) {
@@ -58,6 +59,8 @@ export function filterFeedRows(rows, query, heldNorms = null) {
   return rows.filter((row) => {
     if (!officeOk(row.office, query.office)) return false;
     if (query.party && row.party !== query.party) return false;
+    if (query.filer === 'candidate' && row.filerStatus !== 'candidate') return false;
+    if (query.filer === 'member' && row.filerStatus === 'candidate') return false;
     if (query.personKey && row.personKey !== query.personKey) return false;
     if (query.from && (!row.disclosedDate || row.disclosedDate < query.from)) return false;
     if (query.to && (!row.disclosedDate || row.disclosedDate > query.to)) return false;
@@ -124,6 +127,7 @@ function feedRows(db) {
       personName: f.personName,
       office: f.office,
       party: f.party || null,
+      filerStatus: f.filerStatus || null,
       state: f.state || null,
       owner: null,
       ticker: null,
@@ -220,6 +224,11 @@ export const memoryMethods = {
     const filing = Object.values(db.politicianFilings).find((f) => f.personKey === personKey);
     if (!trades.length && !filing) return null;
     const sample = trades[0] || filing;
+    const dated = [
+      ...trades.map((t) => ({ status: t.filerStatus, date: t.disclosedDate || '' })),
+      ...(filing ? [{ status: filing.filerStatus, date: filing.filedDate || '' }] : []),
+    ].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    const filerStatus = dated.find((row) => row.status)?.status || null;
     const counts = { buy: 0, sell: 0, exchange: 0, trades: trades.length };
     const byTicker = new Map();
     for (const trade of trades) {
@@ -244,6 +253,7 @@ export const memoryMethods = {
         personName: sample.personName,
         office: sample.office,
         party: sample.party || null,
+        filerStatus,
         state: sample.state || null,
       },
       counts,

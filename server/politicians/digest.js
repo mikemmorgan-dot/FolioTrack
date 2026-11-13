@@ -12,10 +12,15 @@ function modelsFor(trade, heldByNorm) {
   return heldByNorm.get(trade.tickerNorm) || [];
 }
 
+function candidateTag(row) {
+  return row?.filerStatus === 'candidate' ? 'Candidate' : '';
+}
+
 function lineFor(trade) {
   const who = trade.personName || 'Unknown';
   const office = officeLabel(trade.office);
   const party = partyLabel(trade.party);
+  const candidate = candidateTag(trade);
   const side = txLabel(trade.txType, trade.partial);
   const ticker = trade.ticker || '—';
   const when = trade.txDate || '—';
@@ -24,7 +29,7 @@ function lineFor(trade) {
   const models = (trade.heldModels || []).map((m) => m.name || m.key).filter(Boolean);
   const held = models.length ? `In your models: ${models.join(', ')}` : '';
   return [
-    `${who} (${office}${party ? `, ${party}` : ''}) ${side} ${ticker}`,
+    `${who} (${office}${candidate ? `, ${candidate}` : ''}${party ? `, ${party}` : ''}) ${side} ${ticker}`,
     trade.asset || '',
     `${ownerLabel(trade.owner)} · ${trade.amountRange || '—'}`,
     `Traded ${when} · disclosed ${disclosed} · lag ${lag}`,
@@ -78,7 +83,8 @@ export function buildPoliticianDigest({
   if (reviewRows.length) {
     textParts.push('Needs manual review (no amounts were guessed)', '');
     for (const row of reviewRows) {
-      textParts.push(`${row.personName || 'Unknown'} (${officeLabel(row.office)}) ${row.filedDate || ''}`);
+      const candidate = candidateTag(row);
+      textParts.push(`${row.personName || 'Unknown'} (${officeLabel(row.office)}${candidate ? `, ${candidate}` : ''}) ${row.filedDate || ''}`);
       if (row.parseNote) textParts.push(row.parseNote);
       if (row.sourceUrl) textParts.push(row.sourceUrl);
       textParts.push('');
@@ -88,7 +94,7 @@ export function buildPoliticianDigest({
   const text = textParts.join('\n');
 
   const itemHtml = (trade) => `<li style="margin:0 0 12px">
-    <div><strong>${escapeHtml(trade.personName || 'Unknown')}</strong> · ${escapeHtml(officeLabel(trade.office))}${partyLabel(trade.party) ? ` · ${escapeHtml(partyLabel(trade.party))}` : ''}</div>
+    <div><strong>${escapeHtml(trade.personName || 'Unknown')}</strong> · ${escapeHtml(officeLabel(trade.office))}${candidateTag(trade) ? ` · ${escapeHtml(candidateTag(trade))}` : ''}${partyLabel(trade.party) ? ` · ${escapeHtml(partyLabel(trade.party))}` : ''}</div>
     <div>${escapeHtml(txLabel(trade.txType, trade.partial))} ${escapeHtml(trade.ticker || '—')}${trade.heldModels.length ? ` · <strong>In your models: ${escapeHtml(trade.heldModels.map((m) => m.name || m.key).join(', '))}</strong>` : ''}</div>
     <div>${escapeHtml(trade.asset || '')}</div>
     <div>${escapeHtml(ownerLabel(trade.owner))} · ${escapeHtml(trade.amountRange || '—')}</div>
@@ -102,7 +108,7 @@ export function buildPoliticianDigest({
 ${held.length ? `<h3 style="margin:16px 0 8px">In your models</h3><ul style="padding-left:18px">${visible.filter((t) => t.heldModels.length).map(itemHtml).join('')}</ul>` : ''}
 ${others.length ? `<h3 style="margin:16px 0 8px">${held.length ? 'Other new trades' : 'New trades'}</h3><ul style="padding-left:18px">${others.map(itemHtml).join('')}</ul>` : ''}
 ${extra ? `<p>+ ${extra} more in FolioTrack</p>` : ''}
-${reviewRows.length ? `<h3 style="margin:16px 0 8px">Needs manual review</h3><ul style="padding-left:18px">${reviewRows.map((row) => `<li style="margin:0 0 10px"><div><strong>${escapeHtml(row.personName || 'Unknown')}</strong> · ${escapeHtml(officeLabel(row.office))}</div><div>${escapeHtml(row.parseNote || 'Open the filing. Amounts were not guessed.')}</div>${row.sourceUrl ? `<div><a href="${escapeHtml(row.sourceUrl)}">Source filing</a></div>` : ''}</li>`).join('')}</ul>` : ''}
+${reviewRows.length ? `<h3 style="margin:16px 0 8px">Needs manual review</h3><ul style="padding-left:18px">${reviewRows.map((row) => `<li style="margin:0 0 10px"><div><strong>${escapeHtml(row.personName || 'Unknown')}</strong> · ${escapeHtml(officeLabel(row.office))}${candidateTag(row) ? ` · ${escapeHtml(candidateTag(row))}` : ''}</div><div>${escapeHtml(row.parseNote || 'Open the filing. Amounts were not guessed.')}</div>${row.sourceUrl ? `<div><a href="${escapeHtml(row.sourceUrl)}">Source filing</a></div>` : ''}</li>`).join('')}</ul>` : ''}
 <p><a href="${escapeHtml(appUrl)}">Open FolioTrack</a></p>
 </body></html>`;
 
