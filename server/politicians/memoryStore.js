@@ -4,6 +4,12 @@
 
 import { currentVersionOf } from '../util.js';
 import { canonicalTicker, matchableAssetClass } from './normalize.js';
+import {
+  OCR_CLAIM_MS,
+  PENDING_OCR_NOTE,
+  claimFresh,
+  filingNeedsPresidentialOcr,
+} from './ocrPending.js';
 import { applyPoliticianAlertPatch, coercePoliticianAlertSettings } from './settings.js';
 import { aggregateSummary } from './summary.js';
 
@@ -144,7 +150,10 @@ function feedRows(db) {
       sourceUrl: f.sourceUrl,
       parseNote: f.parseNote || null,
     }));
-  const trades = db.politicianTrades.map((t) => ({ kind: 'trade', ...t }));
+  const trades = db.politicianTrades.map((t) => {
+    const { digestPending, ...rest } = t;
+    return { kind: 'trade', ...rest };
+  });
   return [...trades, ...reviews];
 }
 
@@ -195,12 +204,74 @@ export const memoryMethods = {
     const want = new Set(keys || []);
     return [...want].map((key) => this.db.politicianFilings[filingId(source, key)]).filter(Boolean);
   },
-  async updatePoliticianFiling(filing) {
+  async updatePoliticianFiling(filing, { protectClaim = false, nowMs = Date.now() } = {}) {
     const row = this.db.politicianFilings[filing.id];
     if (!row) return null;
+    if (protectClaim && claimFresh(row, nowMs)) return { skipped: true };
     Object.assign(row, filing);
     this.persist();
     return row;
+  },
+  async claimPoliticianOcr(filing, { force = false, now = new Date(), staleMs = OCR_CLAIM_MS } = {}) {
+    const id = filing.id || filingId(filing.source, filing.filingKey);
+    const nowMs = now instanceof Date ? now.getTime() : Date.parse(now);
+    const stamp = new Date(nowMs).toISOString();
+    const existing = this.db.politicianFilings[id];
+    const claimable = !existing || force || filingNeedsPresidentialOcr(
+      { ...existing, ocrClaimedAt: existing.ocrClaimedAt },
+      nowMs,
+    ) || (existing.ocrDone !== true && existing.parseStatus !== 'ocr_running');
+    if (existing && !claimable) return { claimed: false, id };
+    const row = existing || { ...filing, id };
+    row.parseStatus = 'ocr_running';
+    row.parseNote = 'OCR in progress';
+    row.ocrDone = false;
+    row.ocrClaimedAt = stamp;
+    this.db.politicianFilings[id] = row;
+    this.persist();
+    return { claimed: true, id, created: !existing };
+  },
+  async releasePoliticianOcrClaim(id) {
+    const row = this.db.politicianFilings[id];
+    if (!row || row.parseStatus !== 'ocr_running') return false;
+    row.parseStatus = 'pending_ocr';
+    row.parseNote = PENDING_OCR_NOTE;
+    row.ocrDone = false;
+    row.ocrClaimedAt = null;
+    this.persist();
+    return true;
+  },
+  async listPendingPresidentialFilings({ limit = 20, now = new Date() } = {}) {
+    const nowMs = now instanceof Date ? now.getTime() : Date.parse(now);
+    return Object.values(this.db.politicianFilings)
+      .filter((row) => filingNeedsPresidentialOcr(row, nowMs))
+      .sort((a, b) => String(b.filedDate || '').localeCompare(String(a.filedDate || ''))
+        || String(a.filingKey).localeCompare(String(b.filingKey)))
+      .slice(0, limit);
+  },
+  async getPresidentialFiling(filingKey) {
+    return this.db.politicianFilings[filingId('oge', filingKey)] || null;
+  },
+  async listDigestPendingTrades(limit = 80) {
+    return (this.db.politicianTrades || [])
+      .filter((trade) => trade.digestPending === true)
+      .sort((a, b) => String(b.disclosedDate || '').localeCompare(String(a.disclosedDate || ''))
+        || String(b.id).localeCompare(String(a.id)))
+      .slice(0, limit)
+      .map((trade) => ({ ...trade }));
+  },
+  async clearDigestPending(ids = []) {
+    const want = new Set(ids || []);
+    if (!want.size) return 0;
+    let cleared = 0;
+    for (const trade of this.db.politicianTrades || []) {
+      if (want.has(trade.id) && trade.digestPending) {
+        trade.digestPending = false;
+        cleared += 1;
+      }
+    }
+    if (cleared) this.persist();
+    return cleared;
   },
   async insertPoliticianTrades(trades = []) {
     const have = new Set((this.db.politicianTrades || []).map((t) => t.id));

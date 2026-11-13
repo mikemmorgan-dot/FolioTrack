@@ -2,6 +2,7 @@
 // for the filing keys it is about to download, not for every stored trade.
 
 import { canonicalTicker } from './normalize.js';
+import { OCR_CLAIM_MS, PENDING_OCR_NOTE } from './ocrPending.js';
 import { applyPoliticianAlertPatch, coercePoliticianAlertSettings } from './settings.js';
 import { normalizeFeedQuery } from './memoryStore.js';
 import {
@@ -17,6 +18,42 @@ function day(value) {
   if (value instanceof Date) return value.toISOString().slice(0, 10);
   const s = String(value);
   return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : null;
+}
+
+function isoTs(value) {
+  if (value == null || value === '') return null;
+  if (value instanceof Date) return value.toISOString();
+  const t = Date.parse(value);
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+}
+
+const FILING_COLUMNS = `
+  id, source, filing_key, person_key, person_name, office, party, filer_status,
+  state, district, filed_date, source_url, parse_status, parse_note,
+  ocr_done, ocr_page, page_count, ocr_claimed_at
+`;
+
+function rowToFiling(r) {
+  return {
+    id: r.id,
+    source: r.source,
+    filingKey: r.filing_key,
+    personKey: r.person_key,
+    personName: r.person_name,
+    office: r.office,
+    party: r.party || null,
+    filerStatus: r.filer_status || null,
+    state: r.state || null,
+    district: r.district || null,
+    filedDate: day(r.filed_date),
+    sourceUrl: r.source_url,
+    parseStatus: r.parse_status,
+    parseNote: r.parse_note || null,
+    ocrDone: r.ocr_done === true,
+    ocrPage: r.ocr_page,
+    pageCount: r.page_count,
+    ocrClaimedAt: isoTs(r.ocr_claimed_at),
+  };
 }
 
 const FEED_SQL = `
@@ -196,12 +233,14 @@ export function installPgPolitician(Store) {
           `INSERT INTO politician_trades (
              id, filing_id, row_index, person_key, person_name, office, party, filer_status, state,
              owner, ticker, ticker_norm, asset, asset_class, tx_type, partial,
-             tx_date, disclosed_date, lag_days, amount_range, source_url, ocr, ocr_confidence
+             tx_date, disclosed_date, lag_days, amount_range, source_url, ocr, ocr_confidence,
+             digest_pending
            )
            SELECT * FROM unnest(
              $1::text[], $2::text[], $3::int[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[],
              $10::text[], $11::text[], $12::text[], $13::text[], $14::text[], $15::text[], $16::boolean[],
-             $17::date[], $18::date[], $19::int[], $20::text[], $21::text[], $22::boolean[], $23::int[]
+             $17::date[], $18::date[], $19::int[], $20::text[], $21::text[], $22::boolean[], $23::int[],
+             $24::boolean[]
            )
            ON CONFLICT (filing_id, row_index) DO NOTHING`,
           [
@@ -228,6 +267,7 @@ export function installPgPolitician(Store) {
             col((t) => t.sourceUrl),
             col((t) => t.ocr === true),
             col((t) => (t.ocrConfidence == null ? null : t.ocrConfidence)),
+            col((t) => t.digestPending === true),
           ],
         );
       }
@@ -243,7 +283,8 @@ export function installPgPolitician(Store) {
   Store.prototype.getPoliticianFilings = async function getPoliticianFilings(source, keys) {
     if (!keys?.length) return [];
     const { rows } = await this.q(
-      `SELECT id, source, filing_key, parse_status, parse_note, ocr_done, ocr_page, page_count, source_url
+      `SELECT id, source, filing_key, parse_status, parse_note, ocr_done, ocr_page, page_count,
+              source_url, ocr_claimed_at
        FROM politician_filings WHERE source = $1 AND filing_key = ANY($2::text[])`,
       [source, keys],
     );
@@ -257,14 +298,22 @@ export function installPgPolitician(Store) {
       ocrPage: r.ocr_page,
       pageCount: r.page_count,
       sourceUrl: r.source_url,
+      ocrClaimedAt: isoTs(r.ocr_claimed_at),
     }));
   };
-  Store.prototype.updatePoliticianFiling = async function updatePoliticianFiling(filing) {
-    await this.q(
+  Store.prototype.updatePoliticianFiling = async function updatePoliticianFiling(filing, { protectClaim = false } = {}) {
+    const staleBefore = new Date(Date.now() - OCR_CLAIM_MS).toISOString();
+    const result = await this.q(
       `UPDATE politician_filings
        SET parse_status = $2, parse_note = $3, ocr_done = $4, ocr_page = $5, page_count = $6,
            filer_status = $7
-       WHERE id = $1`,
+       WHERE id = $1
+         AND (
+           $8::boolean = false
+           OR parse_status IS DISTINCT FROM 'ocr_running'
+           OR ocr_claimed_at IS NULL
+           OR ocr_claimed_at < $9::timestamptz
+         )`,
       [
         filing.id,
         filing.parseStatus,
@@ -273,9 +322,133 @@ export function installPgPolitician(Store) {
         filing.ocrPage ?? null,
         filing.pageCount ?? null,
         filing.filerStatus || null,
+        protectClaim === true,
+        staleBefore,
       ],
     );
+    if (protectClaim && !result.rowCount) return { skipped: true };
     return filing;
+  };
+  Store.prototype.claimPoliticianOcr = async function claimPoliticianOcr(filing, { force = false, now = new Date(), staleMs = OCR_CLAIM_MS } = {}) {
+    const claimedAt = (now instanceof Date ? now : new Date(now)).toISOString();
+    const staleBefore = new Date(Date.parse(claimedAt) - staleMs).toISOString();
+    const updated = await this.q(
+      `UPDATE politician_filings
+       SET parse_status = 'ocr_running', parse_note = $1, ocr_claimed_at = $2::timestamptz, ocr_done = false
+       WHERE source = $3 AND filing_key = $4
+         AND (
+           $5::boolean
+           OR parse_status = 'pending_ocr'
+           OR (parse_status = 'ocr_running' AND (ocr_claimed_at IS NULL OR ocr_claimed_at < $6::timestamptz))
+           OR (ocr_done = true AND COALESCE(parse_note, '') ILIKE '%OCR tools are not installed%')
+           OR (ocr_done = false AND parse_status IS DISTINCT FROM 'ocr_running')
+         )
+       RETURNING id`,
+      ['OCR in progress', claimedAt, filing.source, filing.filingKey, force === true, staleBefore],
+    );
+    if (updated.rows.length) return { claimed: true, id: updated.rows[0].id };
+    const inserted = await this.q(
+      `INSERT INTO politician_filings (
+         id, source, filing_key, person_key, person_name, office, party, filer_status, state, district,
+         filed_date, source_url, parse_status, parse_note, ocr_done, ocr_claimed_at
+       ) VALUES (
+         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::date,$12,'ocr_running',$13,false,$14::timestamptz
+       )
+       ON CONFLICT (source, filing_key) DO NOTHING
+       RETURNING id`,
+      [
+        filing.id, filing.source, filing.filingKey, filing.personKey, filing.personName,
+        filing.office, filing.party || null, filing.filerStatus || null, filing.state || null, filing.district || null,
+        filing.filedDate || null, filing.sourceUrl, 'OCR in progress', claimedAt,
+      ],
+    );
+    if (inserted.rows.length) return { claimed: true, id: inserted.rows[0].id, created: true };
+    return { claimed: false, id: filing.id };
+  };
+  Store.prototype.releasePoliticianOcrClaim = async function releasePoliticianOcrClaim(id) {
+    const result = await this.q(
+      `UPDATE politician_filings
+       SET parse_status = 'pending_ocr', parse_note = $2, ocr_done = false, ocr_claimed_at = NULL
+       WHERE id = $1 AND parse_status = 'ocr_running'`,
+      [id, PENDING_OCR_NOTE],
+    );
+    return (result.rowCount || 0) > 0;
+  };
+  Store.prototype.listPendingPresidentialFilings = async function listPendingPresidentialFilings({ limit = 20, now = new Date() } = {}) {
+    const staleBefore = new Date((now instanceof Date ? now.getTime() : Date.parse(now)) - OCR_CLAIM_MS).toISOString();
+    const cap = Math.min(20, Math.max(1, Number(limit) || 20));
+    const { rows } = await this.q(
+      `SELECT ${FILING_COLUMNS}
+       FROM politician_filings
+       WHERE source = 'oge'
+         AND office IN ('president', 'vice-president')
+         AND (source_url ILIKE '%$FILE%' OR source_url ILIKE '%24FILE%')
+         AND (
+           parse_status = 'pending_ocr'
+           OR (parse_status = 'ocr_running' AND (ocr_claimed_at IS NULL OR ocr_claimed_at < $1::timestamptz))
+           OR (ocr_done = true AND COALESCE(parse_note, '') ILIKE '%OCR tools are not installed%')
+         )
+       ORDER BY filed_date DESC NULLS LAST, filing_key
+       LIMIT $2`,
+      [staleBefore, cap],
+    );
+    return rows.map(rowToFiling);
+  };
+  Store.prototype.getPresidentialFiling = async function getPresidentialFiling(filingKey) {
+    const { rows } = await this.q(
+      `SELECT ${FILING_COLUMNS}
+       FROM politician_filings
+       WHERE source = 'oge' AND filing_key = $1`,
+      [filingKey],
+    );
+    return rows[0] ? rowToFiling(rows[0]) : null;
+  };
+  Store.prototype.listDigestPendingTrades = async function listDigestPendingTrades(limit = 80) {
+    const cap = Math.min(80, Math.max(1, Number(limit) || 80));
+    const { rows } = await this.q(
+      `SELECT id, person_key, person_name, office, party, filer_status, state,
+              owner, ticker, ticker_norm, asset, asset_class, tx_type, partial,
+              tx_date, disclosed_date, lag_days, amount_range, source_url, filing_id
+       FROM politician_trades
+       WHERE digest_pending
+       ORDER BY disclosed_date DESC NULLS LAST, id DESC
+       LIMIT $1`,
+      [cap],
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      filingId: r.filing_id,
+      personKey: r.person_key,
+      personName: r.person_name,
+      office: r.office,
+      party: r.party || null,
+      filerStatus: r.filer_status || null,
+      state: r.state || null,
+      owner: r.owner,
+      ticker: r.ticker || null,
+      tickerNorm: r.ticker_norm || null,
+      asset: r.asset,
+      assetClass: r.asset_class,
+      txType: r.tx_type,
+      partial: r.partial === true,
+      txDate: day(r.tx_date),
+      disclosedDate: day(r.disclosed_date),
+      lagDays: r.lag_days == null ? null : Number(r.lag_days),
+      amountRange: r.amount_range,
+      sourceUrl: r.source_url,
+      digestPending: true,
+    }));
+  };
+  Store.prototype.clearDigestPending = async function clearDigestPending(ids = []) {
+    const list = (ids || []).filter(Boolean);
+    if (!list.length) return 0;
+    const result = await this.q(
+      `UPDATE politician_trades
+       SET digest_pending = false
+       WHERE digest_pending AND id = ANY($1::text[])`,
+      [list],
+    );
+    return result.rowCount || 0;
   };
   Store.prototype.insertPoliticianTrades = async function insertPoliticianTrades(trades = []) {
     if (!trades.length) return { inserted: 0 };
@@ -284,12 +457,14 @@ export function installPgPolitician(Store) {
       `INSERT INTO politician_trades (
          id, filing_id, row_index, person_key, person_name, office, party, filer_status, state,
          owner, ticker, ticker_norm, asset, asset_class, tx_type, partial,
-         tx_date, disclosed_date, lag_days, amount_range, source_url, ocr, ocr_confidence
+         tx_date, disclosed_date, lag_days, amount_range, source_url, ocr, ocr_confidence,
+         digest_pending
        )
        SELECT * FROM unnest(
          $1::text[], $2::text[], $3::int[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[],
          $10::text[], $11::text[], $12::text[], $13::text[], $14::text[], $15::text[], $16::boolean[],
-         $17::date[], $18::date[], $19::int[], $20::text[], $21::text[], $22::boolean[], $23::int[]
+         $17::date[], $18::date[], $19::int[], $20::text[], $21::text[], $22::boolean[], $23::int[],
+         $24::boolean[]
        )
        ON CONFLICT (filing_id, row_index) DO NOTHING`,
       [
@@ -300,6 +475,7 @@ export function installPgPolitician(Store) {
         col((t) => t.txDate || null), col((t) => t.disclosedDate || null),
         col((t) => (t.lagDays == null ? null : t.lagDays)), col((t) => t.amountRange), col((t) => t.sourceUrl),
         col((t) => t.ocr === true), col((t) => (t.ocrConfidence == null ? null : t.ocrConfidence)),
+        col((t) => t.digestPending === true),
       ],
     );
     return { inserted: result.rowCount || 0 };

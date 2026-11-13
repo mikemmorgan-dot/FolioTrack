@@ -1,9 +1,13 @@
 services:
   - type: web
     name: model-portfolio-tracker
-    runtime: docker
-    dockerfilePath: ./Dockerfile
+    # Stay on Node. Render will not change this service's runtime in place,
+    # and presidential OCR runs in GitHub Actions instead of a second service.
+    # Dockerfile remains for an optional Docker deploy.
+    runtime: node
     plan: free
+    buildCommand: npm run build && npm --prefix server install
+    startCommand: npm start
     envVars:
       - key: NODE_VERSION
         value: 20.18.0
