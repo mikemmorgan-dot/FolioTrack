@@ -17,7 +17,8 @@ import { parseSenatePtrHtml, parseSenateSearchRow } from './parseSenate.js';
 import { buildFeedFilter } from './pgStore.js';
 import { buildFilingRecord, buildTradeRows } from './records.js';
 import { matchHouseParty, parseHouseRoster } from './roster.js';
-import { politicianRunDelayMs, startPoliticianScheduler } from './schedule.js';
+import { nextPollDelayMs, politicianRunDelayMs, startPoliticianScheduler } from './schedule.js';
+import { ocrTransactionType, rowsFromOcrWords } from './ocrRows.js';
 import { readZipEntries, zipText } from './zip.js';
 
 const dir = dirname(fileURLToPath(import.meta.url));
@@ -337,17 +338,18 @@ describe('digest email', () => {
 describe('scheduler', () => {
   afterEach(() => vi.useRealTimers());
 
-  it('does not run during the boot delay, even when the last poll is already due', async () => {
+  it('does not run during the boot delay while the backfill is unfinished', async () => {
     vi.useFakeTimers();
-    const run = vi.fn();
+    const run = vi.fn(async () => {});
     const stop = startPoliticianScheduler({
       run,
-      lastRunAt: null,
+      getState: async () => ({ backfillComplete: false }),
       now: () => 0,
       initialDelayMs: 45_000,
-      intervalMs: 8 * 60 * 60 * 1000,
+      intervalMs: 24 * 60 * 60 * 1000,
       logger: { log() {}, error() {} },
     });
+    await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(44_000);
     expect(run).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1_000);
@@ -355,9 +357,52 @@ describe('scheduler', () => {
     stop();
   });
 
-  it('waits out a poll that is still inside the interval', () => {
-    const delay = politicianRunDelayMs('2026-11-13T12:00:00Z', Date.parse('2026-11-13T14:00:00Z'), 8 * 60 * 60 * 1000, 45_000);
-    expect(delay).toBe(6 * 60 * 60 * 1000);
+  it('waits out the rest of the day after a successful daily run', () => {
+    const delay = nextPollDelayMs({
+      backfillComplete: true,
+      lastSuccessAt: '2026-11-13T12:00:00Z',
+      nowMs: Date.parse('2026-11-13T14:00:00Z'),
+      intervalMs: 24 * 60 * 60 * 1000,
+      boot: false,
+    });
+    expect(delay).toBe(22 * 60 * 60 * 1000);
+    expect(politicianRunDelayMs('2026-11-13T12:00:00Z', Date.parse('2026-11-14T12:00:00Z'), 24 * 60 * 60 * 1000, 0)).toBe(0);
+  });
+
+  it('resumes an unfinished backfill on wake instead of waiting a day', () => {
+    const delay = nextPollDelayMs({
+      backfillComplete: false,
+      lastSuccessAt: '2026-11-13T12:00:00Z',
+      nowMs: Date.parse('2026-11-13T20:00:00Z'),
+      boot: true,
+      initialDelayMs: 45_000,
+    });
+    expect(delay).toBe(45_000);
+  });
+});
+
+describe('278-T OCR rows', () => {
+  it('accepts an unambiguous one-character slip and rejects a guessier type word', () => {
+    expect(ocrTransactionType('purchase')).toBe('purchase');
+    expect(ocrTransactionType('purchaso')).toBe('purchase');
+    expect(ocrTransactionType('nurchasc')).toBeNull();
+    expect(ocrTransactionType('sale')).toBe('sale');
+  });
+
+  it('keeps only validated rows from a real presidential 278-T page', () => {
+    const words = JSON.parse(fixture('oge-278t-page2-words.json'));
+    const { trades, rejected } = rowsFromOcrWords(words, { now: new Date('2026-11-13T00:00:00Z') });
+    expect(words.length).toBeGreaterThan(100);
+    expect(trades.length).toBeGreaterThan(15);
+    expect(rejected).toBeGreaterThan(0);
+    for (const trade of trades) {
+      expect(trade.ocr).toBe(true);
+      expect(trade.ocrConfidence).toBeGreaterThanOrEqual(60);
+      expect(trade.txType).toBe('buy');
+      expect(trade.amountRange).toMatch(/^\$[\d,]+ - \$[\d,]+$/);
+      expect(trade.txDate.startsWith('2025-')).toBe(true);
+      expect(trade.asset.length).toBeGreaterThan(8);
+    }
   });
 });
 

@@ -4,8 +4,10 @@
 // batches and do not email that history.
 
 import { pdfBufferToLayoutText } from '../historyPdf.js';
+import { ocrPdfFile, ocrToolsAvailable, writePdfTemp } from './ocr.js';
 import { backoffActive, nextSourceBackoff } from './backoff.js';
 import { politicianConfig } from './config.js';
+import { politicianRunDelayMs } from './schedule.js';
 import { backfillYearList, isoDate, windowStartIso } from './normalize.js';
 import {
   houseIndexUrl,
@@ -13,7 +15,7 @@ import {
   parseHouseIndexXml,
   parseHousePtrText,
 } from './parseHouse.js';
-import { OGE_API, parseOge278Text, parseOgeApiRow } from './parseOge.js';
+import { OGE_API, parseOgeApiRow } from './parseOge.js';
 import { parseSenatePtrHtml, parseSenateSearchRow, reviewPaperFiling, SENATE_BASE } from './parseSenate.js';
 import { buildFilingRecord, buildTradeRows, heldIndex, splitStateDst } from './records.js';
 import { matchHouseParty, matchSenateParty, parseHouseRoster, parseSenateRoster } from './roster.js';
@@ -128,16 +130,78 @@ function todayIso(now) {
 }
 
 async function saveBundle(store, filing, parsed) {
-  const trades = buildTradeRows(filing, parsed);
-  const result = await store.insertPoliticianBundle(
-    { ...filing, parseStatus: parsed.status, parseNote: parsed.note || null },
-    trades,
-  );
+  const record = {
+    ...filing,
+    parseStatus: parsed.status,
+    parseNote: parsed.note || null,
+    ocrDone: parsed.ocrDone === true,
+    ocrPage: parsed.ocrPage ?? filing.ocrPage ?? null,
+    pageCount: parsed.pageCount ?? filing.pageCount ?? null,
+  };
+  const trades = buildTradeRows(record, parsed);
+  const result = await store.insertPoliticianBundle(record, trades);
+  if (!result.created) {
+    await store.updatePoliticianFiling(record);
+    const extra = await store.insertPoliticianTrades(trades);
+    return {
+      created: false,
+      trades: extra.inserted ? trades.slice(0, extra.inserted) : [],
+      review: parsed.status !== 'parsed' ? record : null,
+    };
+  }
   return {
     ...result,
     trades: result.created ? trades : [],
-    review: result.created && parsed.status !== 'parsed' ? filing : null,
+    review: parsed.status !== 'parsed' ? record : null,
   };
+}
+
+function ocrSettled(filing, tools) {
+  if (!filing || filing.ocrDone !== true) return false;
+  if (tools && /OCR tools are not installed/.test(filing.parseNote || '')) return false;
+  return true;
+}
+
+async function readOgePdf(bytes, now) {
+  const tools = await ocrToolsAvailable();
+  if (!tools) {
+    return {
+      status: 'needs_manual_review',
+      trades: [],
+      note: 'Scanned 278-T. OCR tools are not installed on this host, so no rows were guessed.',
+      ocrDone: true,
+    };
+  }
+  const temp = await writePdfTemp(bytes);
+  try {
+    const result = await ocrPdfFile(temp.pdfPath, { now });
+    const status = result.trades.length && result.rejected
+      ? 'partial'
+      : result.trades.length
+        ? 'parsed'
+        : 'needs_manual_review';
+    const note = result.trades.length
+      ? `OCR read ${result.trades.length} row${result.trades.length === 1 ? '' : 's'}${result.rejected ? ` (${result.rejected} unreadable row${result.rejected === 1 ? '' : 's'} were not guessed)` : ''}.`
+      : 'OCR could not validate any transaction row. Open the filing to review it.';
+    return {
+      status,
+      trades: result.trades,
+      note,
+      ocrDone: true,
+      ocrPage: result.pagesRead,
+      pageCount: result.pageCount,
+    };
+  } catch (err) {
+    return {
+      status: 'needs_manual_review',
+      trades: [],
+      note: 'The 278-T could not be OCR’d, so no rows were guessed.',
+      ocrDone: true,
+      error: err.message,
+    };
+  } finally {
+    await temp.cleanup();
+  }
 }
 
 async function loadRoster(store, fetchImpl, nowMs, logger) {
@@ -443,13 +507,15 @@ async function ingestOge({ fetchImpl, store, windowStart, cap, maxPdfBytes, dela
     candidates.push(parsed);
   }
   logger.log(`[politicians] oge index rows=${rows.length} in window=${candidates.length}`);
-  const existing = new Set(await store.existingPoliticianKeys('oge', candidates.map((c) => c.filingKey)));
+  const tools = await ocrToolsAvailable();
+  const stored = await store.getPoliticianFilings('oge', candidates.map((c) => c.filingKey));
+  const settled = new Set(stored.filter((row) => ocrSettled(row, tools)).map((row) => row.filingKey));
   const fresh = [];
   const reviews = [];
   let downloaded = 0;
   let caughtUp = true;
   for (const candidate of candidates) {
-    if (existing.has(candidate.filingKey)) continue;
+    if (settled.has(candidate.filingKey)) continue;
     if (past(deadline)) {
       caughtUp = false;
       break;
@@ -460,6 +526,7 @@ async function ingestOge({ fetchImpl, store, windowStart, cap, maxPdfBytes, dela
         status: 'needs_manual_review',
         trades: [],
         note: 'OGE has not posted this 278-T for download. The link requests the document.',
+        ocrDone: true,
       };
     } else if (downloaded >= cap) {
       caughtUp = false;
@@ -470,32 +537,41 @@ async function ingestOge({ fetchImpl, store, windowStart, cap, maxPdfBytes, dela
       const head = await http(fetchImpl, candidate.sourceUrl, { method: 'HEAD' });
       const length = Number(head.headers?.get?.('content-length'));
       if (head.status === 429 || head.status >= 500) throw new SourceHttpError('oge', head.status);
-      if (!Number.isFinite(length) || length > maxPdfBytes || head.status !== 200) {
-        const size = Number.isFinite(length) ? `${Math.max(1, Math.round(length / 1e6))} MB` : 'an unknown size';
+      if (head.status === 404) {
         parsed = {
           status: 'needs_manual_review',
           trades: [],
-          note: `The 278-T PDF is ${size}. Scanned presidential reports are linked here and not guessed.`,
+          note: 'OGE did not return this 278-T PDF.',
+          ocrDone: true,
+        };
+      } else if (Number.isFinite(length) && length > maxPdfBytes) {
+        const size = `${Math.max(1, Math.round(length / 1e6))} MB`;
+        parsed = {
+          status: 'needs_manual_review',
+          trades: [],
+          note: `The 278-T PDF is ${size}, over the ${Math.round(maxPdfBytes / 1e6)} MB cap, so it was not OCR’d.`,
+          ocrDone: true,
+        };
+      } else if (head.status !== 200 && head.status !== 405) {
+        parsed = {
+          status: 'needs_manual_review',
+          trades: [],
+          note: `OGE returned HTTP ${head.status} for this 278-T.`,
+          ocrDone: true,
         };
       } else {
-        const res = await http(fetchImpl, candidate.sourceUrl);
+        const res = await http(fetchImpl, candidate.sourceUrl, { timeoutMs: 120_000 });
         if (res.status === 429 || res.status >= 500) throw new SourceHttpError('oge', res.status);
-        try {
-          const text = res.status === 200 ? await pdfBufferToLayoutText(await readBytes(res)) : '';
-          parsed = res.status === 200
-            ? parseOge278Text(text)
-            : {
-              status: 'needs_manual_review',
-              trades: [],
-              note: `OGE returned HTTP ${res.status} for this PDF.`,
-            };
-        } catch (err) {
+        if (res.status !== 200) {
           parsed = {
             status: 'needs_manual_review',
             trades: [],
-            note: 'The 278-T PDF could not be read as text, so no amounts were guessed.',
+            note: `OGE returned HTTP ${res.status} for this 278-T.`,
+            ocrDone: true,
           };
-          logger.warn(`[politicians] oge ${candidate.filingKey} pdf: ${err.message}`);
+        } else {
+          parsed = await readOgePdf(await readBytes(res), new Date());
+          if (parsed.error) logger.warn(`[politicians] oge ${candidate.filingKey} ocr: ${parsed.error}`);
         }
       }
     }
@@ -547,14 +623,24 @@ export async function runPoliticianPoll({
   logger = console,
   env = process.env,
   deadline = null,
+  force = false,
 } = {}) {
   const cfg = politicianConfig(env);
+  const existing = await store.getPoliticianPollState();
+  const backfill = existing.backfillComplete !== true;
+  if (!backfill && !force) {
+    const wait = politicianRunDelayMs(existing.lastSuccessAt, Date.now(), cfg.intervalMs, 0);
+    if (wait > 0) return { skipped: true, reason: 'not due', retryInMs: wait };
+  }
   const clock = now();
   const nowMs = Date.now();
   // The budget is wall-clock. `now` only chooses the filing window, so a test
   // can pin the calendar year without expiring the run immediately.
-  const stopAt = deadline ?? (nowMs + cfg.budgetMs);
-  const state = { ...(await store.getPoliticianPollState()) };
+  // Backfill slices stop on this budget and the scheduler starts the next
+  // slice. Daily checks get a longer budget so one new 278-T can be OCR'd.
+  const stopAt = deadline ?? (nowMs + (backfill ? cfg.budgetMs : Math.max(cfg.budgetMs, 15 * 60 * 1000)));
+  const state = { ...existing };
+  const cap = backfill ? cfg.backfillSlice : cfg.docsPerRun;
   const sources = { ...(state.sources || {}) };
   const alertsWereArmed = state.alertsArmed === true;
   const windowStart = windowStartIso(clock, cfg.backfillYears);
@@ -568,14 +654,14 @@ export async function runPoliticianPoll({
 
   const jobs = [
     ['house', () => ingestHouse({
-      fetchImpl, store, roster, years, cap: cfg.docsPerRun, delayMs: cfg.delayMs, sleep, deadline: stopAt, logger,
+      fetchImpl, store, roster, years, cap, delayMs: cfg.delayMs, sleep, deadline: stopAt, logger,
     })],
     ['senate', () => ingestSenate({
-      fetchImpl, store, roster, windowStart, today, cap: cfg.docsPerRun, delayMs: cfg.delayMs, sleep, deadline: stopAt, logger,
+      fetchImpl, store, roster, windowStart, today, cap, delayMs: cfg.delayMs, sleep, deadline: stopAt, logger,
       cursor: Number(sources.senate?.cursor) || 0,
     })],
     ['oge', () => ingestOge({
-      fetchImpl, store, windowStart, cap: cfg.docsPerRun, maxPdfBytes: cfg.maxPdfBytes,
+      fetchImpl, store, windowStart, cap, maxPdfBytes: cfg.maxPdfBytes,
       delayMs: cfg.delayMs, sleep, deadline: stopAt, logger,
     })],
   ];
@@ -642,13 +728,23 @@ export async function runPoliticianPoll({
   }
 
   const finished = new Date().toISOString();
+  const backfillComplete = backfill ? allCaughtUp : true;
   const next = {
     ...state,
-    alertsArmed: alertsWereArmed || allCaughtUp,
+    backfillComplete,
+    alertsArmed: backfill ? (alertsWereArmed || allCaughtUp) : true,
     lastRunAt: finished,
-    lastSuccessAt: finished,
+    lastSuccessAt: (!backfill || allCaughtUp) ? finished : (state.lastSuccessAt || null),
     lastError: null,
-    lastSummary: { ...summary, digest, windowStart, newTrades: newTrades.length, newReviews: newReviews.length },
+    lastSummary: {
+      ...summary,
+      digest,
+      windowStart,
+      newTrades: newTrades.length,
+      newReviews: newReviews.length,
+      backfillComplete,
+      mode: backfill ? 'backfill' : 'daily',
+    },
     sources,
   };
   await store.setPoliticianPollState(next);

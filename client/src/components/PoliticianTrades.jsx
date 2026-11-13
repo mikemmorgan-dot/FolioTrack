@@ -106,6 +106,7 @@ function TradeCard({ item, onPerson }) {
       </div>
       <div className="ptr-tags">
         {held.length > 0 && <span className="pill green">In your models</span>}
+        {item.ocr && <span className="pill neutral">OCR{item.ocrConfidence != null ? ` ${item.ocrConfidence}` : ''}</span>}
       </div>
       {held.length > 0 && <div className="ptr-meta">{held.map((m) => m.name || m.key).join(', ')}</div>}
       <p className="ptr-asset">{item.asset}</p>
@@ -261,7 +262,11 @@ export default function PoliticianTrades({ onClose, initialTicker = '' }) {
       setPage(body);
       setItems(body.items);
       const n = latest?.summary?.newTrades;
-      setRefreshNote(n == null ? 'Refresh finished.' : `Refresh finished. ${n} new parsed trade${n === 1 ? '' : 's'}.`);
+      if (latest?.running || latest?.backfillComplete === false) {
+        setRefreshNote('Backfill is running in the background. It resumes after a restart and switches to a once-a-day check when the window is done.');
+      } else {
+        setRefreshNote(n == null ? 'Refresh finished.' : `Refresh finished. ${n} new parsed trade${n === 1 ? '' : 's'}.`);
+      }
     } catch (e) {
       setRefreshNote(e.message);
     } finally {
@@ -288,8 +293,8 @@ export default function PoliticianTrades({ onClose, initialTicker = '' }) {
       </header>
       <div className="editor-body">
         <p className="ed-hint">
-          Public stock trades from the House Clerk, Senate eFD, and presidential OGE 278-T reports.
-          Amounts stay the reported range. A filing that cannot be read is linked and marked for review.
+          Public stock trades from current House members, senators, the President, and the Vice President.
+          Amounts stay the reported range. Scanned presidential filings are OCR’d one page at a time; a row that does not validate stays linked for review. An OCR label marks rows read from a scan.
         </p>
         <label className="field"><span>Search name or ticker</span>
           <input value={q} onChange={(e) => { setOffset(0); setItems([]); setQ(e.target.value); }} placeholder="Pelosi or AAPL" />

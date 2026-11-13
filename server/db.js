@@ -174,6 +174,9 @@ CREATE TABLE IF NOT EXISTS politician_filings (
   source_url text NOT NULL,
   parse_status text NOT NULL,
   parse_note text,
+  ocr_done boolean NOT NULL DEFAULT false,
+  ocr_page int,
+  page_count int,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS politician_filings_source_key ON politician_filings (source, filing_key);
@@ -200,12 +203,19 @@ CREATE TABLE IF NOT EXISTS politician_trades (
   lag_days int,
   amount_range text NOT NULL,
   source_url text NOT NULL,
+  ocr boolean NOT NULL DEFAULT false,
+  ocr_confidence int,
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (filing_id, row_index)
 );
 CREATE INDEX IF NOT EXISTS politician_trades_disclosed ON politician_trades (disclosed_date DESC, id DESC);
 CREATE INDEX IF NOT EXISTS politician_trades_person ON politician_trades (person_key, disclosed_date DESC);
 CREATE INDEX IF NOT EXISTS politician_trades_ticker ON politician_trades (ticker_norm) WHERE ticker_norm IS NOT NULL;
+ALTER TABLE politician_filings ADD COLUMN IF NOT EXISTS ocr_done boolean NOT NULL DEFAULT false;
+ALTER TABLE politician_filings ADD COLUMN IF NOT EXISTS ocr_page int;
+ALTER TABLE politician_filings ADD COLUMN IF NOT EXISTS page_count int;
+ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS ocr boolean NOT NULL DEFAULT false;
+ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS ocr_confidence int;
 `;
 
 export async function initSchema(pool) {

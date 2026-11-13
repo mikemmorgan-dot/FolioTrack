@@ -744,15 +744,16 @@ app.use('/api/alerts', createAlertRouter({
 const politicianCfg = politicianConfig();
 const politicianRuns = createPoliticianCoordinator({
   logger: console,
-  runJob: () => openEgressScope('scheduler politician-trades', () => runPoliticianPoll({
+  runJob: ({ force = false } = {}) => openEgressScope('scheduler politician-trades', () => runPoliticianPoll({
     store,
     email: alertEmail,
     logger: console,
+    force,
   })),
 });
 app.use('/api/politician-trades', createPoliticianRouter({
   store,
-  startPoll: () => politicianRuns.start(),
+  startPoll: () => politicianRuns.start({ force: true }),
   pollRunning: () => politicianRuns.running(),
 }));
 
@@ -779,10 +780,13 @@ void (async () => {
     lastRunAt: alertRuns.status().lastRunAt,
     logger: console,
   });
-  const politicianState = await store.getPoliticianPollState().catch(() => ({}));
   startPoliticianScheduler({
-    run: () => politicianRuns.start(),
-    lastRunAt: politicianState?.lastRunAt || null,
+    run: async () => {
+      const ack = politicianRuns.start({ force: false });
+      if (ack.started) await politicianRuns.whenIdle();
+      return ack;
+    },
+    getState: () => store.getPoliticianPollState().catch(() => ({})),
     intervalMs: politicianCfg.intervalMs,
     initialDelayMs: politicianCfg.initialDelayMs,
     logger: console,

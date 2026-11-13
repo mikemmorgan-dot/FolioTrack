@@ -116,7 +116,7 @@ export function heldSymbolsFromDb(db) {
 
 function feedRows(db) {
   const reviews = Object.values(db.politicianFilings)
-    .filter((f) => f.parseStatus === 'needs_manual_review')
+    .filter((f) => f.parseStatus === 'needs_manual_review' || f.parseStatus === 'partial')
     .map((f) => ({
       kind: 'review',
       id: f.id,
@@ -185,6 +185,29 @@ export const memoryMethods = {
     for (const trade of trades) this.db.politicianTrades.push(trade);
     this.persist();
     return { created: true, trades: trades.length };
+  },
+  async getPoliticianFilings(source, keys) {
+    const want = new Set(keys || []);
+    return [...want].map((key) => this.db.politicianFilings[filingId(source, key)]).filter(Boolean);
+  },
+  async updatePoliticianFiling(filing) {
+    const row = this.db.politicianFilings[filing.id];
+    if (!row) return null;
+    Object.assign(row, filing);
+    this.persist();
+    return row;
+  },
+  async insertPoliticianTrades(trades = []) {
+    const have = new Set((this.db.politicianTrades || []).map((t) => t.id));
+    let inserted = 0;
+    for (const trade of trades) {
+      if (have.has(trade.id)) continue;
+      this.db.politicianTrades.push(trade);
+      have.add(trade.id);
+      inserted += 1;
+    }
+    if (inserted) this.persist();
+    return { inserted };
   },
   async listPoliticianFeed(query = {}) {
     const q = normalizeFeedQuery(query);

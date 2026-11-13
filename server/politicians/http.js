@@ -40,6 +40,7 @@ export function createPoliticianRouter({ store, startPoll, pollRunning } = {}) {
       alertsEnabled: settings.politicianAlertsEnabled,
       heldOnly: settings.politicianAlertsHeldOnly,
       alertsArmed: state.alertsArmed === true,
+      backfillComplete: state.backfillComplete === true,
       lastRunAt: state.lastRunAt || null,
       lastError: state.lastError || null,
       summary: state.lastSummary || null,

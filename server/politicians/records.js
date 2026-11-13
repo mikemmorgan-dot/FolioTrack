@@ -37,11 +37,14 @@ export function buildFilingRecord({
     sourceUrl,
     parseStatus: parsed?.status || 'needs_manual_review',
     parseNote: parsed?.note || null,
+    ocrDone: parsed?.ocrDone === true,
+    ocrPage: parsed?.ocrPage ?? null,
+    pageCount: parsed?.pageCount ?? null,
   };
 }
 
 export function buildTradeRows(filing, parsed) {
-  if (!parsed || parsed.status !== 'parsed' || !parsed.trades?.length) return [];
+  if (!parsed?.trades?.length) return [];
   return parsed.trades.map((trade, index) => {
     const rowIndex = index + 1;
     return {
@@ -65,6 +68,10 @@ export function buildTradeRows(filing, parsed) {
       lagDays: lagDays(trade.txDate, filing.filedDate),
       amountRange: trade.amountRange,
       sourceUrl: filing.sourceUrl,
+      ocr: trade.ocr === true,
+      ocrConfidence: Number.isFinite(Number(trade.ocrConfidence))
+        ? Math.round(Number(trade.ocrConfidence))
+        : null,
     };
   });
 }

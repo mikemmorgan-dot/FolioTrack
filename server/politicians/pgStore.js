@@ -15,20 +15,20 @@ function day(value) {
 const FEED_SQL = `
 SELECT kind, id, disclosed_date, person_key, person_name, office, party, state,
        owner, ticker, ticker_norm, asset, asset_class, tx_type, partial,
-       tx_date, lag_days, amount_range, source_url, parse_note
+       tx_date, lag_days, amount_range, source_url, parse_note, ocr, ocr_confidence
 FROM (
   SELECT 'trade'::text AS kind, t.id, t.disclosed_date, t.person_key, t.person_name,
          t.office, t.party, t.state, t.owner, t.ticker, t.ticker_norm, t.asset,
          t.asset_class, t.tx_type, t.partial, t.tx_date, t.lag_days, t.amount_range,
-         t.source_url, NULL::text AS parse_note
+         t.source_url, NULL::text AS parse_note, t.ocr, t.ocr_confidence
   FROM politician_trades t
   UNION ALL
   SELECT 'review'::text, f.id, f.filed_date, f.person_key, f.person_name,
          f.office, f.party, f.state, NULL::text, NULL::text, NULL::text, NULL::text,
          NULL::text, NULL::text, false, NULL::date, NULL::int, NULL::text,
-         f.source_url, f.parse_note
+         f.source_url, f.parse_note, false, NULL::int
   FROM politician_filings f
-  WHERE f.parse_status = 'needs_manual_review'
+  WHERE f.parse_status IN ('needs_manual_review', 'partial')
 ) feed
 `;
 
@@ -54,6 +54,8 @@ function rowToItem(r) {
     amountRange: r.amount_range || null,
     sourceUrl: r.source_url,
     parseNote: r.parse_note || null,
+    ocr: r.ocr === true,
+    ocrConfidence: r.ocr_confidence == null ? null : Number(r.ocr_confidence),
   };
 }
 
@@ -159,9 +161,9 @@ export function installPgPolitician(Store) {
         client,
         `INSERT INTO politician_filings (
            id, source, filing_key, person_key, person_name, office, party, state, district,
-           filed_date, source_url, parse_status, parse_note
+           filed_date, source_url, parse_status, parse_note, ocr_done, ocr_page, page_count
          ) VALUES (
-           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,$11,$12,$13
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,$11,$12,$13,$14,$15,$16
          )
          ON CONFLICT (source, filing_key) DO NOTHING
          RETURNING id`,
@@ -169,6 +171,7 @@ export function installPgPolitician(Store) {
           filing.id, filing.source, filing.filingKey, filing.personKey, filing.personName,
           filing.office, filing.party || null, filing.state || null, filing.district || null,
           filing.filedDate || null, filing.sourceUrl, filing.parseStatus, filing.parseNote || null,
+          filing.ocrDone === true, filing.ocrPage ?? null, filing.pageCount ?? null,
         ],
       );
       if (!inserted.rows.length) {
@@ -182,12 +185,12 @@ export function installPgPolitician(Store) {
           `INSERT INTO politician_trades (
              id, filing_id, row_index, person_key, person_name, office, party, state,
              owner, ticker, ticker_norm, asset, asset_class, tx_type, partial,
-             tx_date, disclosed_date, lag_days, amount_range, source_url
+             tx_date, disclosed_date, lag_days, amount_range, source_url, ocr, ocr_confidence
            )
            SELECT * FROM unnest(
              $1::text[], $2::text[], $3::int[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[],
              $9::text[], $10::text[], $11::text[], $12::text[], $13::text[], $14::text[], $15::boolean[],
-             $16::date[], $17::date[], $18::int[], $19::text[], $20::text[]
+             $16::date[], $17::date[], $18::int[], $19::text[], $20::text[], $21::boolean[], $22::int[]
            )
            ON CONFLICT (filing_id, row_index) DO NOTHING`,
           [
@@ -211,6 +214,8 @@ export function installPgPolitician(Store) {
             col((t) => (t.lagDays == null ? null : t.lagDays)),
             col((t) => t.amountRange),
             col((t) => t.sourceUrl),
+            col((t) => t.ocr === true),
+            col((t) => (t.ocrConfidence == null ? null : t.ocrConfidence)),
           ],
         );
       }
@@ -222,6 +227,68 @@ export function installPgPolitician(Store) {
     } finally {
       client.release();
     }
+  };
+  Store.prototype.getPoliticianFilings = async function getPoliticianFilings(source, keys) {
+    if (!keys?.length) return [];
+    const { rows } = await this.q(
+      `SELECT id, source, filing_key, parse_status, parse_note, ocr_done, ocr_page, page_count, source_url
+       FROM politician_filings WHERE source = $1 AND filing_key = ANY($2::text[])`,
+      [source, keys],
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      source: r.source,
+      filingKey: r.filing_key,
+      parseStatus: r.parse_status,
+      parseNote: r.parse_note || null,
+      ocrDone: r.ocr_done === true,
+      ocrPage: r.ocr_page,
+      pageCount: r.page_count,
+      sourceUrl: r.source_url,
+    }));
+  };
+  Store.prototype.updatePoliticianFiling = async function updatePoliticianFiling(filing) {
+    await this.q(
+      `UPDATE politician_filings
+       SET parse_status = $2, parse_note = $3, ocr_done = $4, ocr_page = $5, page_count = $6
+       WHERE id = $1`,
+      [
+        filing.id,
+        filing.parseStatus,
+        filing.parseNote || null,
+        filing.ocrDone === true,
+        filing.ocrPage ?? null,
+        filing.pageCount ?? null,
+      ],
+    );
+    return filing;
+  };
+  Store.prototype.insertPoliticianTrades = async function insertPoliticianTrades(trades = []) {
+    if (!trades.length) return { inserted: 0 };
+    const col = (fn) => trades.map(fn);
+    const result = await this.q(
+      `INSERT INTO politician_trades (
+         id, filing_id, row_index, person_key, person_name, office, party, state,
+         owner, ticker, ticker_norm, asset, asset_class, tx_type, partial,
+         tx_date, disclosed_date, lag_days, amount_range, source_url, ocr, ocr_confidence
+       )
+       SELECT * FROM unnest(
+         $1::text[], $2::text[], $3::int[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[],
+         $9::text[], $10::text[], $11::text[], $12::text[], $13::text[], $14::text[], $15::boolean[],
+         $16::date[], $17::date[], $18::int[], $19::text[], $20::text[], $21::boolean[], $22::int[]
+       )
+       ON CONFLICT (filing_id, row_index) DO NOTHING`,
+      [
+        col((t) => t.id), col((t) => t.filingId), col((t) => t.rowIndex), col((t) => t.personKey),
+        col((t) => t.personName), col((t) => t.office), col((t) => t.party || null), col((t) => t.state || null),
+        col((t) => t.owner), col((t) => t.ticker || null), col((t) => t.tickerNorm || null), col((t) => t.asset),
+        col((t) => t.assetClass), col((t) => t.txType), col((t) => t.partial === true),
+        col((t) => t.txDate || null), col((t) => t.disclosedDate || null),
+        col((t) => (t.lagDays == null ? null : t.lagDays)), col((t) => t.amountRange), col((t) => t.sourceUrl),
+        col((t) => t.ocr === true), col((t) => (t.ocrConfidence == null ? null : t.ocrConfidence)),
+      ],
+    );
+    return { inserted: result.rowCount || 0 };
   };
   Store.prototype.listHeldPoliticianSymbols = async function listHeldPoliticianSymbols() {
     const { rows } = await this.q(HELD_SQL);
