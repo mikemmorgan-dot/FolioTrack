@@ -5,6 +5,7 @@ import express from 'express';
 import { matchableAssetClass } from './normalize.js';
 import { badgesBySymbol, heldIndex } from './records.js';
 import { applyPoliticianAlertPatch } from './settings.js';
+import { attachHeldModels } from './summary.js';
 
 function asyncRoute(fn) {
   return (req, res, next) => {
@@ -67,6 +68,17 @@ export function createPoliticianRouter({ store, startPoll, pollRunning } = {}) {
       req.body || {},
     );
     res.json(await store.savePoliticianAlertSettings(next));
+  }));
+
+  router.get('/summary', asyncRoute(async (req, res) => {
+    const query = { ...(req.query || {}) };
+    // Public window is the US disclosure calendar through today.
+    delete query.asOf;
+    const [summary, symbols] = await Promise.all([
+      store.summarizePoliticianTrades(query),
+      store.listHeldPoliticianSymbols(),
+    ]);
+    res.json(attachHeldModels(summary, symbols));
   }));
 
   router.get('/held', asyncRoute(async (_req, res) => {

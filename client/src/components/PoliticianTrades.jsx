@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
+import PoliticianSummary from './PoliticianSummary.jsx';
 
 const OFFICES = [
   { id: '', label: 'All' },
@@ -191,6 +192,7 @@ function PersonView({ personKey, onBack }) {
 
 export default function PoliticianTrades({ onClose, initialTicker = '' }) {
   const [q, setQ] = useState(initialTicker || '');
+  const [ticker, setTicker] = useState('');
   const [office, setOffice] = useState('');
   const [party, setParty] = useState('');
   const [side, setSide] = useState('');
@@ -198,20 +200,41 @@ export default function PoliticianTrades({ onClose, initialTicker = '' }) {
   const [to, setTo] = useState('');
   const [heldOnly, setHeldOnly] = useState(false);
   const [filer, setFiler] = useState('');
+  const [windowDays, setWindowDays] = useState(30);
+  const [clusterMin, setClusterMin] = useState(3);
+  const [summary, setSummary] = useState(null);
+  const [summaryErr, setSummaryErr] = useState(null);
+  const [summaryLoading, setSummaryLoading] = useState(true);
   const [offset, setOffset] = useState(0);
   const [items, setItems] = useState([]);
   const [page, setPage] = useState(null);
   const [err, setErr] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [feedOpen, setFeedOpen] = useState(Boolean(initialTicker));
   const [personKey, setPersonKey] = useState(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [status, setStatus] = useState(null);
   const [settings, setSettings] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshNote, setRefreshNote] = useState('');
 
-  const filters = { q, office, party, side, filer, from, to, heldOnly: heldOnly ? '1' : '', offset, limit: 40 };
+  const filters = {
+    q, ticker, office, party, side, filer, from, to, heldOnly: heldOnly ? '1' : '', offset, limit: 40,
+  };
 
   useEffect(() => {
+    let cancel = false;
+    setSummaryLoading(true);
+    setSummaryErr(null);
+    api.politicianSummary({ window: windowDays, filer, clusterMin })
+      .then((body) => { if (!cancel) setSummary(body); })
+      .catch((e) => { if (!cancel) setSummaryErr(e.message); })
+      .finally(() => { if (!cancel) setSummaryLoading(false); });
+    return () => { cancel = true; };
+  }, [windowDays, filer, clusterMin, reloadKey]);
+
+  useEffect(() => {
+    if (!feedOpen) return undefined;
     let cancel = false;
     setLoading(true);
     setErr(null);
@@ -226,7 +249,7 @@ export default function PoliticianTrades({ onClose, initialTicker = '' }) {
     return () => { cancel = true; };
     // filters is a new object every render; the fields below are the real deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, office, party, side, filer, from, to, heldOnly, offset]);
+  }, [feedOpen, q, ticker, office, party, side, filer, from, to, heldOnly, offset, reloadKey]);
 
   useEffect(() => {
     api.politicianStatus().then(setStatus).catch(() => {});
@@ -239,6 +262,17 @@ export default function PoliticianTrades({ onClose, initialTicker = '' }) {
       setItems([]);
       setter(value);
     };
+  }
+
+  function openTicker(symbol) {
+    setOffset(0);
+    setItems([]);
+    setQ('');
+    setTicker(symbol);
+    setFeedOpen(true);
+    requestAnimationFrame(() => {
+      document.getElementById('ptr-feed')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
   }
 
   async function saveSettings(patch) {
@@ -266,9 +300,7 @@ export default function PoliticianTrades({ onClose, initialTicker = '' }) {
       }
       setOffset(0);
       setItems([]);
-      const body = await api.politicianTrades({ ...filters, offset: 0 });
-      setPage(body);
-      setItems(body.items);
+      setReloadKey((n) => n + 1);
       const n = latest?.summary?.newTrades;
       if (latest?.running || latest?.backfillComplete === false) {
         setRefreshNote('Backfill is running in the background. It resumes after a restart and switches to a once-a-day check when the window is done.');
@@ -304,25 +336,70 @@ export default function PoliticianTrades({ onClose, initialTicker = '' }) {
           Public stock trades from House members and House candidates, senators, the President, and the Vice President. House candidates stay in the feed and are labeled Candidate.
           Amounts stay the reported range. Scanned presidential filings are OCR’d one page at a time; a row that does not validate stays linked for review. An OCR label marks rows read from a scan.
         </p>
-        <label className="field"><span>Search name or ticker</span>
-          <input value={q} onChange={(e) => { setOffset(0); setItems([]); setQ(e.target.value); }} placeholder="Pelosi or AAPL" />
-        </label>
-        <ChipRow label="Office" options={OFFICES} value={office} onChange={resetAnd(setOffice)} />
+        <p className="ptr-note">Filers. This choice applies to the summary and the filings below.</p>
         <ChipRow label="Filer" options={FILERS} value={filer} onChange={resetAnd(setFiler)} />
-        <ChipRow label="Party" options={PARTIES} value={party} onChange={resetAnd(setParty)} />
-        <ChipRow label="Transaction" options={SIDES} value={side} onChange={resetAnd(setSide)} />
-        <div className="ptr-dates">
-          <label className="field"><span>Disclosed from</span>
-            <input type="date" value={from} onChange={(e) => { setOffset(0); setItems([]); setFrom(e.target.value); }} />
-          </label>
-          <label className="field"><span>Disclosed to</span>
-            <input type="date" value={to} onChange={(e) => { setOffset(0); setItems([]); setTo(e.target.value); }} />
-          </label>
-        </div>
-        <button type="button" className={`ptr-held${heldOnly ? ' on' : ''}`} aria-pressed={heldOnly}
-          onClick={() => { setOffset(0); setItems([]); setHeldOnly((v) => !v); }}>
-          {heldOnly ? 'Showing tickers in your models' : 'Show only tickers in your models'}
+        <PoliticianSummary
+          summary={summary}
+          loading={summaryLoading}
+          error={summaryErr}
+          windowDays={windowDays}
+          onWindow={(days) => setWindowDays(days)}
+          clusterMin={clusterMin}
+          onClusterMin={(n) => setClusterMin(n)}
+          onTicker={openTicker}
+          onPerson={setPersonKey}
+        />
+
+        <button
+          type="button"
+          id="ptr-feed"
+          className="ptr-feed-toggle"
+          aria-expanded={feedOpen}
+          onClick={() => setFeedOpen((open) => !open)}
+        >
+          <span>Filings</span>
+          <span>{feedOpen ? 'Hide' : 'Show'}</span>
         </button>
+        {feedOpen && (
+          <>
+            <label className="field"><span>Search name or ticker</span>
+              <input value={q} onChange={(e) => { setOffset(0); setItems([]); setQ(e.target.value); }} placeholder="Pelosi or AAPL" />
+            </label>
+            {ticker && (
+              <button type="button" className="ptr-held on" onClick={() => { setOffset(0); setItems([]); setTicker(''); }}>
+                Filtered to {ticker}. Clear
+              </button>
+            )}
+            <ChipRow label="Office" options={OFFICES} value={office} onChange={resetAnd(setOffice)} />
+            <ChipRow label="Party" options={PARTIES} value={party} onChange={resetAnd(setParty)} />
+            <ChipRow label="Transaction" options={SIDES} value={side} onChange={resetAnd(setSide)} />
+            <div className="ptr-dates">
+              <label className="field"><span>Disclosed from</span>
+                <input type="date" value={from} onChange={(e) => { setOffset(0); setItems([]); setFrom(e.target.value); }} />
+              </label>
+              <label className="field"><span>Disclosed to</span>
+                <input type="date" value={to} onChange={(e) => { setOffset(0); setItems([]); setTo(e.target.value); }} />
+              </label>
+            </div>
+            <button type="button" className={`ptr-held${heldOnly ? ' on' : ''}`} aria-pressed={heldOnly}
+              onClick={() => { setOffset(0); setItems([]); setHeldOnly((v) => !v); }}>
+              {heldOnly ? 'Showing tickers in your models' : 'Show only tickers in your models'}
+            </button>
+            <div className="ed-section">Newest disclosed</div>
+            {err && <div className="banner">{err}</div>}
+            {loading && items.length === 0 && <p className="ed-hint">Loading…</p>}
+            {!loading && items.length === 0 && (
+              <p className="ed-hint">No filings match. Use Refresh to pull the House, Senate, and presidential reports.</p>
+            )}
+            {items.map((item) => <TradeCard key={`${item.kind}-${item.id}`} item={item} onPerson={setPersonKey} />)}
+            {page?.hasMore && (
+              <button type="button" className="rp-run alert-secondary" onClick={() => setOffset((n) => n + 40)}>Load more</button>
+            )}
+            {page?.total != null && items.length > 0 && (
+              <p className="ed-hint">{page.total} matching filing{page.total === 1 ? '' : 's'}.</p>
+            )}
+          </>
+        )}
 
         <div className="ed-section">Email</div>
         <div className="switch-row">
@@ -352,20 +429,6 @@ export default function PoliticianTrades({ onClose, initialTicker = '' }) {
           <p className="ed-hint">Still walking the backfill window. Digests start after that finishes.</p>
         )}
         {refreshNote && <p className="ed-hint">{refreshNote}</p>}
-
-        <div className="ed-section">Newest disclosed</div>
-        {err && <div className="banner">{err}</div>}
-        {loading && items.length === 0 && <p className="ed-hint">Loading…</p>}
-        {!loading && items.length === 0 && (
-          <p className="ed-hint">No filings match. Use Refresh to pull the House, Senate, and presidential reports.</p>
-        )}
-        {items.map((item) => <TradeCard key={`${item.kind}-${item.id}`} item={item} onPerson={setPersonKey} />)}
-        {page?.hasMore && (
-          <button type="button" className="rp-run alert-secondary" onClick={() => setOffset((n) => n + 40)}>Load more</button>
-        )}
-        {page?.total != null && items.length > 0 && (
-          <p className="ed-hint">{page.total} matching filing{page.total === 1 ? '' : 's'}.</p>
-        )}
       </div>
     </div>
   );

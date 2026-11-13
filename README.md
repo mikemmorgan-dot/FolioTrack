@@ -182,12 +182,52 @@ check time, duration, and error. A warning stays up when no check has succeeded
 in over 2 hours. The header menu shows a red dot while any holding is breached.
 
 ## Politician trades
-Menu → **Politician trades**. The feed lists filings newest disclosure first.
-Open a name for that filer's trades, buy and sell counts, and most-traded
-tickers. Coverage is every House PTR in the Clerk index for the backfill
+Menu → **Politician trades**. A summary sits at the top. The filing list
+stays underneath, collapsed, with the same search, office, party, side, date,
+and held-ticker filters. Open a name for that filer's trades, buy and sell
+counts, and most-traded tickers. Coverage is every House PTR in the Clerk index for the backfill
 window (sitting members and candidates), every Senate eFD PTR from a senator,
 and OGE 278-T reports whose title is exactly President or Vice President.
 The feed filter is **Members / Candidates / All**, and All is the default.
+That same choice applies to the summary. Candidates stay labeled.
+
+### Summary
+`GET /api/politician-trades/summary` returns one compact JSON payload. The
+window is **7, 30, or 90 days** (default **30**), inclusive of today in the
+US Eastern calendar, by **disclosure date**. Transaction dates can lag that
+by up to 45 days; the summary does not use the transaction date. Every card
+uses the same window.
+
+**Most bought** and **most sold** are the top 10 tickers: trade count,
+distinct politicians, and the summed reported range (sum of the range
+minimums through sum of the range maximums). `Over $50,000,000` has no
+ceiling, so a total that includes it is labeled `Over $…` using the sum of
+the printed floors. Tap a ticker to open the filing list filtered to that
+exact ticker.
+
+**Cluster buys** are tickers bought by at least 3 distinct politicians in the
+window (2–10 via `clusterMin`, or `POLITICIAN_CLUSTER_MIN`). The page offers
+3+, 4+, and 5+. Each cluster lists the buyers, party, chamber, disclosure
+dates, and amount ranges, and is sorted by the number of distinct buyers.
+A stock, ETF, or mutual fund that the current model versions hold is flagged
+with the same ticker match as the filing cards (`.TO` does not match a US
+listing). At most 20 clustered tickers are returned.
+
+Filings in the window with no parsed ticker (still **Needs review**, or a
+stored row with no ticker) are left out of the ranks. The payload includes
+that count. Postgres does the grouping (`GROUP BY` ticker and person,
+`count`, `sum` of the statutory bounds). Indexes: `politician_trades_window`
+on `(disclosed_date, tx_type)` for parsed tickers, and `politician_filings_filed`
+on `filed_date`.
+
+**Estimate (Neon egress, one summary call): about 8–20 KB.** That is at most
+20 grouped rank rows, the buyers for at most 20 clustered tickers, one
+excluded-filing count, and one row per holding in the current model versions
+for the held-ticker flag. It does not read the trade text, the source URL, or
+the full 2,000-row table. A response covering several hundred stored trades
+was about 5 KB of JSON. Opening the filing list is a separate paged read
+(40 rows, a few tens of KB) and does not run until that section is opened.
+
 A holding in the **current** model version gets
 a badge when a parsed stock, ETF, or mutual-fund trade uses that ticker.
 `.TO` / `.V` names do not match a US listing of the same company.
@@ -282,7 +322,8 @@ on the order of a thousand filings; many House PDFs are one or a few trades,
 Presidential OCR adds a confidence integer on the rows it keeps. **Estimate:
 well under 20 MB** in Neon, including indexes.
 
-Reads are paged (40 rows) or aggregated (`count`, `GROUP BY ticker`). A poll
+Reads are paged (40 rows) or aggregated (`count`, `GROUP BY ticker`). The
+summary endpoint above is the grouped read. A poll
 asks only whether the filing ids it is about to download already exist. It
 does not `SELECT` the trade table. **Estimate: a daily poll is under 100 KB
 of Neon egress. A feed page is a few tens of KB.** The House zip is about

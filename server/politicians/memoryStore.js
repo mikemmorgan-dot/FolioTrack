@@ -5,6 +5,7 @@
 import { currentVersionOf } from '../util.js';
 import { canonicalTicker, matchableAssetClass } from './normalize.js';
 import { applyPoliticianAlertPatch, coercePoliticianAlertSettings } from './settings.js';
+import { aggregateSummary } from './summary.js';
 
 export const FEED_LIMIT_DEFAULT = 40;
 export const FEED_LIMIT_MAX = 50;
@@ -263,6 +264,14 @@ export const memoryMethods = {
   },
   async listHeldPoliticianSymbols() {
     return heldSymbolsFromDb(this.db);
+  },
+  async summarizePoliticianTrades(query = {}) {
+    const db = politicianBucket(this.db);
+    return aggregateSummary({
+      trades: db.politicianTrades,
+      filings: Object.values(db.politicianFilings),
+      query,
+    });
   },
   async summarizeHeldTrades(norms) {
     const want = new Set((norms || []).filter(Boolean));
