@@ -119,6 +119,21 @@ export default function SettingsPanel({ onClose, onSaved, onAlertCount }) {
   const [refreshResults, setRefreshResults] = useState(null);
   const [testing, setTesting] = useState(false);
   const [testMsg, setTestMsg] = useState(null);
+  const [ptrSettings, setPtrSettings] = useState(null);
+  const [ptrNote, setPtrNote] = useState('');
+
+  useEffect(() => {
+    api.politicianSettings().then(setPtrSettings).catch(() => {});
+  }, []);
+
+  async function savePtr(patch) {
+    try {
+      setPtrSettings(await api.savePoliticianSettings(patch));
+      setPtrNote('Saved');
+    } catch (e) {
+      setPtrNote(e.message);
+    }
+  }
 
   const basisN = Number(basis);
   const thresholdN = Number(threshold);
@@ -432,6 +447,33 @@ export default function SettingsPanel({ onClose, onSaved, onAlertCount }) {
             </article>
           ))}
         </div>
+
+        <div className="ed-section">Politician trade alerts</div>
+        <p className="ed-hint">
+          One email per refresh when a new disclosed trade is stored. It goes to the alert email above. The first backfill does not mail the history. Spouse, joint, and child trades are included and labeled.
+        </p>
+        <div className="switch-row">
+          <div>
+            <div className="switch-label">Trade alerts {ptrSettings?.politicianAlertsEnabled === false ? 'off' : 'on'}</div>
+          </div>
+          <button type="button" role="switch" aria-label="Politician trade alerts"
+            aria-checked={ptrSettings?.politicianAlertsEnabled !== false}
+            className={`switch${ptrSettings?.politicianAlertsEnabled !== false ? ' on' : ''}`}
+            onClick={() => savePtr({ politicianAlertsEnabled: ptrSettings?.politicianAlertsEnabled === false })}
+          ><span /></button>
+        </div>
+        <div className="switch-row">
+          <div>
+            <div className="switch-label">Held tickers only</div>
+            <p className="ed-hint">Limit the digest to tickers in the current version of your models.</p>
+          </div>
+          <button type="button" role="switch" aria-label="Held tickers only"
+            aria-checked={ptrSettings?.politicianAlertsHeldOnly === true}
+            className={`switch${ptrSettings?.politicianAlertsHeldOnly ? ' on' : ''}`}
+            onClick={() => savePtr({ politicianAlertsHeldOnly: !ptrSettings?.politicianAlertsHeldOnly })}
+          ><span /></button>
+        </div>
+        {ptrNote && <p className="ed-hint">{ptrNote}</p>}
       </div>
     </div>
   );

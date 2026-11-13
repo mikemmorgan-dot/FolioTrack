@@ -1,0 +1,327 @@
+// Postgres politician tables. Reads are paged or aggregated. A poll asks only
+// for the filing keys it is about to download, not for every stored trade.
+
+import { canonicalTicker } from './normalize.js';
+import { applyPoliticianAlertPatch, coercePoliticianAlertSettings } from './settings.js';
+import { normalizeFeedQuery } from './memoryStore.js';
+
+function day(value) {
+  if (value == null || value === '') return null;
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  const s = String(value);
+  return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : null;
+}
+
+const FEED_SQL = `
+SELECT kind, id, disclosed_date, person_key, person_name, office, party, state,
+       owner, ticker, ticker_norm, asset, asset_class, tx_type, partial,
+       tx_date, lag_days, amount_range, source_url, parse_note
+FROM (
+  SELECT 'trade'::text AS kind, t.id, t.disclosed_date, t.person_key, t.person_name,
+         t.office, t.party, t.state, t.owner, t.ticker, t.ticker_norm, t.asset,
+         t.asset_class, t.tx_type, t.partial, t.tx_date, t.lag_days, t.amount_range,
+         t.source_url, NULL::text AS parse_note
+  FROM politician_trades t
+  UNION ALL
+  SELECT 'review'::text, f.id, f.filed_date, f.person_key, f.person_name,
+         f.office, f.party, f.state, NULL::text, NULL::text, NULL::text, NULL::text,
+         NULL::text, NULL::text, false, NULL::date, NULL::int, NULL::text,
+         f.source_url, f.parse_note
+  FROM politician_filings f
+  WHERE f.parse_status = 'needs_manual_review'
+) feed
+`;
+
+function rowToItem(r) {
+  return {
+    kind: r.kind,
+    id: r.id,
+    personKey: r.person_key,
+    personName: r.person_name,
+    office: r.office,
+    party: r.party || null,
+    state: r.state || null,
+    owner: r.owner || null,
+    ticker: r.ticker || null,
+    tickerNorm: r.ticker_norm || null,
+    asset: r.asset || null,
+    assetClass: r.asset_class || null,
+    txType: r.tx_type || null,
+    partial: r.partial === true,
+    txDate: day(r.tx_date),
+    disclosedDate: day(r.disclosed_date),
+    lagDays: r.lag_days == null ? null : Number(r.lag_days),
+    amountRange: r.amount_range || null,
+    sourceUrl: r.source_url,
+    parseNote: r.parse_note || null,
+  };
+}
+
+export function buildFeedFilter(query, heldNorms) {
+  const params = [];
+  const where = [];
+  const add = (sql, ...values) => {
+    const parts = sql.split('$?');
+    let out = parts[0];
+    values.forEach((value, i) => {
+      params.push(value);
+      out += `$${params.length}${parts[i + 1] || ''}`;
+    });
+    where.push(out);
+  };
+  if (query.office === 'president') where.push(`office IN ('president', 'vice-president')`);
+  else if (query.office) add('office = $?', query.office);
+  if (query.party) add('party = $?', query.party);
+  if (query.personKey) add('person_key = $?', query.personKey);
+  if (query.from) add('disclosed_date >= $?::date', query.from);
+  if (query.to) add('disclosed_date <= $?::date', query.to);
+  if (query.side) add('tx_type = $?', query.side);
+  if (query.ticker) add('ticker_norm = $?', query.ticker);
+  if (query.heldOnly) {
+    where.push(`kind = 'trade' AND asset_class IN ('stock', 'etf', 'fund')`);
+    add('ticker_norm = ANY($?::text[])', heldNorms || []);
+  }
+  if (query.q) {
+    const pattern = `%${query.q.replace(/[%_\\]/g, '\\$&')}%`;
+    add(
+      `(person_name ILIKE $? ESCAPE '\\' OR COALESCE(ticker, '') ILIKE $? ESCAPE '\\' OR COALESCE(asset, '') ILIKE $? ESCAPE '\\')`,
+      pattern,
+      pattern,
+      pattern,
+    );
+  }
+  return { whereSql: where.length ? `WHERE ${where.join(' AND ')}` : '', params };
+}
+
+const HELD_SQL = `
+WITH latest AS (
+  SELECT DISTINCT ON (model_key) id
+  FROM versions
+  ORDER BY model_key, effective_date DESC, created_at DESC, id DESC
+)
+SELECT i.symbol, m.key AS model_key, m.name AS model_name
+FROM latest l
+JOIN versions v ON v.id = l.id
+JOIN models m ON m.key = v.model_key
+JOIN version_holdings vh ON vh.version_id = l.id
+JOIN instruments i ON i.id = vh.instrument_id
+`;
+
+export function installPgPolitician(Store) {
+  const readSetting = async function readSetting(key) {
+    const { rows } = await this.q('SELECT value FROM app_settings WHERE key = $1', [key]);
+    return rows[0]?.value ?? null;
+  };
+  const writeSetting = async function writeSetting(key, value) {
+    await this.q(
+      `INSERT INTO app_settings (key, value, updated_at) VALUES ($1, $2::jsonb, now())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      [key, JSON.stringify(value)],
+    );
+    return value;
+  };
+
+  Store.prototype.getPoliticianAlertSettings = async function getPoliticianAlertSettings() {
+    return coercePoliticianAlertSettings(await readSetting.call(this, 'politicianAlerts') || {});
+  };
+  Store.prototype.savePoliticianAlertSettings = async function savePoliticianAlertSettings(patch) {
+    const next = applyPoliticianAlertPatch(await this.getPoliticianAlertSettings(), patch);
+    await writeSetting.call(this, 'politicianAlerts', next);
+    return next;
+  };
+  Store.prototype.getPoliticianPollState = async function getPoliticianPollState() {
+    return (await readSetting.call(this, 'politicianPoll')) || {};
+  };
+  Store.prototype.setPoliticianPollState = async function setPoliticianPollState(state) {
+    await writeSetting.call(this, 'politicianPoll', state || {});
+    return state || {};
+  };
+  Store.prototype.getPoliticianRoster = async function getPoliticianRoster() {
+    return readSetting.call(this, 'politicianRoster');
+  };
+  Store.prototype.setPoliticianRoster = async function setPoliticianRoster(roster) {
+    await writeSetting.call(this, 'politicianRoster', roster);
+    return roster;
+  };
+  Store.prototype.existingPoliticianKeys = async function existingPoliticianKeys(source, keys) {
+    if (!keys?.length) return [];
+    const { rows } = await this.q(
+      `SELECT filing_key FROM politician_filings WHERE source = $1 AND filing_key = ANY($2::text[])`,
+      [source, keys],
+    );
+    return rows.map((r) => r.filing_key);
+  };
+  Store.prototype.insertPoliticianBundle = async function insertPoliticianBundle(filing, trades = []) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const inserted = await this.qOn(
+        client,
+        `INSERT INTO politician_filings (
+           id, source, filing_key, person_key, person_name, office, party, state, district,
+           filed_date, source_url, parse_status, parse_note
+         ) VALUES (
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,$11,$12,$13
+         )
+         ON CONFLICT (source, filing_key) DO NOTHING
+         RETURNING id`,
+        [
+          filing.id, filing.source, filing.filingKey, filing.personKey, filing.personName,
+          filing.office, filing.party || null, filing.state || null, filing.district || null,
+          filing.filedDate || null, filing.sourceUrl, filing.parseStatus, filing.parseNote || null,
+        ],
+      );
+      if (!inserted.rows.length) {
+        await client.query('ROLLBACK');
+        return { created: false, trades: 0 };
+      }
+      if (trades.length) {
+        const col = (fn) => trades.map(fn);
+        await this.qOn(
+          client,
+          `INSERT INTO politician_trades (
+             id, filing_id, row_index, person_key, person_name, office, party, state,
+             owner, ticker, ticker_norm, asset, asset_class, tx_type, partial,
+             tx_date, disclosed_date, lag_days, amount_range, source_url
+           )
+           SELECT * FROM unnest(
+             $1::text[], $2::text[], $3::int[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[],
+             $9::text[], $10::text[], $11::text[], $12::text[], $13::text[], $14::text[], $15::boolean[],
+             $16::date[], $17::date[], $18::int[], $19::text[], $20::text[]
+           )
+           ON CONFLICT (filing_id, row_index) DO NOTHING`,
+          [
+            col((t) => t.id),
+            col((t) => t.filingId),
+            col((t) => t.rowIndex),
+            col((t) => t.personKey),
+            col((t) => t.personName),
+            col((t) => t.office),
+            col((t) => t.party || null),
+            col((t) => t.state || null),
+            col((t) => t.owner),
+            col((t) => t.ticker || null),
+            col((t) => t.tickerNorm || null),
+            col((t) => t.asset),
+            col((t) => t.assetClass),
+            col((t) => t.txType),
+            col((t) => t.partial === true),
+            col((t) => t.txDate || null),
+            col((t) => t.disclosedDate || null),
+            col((t) => (t.lagDays == null ? null : t.lagDays)),
+            col((t) => t.amountRange),
+            col((t) => t.sourceUrl),
+          ],
+        );
+      }
+      await client.query('COMMIT');
+      return { created: true, trades: trades.length };
+    } catch (err) {
+      try { await client.query('ROLLBACK'); } catch { /* already closed */ }
+      throw err;
+    } finally {
+      client.release();
+    }
+  };
+  Store.prototype.listHeldPoliticianSymbols = async function listHeldPoliticianSymbols() {
+    const { rows } = await this.q(HELD_SQL);
+    return rows.map((r) => ({
+      symbol: r.symbol,
+      tickerNorm: canonicalTicker(r.symbol),
+      modelKey: r.model_key,
+      modelName: r.model_name,
+    }));
+  };
+  Store.prototype.summarizeHeldTrades = async function summarizeHeldTrades(norms) {
+    const list = (norms || []).filter(Boolean);
+    if (!list.length) return [];
+    const { rows } = await this.q(
+      `SELECT ticker_norm, count(*)::int AS n, max(disclosed_date) AS latest
+       FROM politician_trades
+       WHERE ticker_norm = ANY($1::text[])
+         AND asset_class IN ('stock', 'etf', 'fund')
+       GROUP BY ticker_norm`,
+      [list],
+    );
+    return rows.map((r) => ({
+      tickerNorm: r.ticker_norm,
+      count: Number(r.n) || 0,
+      latest: day(r.latest),
+    }));
+  };
+  Store.prototype.listPoliticianFeed = async function listPoliticianFeed(query = {}) {
+    const q = normalizeFeedQuery(query);
+    let heldNorms = null;
+    if (q.heldOnly) {
+      const symbols = await this.listHeldPoliticianSymbols();
+      heldNorms = [...new Set(symbols.map((s) => s.tickerNorm).filter(Boolean))];
+    }
+    const { whereSql, params } = buildFeedFilter(q, heldNorms);
+    const count = await this.q(`SELECT count(*)::int AS n FROM (${FEED_SQL}) feed ${whereSql}`, params);
+    const pageParams = params.slice();
+    pageParams.push(q.limit, q.offset);
+    const { rows } = await this.q(
+      `SELECT * FROM (${FEED_SQL}) feed ${whereSql}
+       ORDER BY disclosed_date DESC NULLS LAST, id DESC
+       LIMIT $${pageParams.length - 1} OFFSET $${pageParams.length}`,
+      pageParams,
+    );
+    const total = Number(count.rows[0]?.n) || 0;
+    return {
+      items: rows.map(rowToItem),
+      offset: q.offset,
+      limit: q.limit,
+      total,
+      hasMore: q.offset + rows.length < total,
+    };
+  };
+  Store.prototype.getPolitician = async function getPolitician(personKey, query = {}) {
+    const { rows } = await this.q(
+      `SELECT person_name, office, party, state
+       FROM politician_filings
+       WHERE person_key = $1
+       ORDER BY filed_date DESC NULLS LAST
+       LIMIT 1`,
+      [personKey],
+    );
+    if (!rows[0]) return null;
+    const counts = await this.q(
+      `SELECT
+         count(*) FILTER (WHERE tx_type = 'buy')::int AS buys,
+         count(*) FILTER (WHERE tx_type = 'sell')::int AS sells,
+         count(*) FILTER (WHERE tx_type = 'exchange')::int AS exchanges,
+         count(*)::int AS trades
+       FROM politician_trades
+       WHERE person_key = $1`,
+      [personKey],
+    );
+    const top = await this.q(
+      `SELECT ticker, count(*)::int AS n
+       FROM politician_trades
+       WHERE person_key = $1 AND ticker IS NOT NULL
+       GROUP BY ticker
+       ORDER BY n DESC, ticker
+       LIMIT 8`,
+      [personKey],
+    );
+    const feed = await this.listPoliticianFeed({ ...query, personKey });
+    const c = counts.rows[0] || {};
+    return {
+      person: {
+        personKey,
+        personName: rows[0].person_name,
+        office: rows[0].office,
+        party: rows[0].party || null,
+        state: rows[0].state || null,
+      },
+      counts: {
+        buy: Number(c.buys) || 0,
+        sell: Number(c.sells) || 0,
+        exchange: Number(c.exchanges) || 0,
+        trades: Number(c.trades) || 0,
+      },
+      topTickers: top.rows.map((r) => ({ ticker: r.ticker, count: Number(r.n) || 0 })),
+      ...feed,
+    };
+  };
+}

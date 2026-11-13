@@ -1,0 +1,8 @@
+OGE Form 278-T (Updated February 2024)
+Periodic Transaction Report (OGE Form 278-T)
+Filer's Name Donald J Trump
+Transactions
+# Description Type Date Notification Received Over 30 Days Ago Amount
+1 APPLE INC (AAPL) purchase 8/1/2025 No $1,001 - $15,000
+2 VISA INC CLASS A (V) sale 8/1/2025 No $50,001 - $100,000
+3 Spouse: ISHARES CORE S&P 500 ETF (IVV) purchase 8/4/2025 No $15,001 - $50,000

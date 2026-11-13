@@ -10,13 +10,19 @@ const SORTS = {
   name: (a, b) => a.symbol.localeCompare(b.symbol),
 };
 
-export default function HoldingsTab({ model, onEdit, onClassify, onUpdatePrices }) {
+export default function HoldingsTab({ model, onEdit, onClassify, onUpdatePrices, tradeBadges = {}, onOpenTrades }) {
   const [sort, setSort] = useState('weight');
   if (!model.holdings.length) return <EmptyState text="No holdings in this model yet." onAction={onEdit} />;
   const h = [...model.holdings].sort(SORTS[sort]);
+  const flagged = h.filter((x) => tradeBadges[x.symbol]?.count);
 
   return (
     <>
+      {flagged.length > 0 && (
+        <button type="button" className="stale-line ptr-flag" onClick={() => onOpenTrades?.()}>
+          {flagged.length} holding{flagged.length === 1 ? '' : 's'} in this model {flagged.length === 1 ? 'has' : 'have'} a disclosed politician trade
+        </button>
+      )}
       <div className="toolbar">
         <button type="button" className="dropdown" onClick={onUpdatePrices}>Update prices</button>
         <button className="dropdown" onClick={() => setSort((s) => (s === 'weight' ? 'name' : 'weight'))}>
@@ -32,6 +38,7 @@ export default function HoldingsTab({ model, onEdit, onClassify, onUpdatePrices 
           const err = typeof x.priceSource === 'string' && x.priceSource.includes('error');
           const ltChip = lookThroughChip(x);
           const stale = fromNav && !isCashHolding(x) && isNavStale(x.type, x.priceAsOf);
+          const trades = tradeBadges[x.symbol];
           const priceLine = err || x.price == null
             ? 'price n/a'
             : `${num(x.price)} ${x.currency}`;
@@ -49,6 +56,11 @@ export default function HoldingsTab({ model, onEdit, onClassify, onUpdatePrices 
                   <span className="pill weight num">{pct(x.weight)}</span>
                   <span className={`pill ${auto ? 'green' : 'neutral'}`}>{srcLabel === 'Yahoo Finance' ? 'Yahoo' : (auto ? 'Live' : 'Manual')}</span>
                   {stale && <span className="pill amber">Stale</span>}
+                  {trades?.count > 0 && (
+                    <span className="pill green" onClick={(e) => { e.stopPropagation(); onOpenTrades?.(x.symbol); }}>
+                      {trades.count} trade{trades.count === 1 ? '' : 's'}
+                    </span>
+                  )}
                 </div>
                 <div className="row-sub num" style={{ marginTop: 4 }}>
                   {priceLine}

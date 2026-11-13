@@ -181,6 +181,68 @@ check (no cron token; the rest of the API is unauthenticated) and poll
 check time, duration, and error. A warning stays up when no check has succeeded
 in over 2 hours. The header menu shows a red dot while any holding is breached.
 
+## Politician trades
+Menu → **Politician trades**. The feed lists Periodic Transaction Reports as they
+are posted, newest disclosure first. Open a name for that filer's trades, buy
+and sell counts, and most-traded tickers. A holding in the **current** version
+of a model gets a badge when a parsed stock, ETF, or mutual-fund trade uses
+that ticker. `.TO` / `.V` names do not match a US listing of the same company.
+
+Amounts are the range printed on the filing. The app does not turn a range
+into a dollar amount. A scanned or unreadable filing is stored with its link
+and marked **Needs review**.
+
+### What each source actually is
+| Source | What is fetched | What parses |
+|---|---|---|
+| House Clerk | `{year}FD.zip` → `FD.xml` (FilingType `P` only). PDF at `/public_disc/ptr-pdfs/{year}/{DocID}.pdf`. | Machine-generated PTRs (DocIDs that start with `2`). The text layer has the asset, owner code (`SP` / `JT` / `DC` / blank = self), `P`/`S`/`E`, both dates, and a statutory range. DocIDs that start with `8` or `9` are usually scans with no text layer and stay on manual review. |
+| Senate eFD | Accept the prohibition agreement, then `POST /search/report/data/` for senator PTRs (`report_types=[11]`, `filer_types=[1]`). | Electronic reports are HTML tables (date, owner, ticker, asset, type, amount). `/search/view/paper/{uuid}/` is a scan and is not downloaded. |
+| President / Vice President | `GET https://extapps2.oge.gov/201/Presiden.nsf/API.xsp/v3/rest` (the table behind OGE's Officials' Individual Disclosures Search). Title must be exactly President or Vice President, type 278 Transaction. | The 2025–2026 presidential 278-T PDFs checked for this feature are multi-megabyte scans. An OCR text layer misreads "purchase" and the dates, so those filings are linked and marked for review. A text-layer 278-T under the size cap is parsed only when every amount line has an exact type word, a real date, and a statutory range. PDFs over `POLITICIAN_MAX_PDF_BYTES` (default 1.5 MB) are not downloaded. |
+
+Party is not on the filing. House party comes from the Clerk member list
+(`clerk.house.gov/xml/lists/MemberData.xml`) and Senate party from
+`senate.gov` senators XML, and only when the name matches one person. The
+President's party is left blank. Disclosure date is the Clerk filing date,
+the Senate date received, or the date OGE added the report — not the
+notification date printed on the form.
+
+### Schedule
+The poll uses the same in-process timer pattern as price alerts, on its own
+clock. Default is every **8 hours** while the process is awake
+(`POLITICIAN_POLL_INTERVAL_HOURS`). The first wait after boot is 45 seconds,
+so it does not run during listen or compete with `/api/health`. On the free
+tier the process still sleeps with the instance; the keep-alive that wakes
+`/api/health` also lets this timer catch up. **Refresh** on the trades page
+starts the same job and returns immediately.
+
+Each run downloads at most `POLITICIAN_DOCS_PER_RUN` new PDFs or HTML reports
+per source (default 12), with `POLITICIAN_FETCH_DELAY_MS` (default 1200)
+between requests. The Senate list is read a few pages at a time and the
+place is saved, while the newest page is always checked again. A 429 or 5xx backs that source off (5 minutes, or 15 on
+429, doubling up to 6 hours). A filing already stored is not fetched again.
+The backfill window is the current US calendar year plus the prior year
+(`POLITICIAN_BACKFILL_YEARS`, default 2). That walk does not send email.
+Later runs send **one** digest, held tickers first, to the existing alert
+address. Turn it off, or limit it to held tickers, under Settings →
+Politician trade alerts (also on the trades page).
+
+Options, crypto, and bonds are stored and shown. They do not light up a
+model holding. Spouse, joint, and child trades are included and labeled.
+
+### Storage and egress (estimates)
+A filing row is a few hundred bytes. Two years of House and Senate PTRs is
+on the order of a thousand filings; many House PDFs are one or a few trades,
+and presidential 278-Ts are review rows without a trade line. **Estimate:
+well under 15 MB** in Neon, including indexes.
+
+Reads are paged (40 rows) or aggregated (`count`, `GROUP BY ticker`). A poll
+asks only whether the filing ids it is about to download already exist. It
+does not `SELECT` the trade table. **Estimate: a poll is under 100 KB of
+Neon egress. A feed page is a few tens of KB.** The House zip is about
+0.6 MB of ordinary HTTP, not Neon. Large 278-T PDFs are not downloaded.
+
+No client names or account values are stored or emailed.
+
 ## Live now vs. next
 - **Live:** Overview, Holdings, Allocation, Geo/Sector, model editing, and the
   **return & attribution engine** (Performance) — monthly model-vs-benchmark

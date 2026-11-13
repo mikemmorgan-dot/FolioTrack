@@ -39,6 +39,11 @@ import { createAlertService } from './alerts/check.js';
 import { createAlertRouter } from './alerts/http.js';
 import { createAlertCoordinator } from './alerts/runner.js';
 import { startAlertScheduler } from './alerts/schedule.js';
+import { politicianConfig } from './politicians/config.js';
+import { createPoliticianRouter } from './politicians/http.js';
+import { runPoliticianPoll } from './politicians/ingest.js';
+import { createPoliticianCoordinator } from './politicians/runner.js';
+import { startPoliticianScheduler } from './politicians/schedule.js';
 import { listenThenStart } from './boot.js';
 import { egressMiddleware, openEgressScope } from './egress.js';
 
@@ -733,6 +738,24 @@ app.use('/api/alerts', createAlertRouter({
   sendTestEmail: () => alerts.sendTestEmail(),
 }));
 
+// Politician disclosures. The poll is a separate timer from price alerts so
+// it does not hit House/Senate/OGE every 30 minutes. It starts only after
+// listen, and never from /api/health.
+const politicianCfg = politicianConfig();
+const politicianRuns = createPoliticianCoordinator({
+  logger: console,
+  runJob: () => openEgressScope('scheduler politician-trades', () => runPoliticianPoll({
+    store,
+    email: alertEmail,
+    logger: console,
+  })),
+});
+app.use('/api/politician-trades', createPoliticianRouter({
+  store,
+  startPoll: () => politicianRuns.start(),
+  pollRunning: () => politicianRuns.running(),
+}));
+
 // ---------------- static client ----------------
 const clientDist = path.join(__dirname, '..', 'client', 'dist');
 app.use(express.static(clientDist));
@@ -754,6 +777,14 @@ void (async () => {
   startAlertScheduler({
     run: () => openEgressScope('scheduler alert-check', () => alertRuns.start({ refresh: true, kind: 'check' })),
     lastRunAt: alertRuns.status().lastRunAt,
+    logger: console,
+  });
+  const politicianState = await store.getPoliticianPollState().catch(() => ({}));
+  startPoliticianScheduler({
+    run: () => politicianRuns.start(),
+    lastRunAt: politicianState?.lastRunAt || null,
+    intervalMs: politicianCfg.intervalMs,
+    initialDelayMs: politicianCfg.initialDelayMs,
     logger: console,
   });
   try {
