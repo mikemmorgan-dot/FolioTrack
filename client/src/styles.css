@@ -759,3 +759,40 @@ a.ext { color: var(--green); text-decoration: none; }
 .alert-card .alert-sym { font-size: 16px; font-weight: 700; letter-spacing: -0.02em; }
 .alert-dd { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.03em; }
 .alert-basis { font-size: 13px; color: var(--text-2); line-height: 1.45; margin: 10px 0 0; }
+
+.ptr-flag { margin-bottom: 12px; }
+.ptr-chips { margin: 0 0 10px; }
+.ptr-chips button {
+  flex: 1 1 auto; background: none; border: none; color: var(--text-2);
+  font-size: 13px; font-weight: 600; padding: 8px 10px; border-radius: 9px;
+}
+.ptr-chips button.on { background: var(--surface-3); color: var(--text); }
+.ptr-dates { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.ptr-held {
+  width: 100%; text-align: left; background: var(--surface); color: var(--text-2);
+  border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+  font-size: 14px; font-weight: 600; margin: 4px 0 8px;
+}
+.ptr-held.on { color: var(--green); border-color: var(--green); }
+.ptr-card {
+  background: var(--surface); border-radius: var(--r); padding: 14px 14px 12px; margin: 0 0 10px;
+}
+.ptr-who {
+  background: none; border: none; padding: 0; color: var(--text);
+  font-size: 17px; font-weight: 700; letter-spacing: -0.01em; text-align: left;
+}
+.ptr-meta { font-size: 13px; color: var(--text-2); margin-top: 4px; line-height: 1.4; }
+.ptr-line { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-top: 8px; }
+.ptr-side { font-size: 16px; font-weight: 700; }
+.ptr-side-label { font-size: 14px; font-weight: 700; color: var(--text); }
+.ptr-tags { display: flex; gap: 6px; margin-top: 8px; }
+.ptr-asset { font-size: 14px; margin: 8px 0 0; line-height: 1.4; }
+.ptr-note { font-size: 14px; color: var(--text-2); margin: 8px 0 0; line-height: 1.45; }
+.ptr-link { display: inline-block; margin-top: 8px; color: var(--green); font-size: 14px; font-weight: 700; }
+.ptr-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0 12px; }
+.ptr-stats div {
+  background: var(--surface); border-radius: 12px; padding: 12px 8px; text-align: center;
+  font-size: 12px; color: var(--text-2); font-weight: 600;
+}
+.ptr-stat-n { display: block; font-size: 22px; color: var(--text); font-weight: 700; letter-spacing: -0.03em; }
+.ptr-top { display: flex; flex-wrap: wrap; gap: 6px; }

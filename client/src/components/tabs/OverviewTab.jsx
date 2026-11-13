@@ -3,7 +3,7 @@ import { isNavStale, isCashHolding, isSeriesPrice } from '../../nav.js';
 import AssetIcon from '../AssetIcon.jsx';
 import EmptyState from '../EmptyState.jsx';
 
-export default function OverviewTab({ model, goto, onEdit, onUpdatePrices }) {
+export default function OverviewTab({ model, goto, onEdit, onUpdatePrices, tradeBadges = {}, onOpenTrades }) {
   const h = model.holdings;
   if (!h.length) return <EmptyState onAction={onEdit} />;
 
@@ -12,9 +12,15 @@ export default function OverviewTab({ model, goto, onEdit, onUpdatePrices }) {
   const staleCount = h.filter((x) =>
     isSeriesPrice(x) && !isCashHolding(x) && isNavStale(x.type, x.priceAsOf)
   ).length;
+  const traded = h.filter((x) => tradeBadges[x.symbol]?.count);
 
   return (
     <>
+      {traded.length > 0 && (
+        <button type="button" className="stale-line ptr-flag" onClick={() => onOpenTrades?.()}>
+          {traded.length} holding{traded.length === 1 ? '' : 's'} in this model {traded.length === 1 ? 'was' : 'were'} traded by a tracked filer
+        </button>
+      )}
       {staleCount > 0 && (
         <button type="button" className="stale-line" onClick={onUpdatePrices}>
           {staleCount} manual price{staleCount === 1 ? '' : 's'} older than cadence

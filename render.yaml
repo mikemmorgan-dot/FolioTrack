@@ -1,10 +1,9 @@
 services:
   - type: web
     name: model-portfolio-tracker
-    runtime: node
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     plan: free
-    buildCommand: npm run build && npm --prefix server install
-    startCommand: npm start
     envVars:
       - key: NODE_VERSION
         value: 20.18.0

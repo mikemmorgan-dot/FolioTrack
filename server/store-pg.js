@@ -4,6 +4,7 @@ import { uid, instrumentFromSpec, currentVersionOf, holdingsEqual, breakdownPatc
 import { planNavBatch, todayToronto, batchError } from './nav.js';
 import { normalizePublishedReturns } from './factsheet/publishedReturns.js';
 import { coerceAlertSettings, applyAlertSettingsPatch } from './alerts/settings.js';
+import { installPgPolitician } from './politicians/pgStore.js';
 import { WEEKS_52_DAYS } from './alerts/drawdown.js';
 import { noteEgress, approxJsonBytes } from './egress.js';
 import {
@@ -736,3 +737,5 @@ export class PgStore {
     return { id, effectiveDate: eff, note: note || '', holdings: resolved };
   }
 }
+
+installPgPolitician(PgStore);

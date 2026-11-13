@@ -109,6 +109,32 @@ export const api = {
   runAlerts: () => j('/api/alerts/run', { method: 'POST' }),
   refreshAlertPrices: () => j('/api/alerts/refresh-prices', { method: 'POST' }),
   alertStatus: () => j('/api/alerts/status'),
+  politicianTrades: (query = {}) => {
+    const p = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value != null && value !== '') p.set(key, String(value));
+    }
+    const qs = p.toString();
+    return j(`/api/politician-trades${qs ? `?${qs}` : ''}`);
+  },
+  politician: (personKey, query = {}) => {
+    const p = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value != null && value !== '') p.set(key, String(value));
+    }
+    const qs = p.toString();
+    return j(`/api/politician-trades/people/${encodeURIComponent(personKey)}${qs ? `?${qs}` : ''}`);
+  },
+  politicianHeld: () => j('/api/politician-trades/held'),
+  politicianStatus: () => j('/api/politician-trades/status'),
+  politicianSettings: () => j('/api/politician-trades/settings'),
+  savePoliticianSettings: (body) =>
+    j('/api/politician-trades/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  refreshPoliticianTrades: () => j('/api/politician-trades/refresh', { method: 'POST' }),
   testAlertEmail: async () => {
     const res = await fetch('/api/alerts/test-email', { method: 'POST' });
     const body = await res.json().catch(() => ({}));

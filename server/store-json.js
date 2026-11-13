@@ -8,6 +8,7 @@ import { uid, instrumentFromSpec, currentVersionOf, holdingsEqual, breakdownPatc
 import { planNavBatch, todayToronto, batchError } from './nav.js';
 import { normalizePublishedReturns } from './factsheet/publishedReturns.js';
 import { coerceAlertSettings, applyAlertSettingsPatch } from './alerts/settings.js';
+import { installMemoryPolitician } from './politicians/memoryStore.js';
 import { snapshotFromSeries } from './alerts/drawdown.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -345,3 +346,5 @@ export class JsonStore {
     return version;
   }
 }
+
+installMemoryPolitician(JsonStore);

@@ -181,6 +181,116 @@ check (no cron token; the rest of the API is unauthenticated) and poll
 check time, duration, and error. A warning stays up when no check has succeeded
 in over 2 hours. The header menu shows a red dot while any holding is breached.
 
+## Politician trades
+Menu → **Politician trades**. The feed lists filings newest disclosure first.
+Open a name for that filer's trades, buy and sell counts, and most-traded
+tickers. Coverage is every House PTR in the Clerk index for the backfill
+window (sitting members and candidates), every Senate eFD PTR from a senator,
+and OGE 278-T reports whose title is exactly President or Vice President.
+The feed filter is **Members / Candidates / All**, and All is the default.
+A holding in the **current** model version gets
+a badge when a parsed stock, ETF, or mutual-fund trade uses that ticker.
+`.TO` / `.V` names do not match a US listing of the same company.
+
+Spouse, joint, and child trades are included and labeled. Alerts default to
+**all new trades**. Held-tickers-only stays available and defaults off. Held
+tickers are still listed first in the digest.
+
+Amounts stay the printed range. A row that does not validate is not stored
+as a trade. The filing stays linked and marked **Needs review**. Rows read
+by OCR show an **OCR** label and the confidence.
+
+### What each source actually is
+| Source | What is fetched | What parses |
+|---|---|---|
+| House Clerk | `{year}FD.zip` → `FD.xml` (FilingType `P` only). PDF at `/public_disc/ptr-pdfs/{year}/{DocID}.pdf`. | Machine-generated PTRs (DocIDs that start with `2`). The text layer has the asset, owner code (`SP` / `JT` / `DC` / blank = self), `P`/`S`/`E`, both dates, and a statutory range. DocIDs that start with `8` or `9` are usually scans with no text layer and stay on manual review. |
+| Senate eFD | Accept the prohibition agreement, then `POST /search/report/data/` for senator PTRs (`report_types=[11]`, `filer_types=[1]`). | Electronic reports are HTML tables (date, owner, ticker, asset, type, amount). `/search/view/paper/{uuid}/` is a scan and is not downloaded. |
+| President / Vice President | `GET https://extapps2.oge.gov/201/Presiden.nsf/API.xsp/v3/rest`. Title must be exactly President or Vice President, type 278 Transaction. | Scanned 278-T PDFs are rendered one page at a time (`pdftoppm`) and read with the `tesseract` CLI in a child process. A row is kept only when the date parses, the amount is a statutory bucket, and the type word is purchase, sale, or exchange (a single-character slip such as `purchaso` is accepted only when it cannot be another type). Low confidence or a failed check stays on review. PDFs over `POLITICIAN_MAX_PDF_BYTES` (default 32 MB) are linked and not read. The largest filing measured in Nov 2026 was about 27 MB. |
+
+Party is not on the filing. House party comes from the Clerk member list
+(`clerk.house.gov/xml/lists/MemberData.xml`) and Senate party from
+`senate.gov` senators XML, and only when the name matches one person. The
+President's party is left blank. Disclosure date is the Clerk filing date,
+the Senate date received, or the date OGE added the report — not the
+notification date printed on the form.
+
+### Schedule
+Nothing here runs before the port is open, and `/api/health` does not wait
+on it. The first look is 45 seconds after boot.
+
+**Backfill.** Until every House PTR, senator PTR, and President/VP 278-T in
+the window is stored, the job keeps going: about 25 documents per slice, a
+1.2 second gap between requests, cursor saved in Postgres after each slice.
+A restart reads that cursor and continues. It does not wait 24 hours between
+slices, and it does not email the history.
+
+**Daily check.** After the backfill is done, a run happens when the last
+**successful** run in the database is at least 24 hours old
+(`POLITICIAN_POLL_INTERVAL_HOURS`). Waking the free-tier process is enough:
+the timer only decides when to look, and the decision uses that timestamp.
+**Refresh** always starts a run and returns immediately.
+
+A 429 or 5xx backs that source off (5 minutes, or 15 on 429, doubling up to
+6 hours). The backfill window is the current US calendar year plus the prior
+year (`POLITICIAN_BACKFILL_YEARS`, default 2). After that, digests go to the
+existing alert address. Turn them off, or limit them to held tickers, under
+Settings → Politician trade alerts.
+
+The image is Docker (`Dockerfile`) so Render has `tesseract` and `pdftoppm`.
+Without those binaries the rest of the app still runs and presidential scans
+stay on review. `tesseract.js` was not used: on this same page it validated
+almost no rows and held about 380MB in the Node process. The CLI is a child
+process. A measured 4-page 278-T (827KB, received Aug 2025) took **9.4
+seconds** here and moved Node RSS by about **10MB**. It kept **24** rows and
+flagged **15**. One kept row read 8/4/2025 where the page shows 8/1/2025;
+that date was not rewritten.
+
+### Backfill time (estimate)
+About **1,000 House PTRs** (515 in the 2025 index and 468 in the 2026 index
+checked on 13 Nov 2026) plus on the order of **several hundred** senator
+PTRs, at roughly 2 seconds each, is around an hour of downloading. Presidential
+OCR is the slower part: the CLI took about **3 seconds per page** on a normal
+CPU for a real 4-page 278-T. Render's free CPU is slower; call it around 8–15
+seconds a page. Twenty filings averaging 10 pages is on the order of an hour.
+**Estimate: about 2–4 hours of awake time** if the keep-alive stays up. A
+killed process resumes from the cursor instead of starting over.
+
+On the 2026 House index, **108 of 439** people on the current Clerk roster
+had at least one PTR. The other members had not filed one that year. Every
+FilingType `P` row is still stored, so a member who did file is not dropped
+because of a name mismatch. The Senate pull is `filer_types=[1]` (senators,
+not candidates or former senators). There are 100 senators on the Senate
+contact list.
+
+House candidate PTRs are kept and labeled. Each filing and trade stores
+`filer_status` (`member`, `candidate`, `officer`, or `employee`). The PTR
+header line `Status: Member` or `Status: Candidate` wins. When a scan has no
+status line, a unique Clerk roster match (last name, state, and district,
+plus first name when more than one person shares the seat) is a member, and
+so is an `Hon.` prefix (the index uses that for sitting members whose name
+did not match the roster). A House PTR with none of those is a candidate.
+The **Candidate** label is on the feed card, the per-person page, and the
+digest. Senators, the President, and the Vice President are stored as
+members. The Members filter is everyone who is not labeled Candidate.
+
+Options, crypto, and bonds are stored and shown. They do not light up a
+model holding. Spouse, joint, and child trades are included and labeled.
+
+### Storage and egress (estimates)
+A filing row is a few hundred bytes. Two years of House and Senate PTRs is
+on the order of a thousand filings; many House PDFs are one or a few trades,
+Presidential OCR adds a confidence integer on the rows it keeps. **Estimate:
+well under 20 MB** in Neon, including indexes.
+
+Reads are paged (40 rows) or aggregated (`count`, `GROUP BY ticker`). A poll
+asks only whether the filing ids it is about to download already exist. It
+does not `SELECT` the trade table. **Estimate: a daily poll is under 100 KB
+of Neon egress. A feed page is a few tens of KB.** The House zip is about
+0.6 MB of ordinary HTTP, not Neon. A 278-T is downloaded once (up to 32 MB)
+and OCR'd from disk, one page at a time.
+
+No client names or account values are stored or emailed.
+
 ## Live now vs. next
 - **Live:** Overview, Holdings, Allocation, Geo/Sector, model editing, and the
   **return & attribution engine** (Performance) — monthly model-vs-benchmark

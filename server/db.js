@@ -157,6 +157,69 @@ CREATE INDEX IF NOT EXISTS alert_history_at ON alert_history (at DESC);
 -- One row per close. Replaces the price_history.series JSON blob, which
 -- had to be sent in full on every read and rewritten in full on every refresh.
 ${PRICE_POINTS_TABLE_SQL}
+
+-- Politician trade filings. A periodic report that cannot be parsed is a row
+-- here with parse_status 'needs_manual_review' and no guessed trade rows.
+CREATE TABLE IF NOT EXISTS politician_filings (
+  id text PRIMARY KEY,
+  source text NOT NULL,
+  filing_key text NOT NULL,
+  person_key text NOT NULL,
+  person_name text NOT NULL,
+  office text NOT NULL,
+  party text,
+  filer_status text,
+  state text,
+  district text,
+  filed_date date,
+  source_url text NOT NULL,
+  parse_status text NOT NULL,
+  parse_note text,
+  ocr_done boolean NOT NULL DEFAULT false,
+  ocr_page int,
+  page_count int,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS politician_filings_source_key ON politician_filings (source, filing_key);
+CREATE INDEX IF NOT EXISTS politician_filings_person ON politician_filings (person_key);
+
+CREATE TABLE IF NOT EXISTS politician_trades (
+  id text PRIMARY KEY,
+  filing_id text NOT NULL REFERENCES politician_filings(id) ON DELETE CASCADE,
+  row_index int NOT NULL,
+  person_key text NOT NULL,
+  person_name text NOT NULL,
+  office text NOT NULL,
+  party text,
+  filer_status text,
+  state text,
+  owner text NOT NULL,
+  ticker text,
+  ticker_norm text,
+  asset text NOT NULL,
+  asset_class text NOT NULL,
+  tx_type text NOT NULL,
+  partial boolean NOT NULL DEFAULT false,
+  tx_date date,
+  disclosed_date date,
+  lag_days int,
+  amount_range text NOT NULL,
+  source_url text NOT NULL,
+  ocr boolean NOT NULL DEFAULT false,
+  ocr_confidence int,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (filing_id, row_index)
+);
+CREATE INDEX IF NOT EXISTS politician_trades_disclosed ON politician_trades (disclosed_date DESC, id DESC);
+CREATE INDEX IF NOT EXISTS politician_trades_person ON politician_trades (person_key, disclosed_date DESC);
+CREATE INDEX IF NOT EXISTS politician_trades_ticker ON politician_trades (ticker_norm) WHERE ticker_norm IS NOT NULL;
+ALTER TABLE politician_filings ADD COLUMN IF NOT EXISTS ocr_done boolean NOT NULL DEFAULT false;
+ALTER TABLE politician_filings ADD COLUMN IF NOT EXISTS ocr_page int;
+ALTER TABLE politician_filings ADD COLUMN IF NOT EXISTS page_count int;
+ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS ocr boolean NOT NULL DEFAULT false;
+ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS ocr_confidence int;
+ALTER TABLE politician_filings ADD COLUMN IF NOT EXISTS filer_status text;
+ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS filer_status text;
 `;
 
 export async function initSchema(pool) {

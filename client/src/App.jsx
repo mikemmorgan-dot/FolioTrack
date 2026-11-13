@@ -13,6 +13,7 @@ import HoldingsTab from './components/tabs/HoldingsTab.jsx';
 import GeoSectorTab from './components/tabs/GeoSectorTab.jsx';
 import AllocationTab from './components/tabs/AllocationTab.jsx';
 import CompareTab from './components/tabs/CompareTab.jsx';
+import PoliticianTrades from './components/PoliticianTrades.jsx';
 
 export const RISK_COLORS = { 1: '#4FC3F7', 2: '#35C9A8', 3: '#E5C044', 4: '#F0913E', 5: '#F0655B' };
 export const RISK_LABELS = { 1: 'Conservative', 2: 'Balanced', 3: 'Balanced Growth', 4: 'Growth', 5: 'Aggressive' };
@@ -44,14 +45,19 @@ export default function App() {
   const [err, setErr] = useState(null);
   const [loading, setLoading] = useState(true);
   const [alertCount, setAlertCount] = useState(0);
+  const [tradesOpen, setTradesOpen] = useState(false);
+  const [tradeTicker, setTradeTicker] = useState('');
+  const [tradeBadges, setTradeBadges] = useState({});
 
   const refreshAlerts = () => api.alerts().then((a) => setAlertCount(a.activeCount || 0)).catch(() => {});
+  const refreshTradeBadges = () => api.politicianHeld().then((b) => setTradeBadges(b.bySymbol || {})).catch(() => {});
 
   useEffect(() => {
     api.models()
       .then((m) => { setModels(m); setSelected((s) => s || m[0]?.key || null); })
       .catch((e) => setErr(e.message));
     refreshAlerts();
+    refreshTradeBadges();
   }, []);
 
   // Bumped on every load so an in-flight GET for model A cannot overwrite
@@ -125,6 +131,7 @@ export default function App() {
         <>
           <button type="button" className="app-menu-backdrop" aria-label="Close menu" onClick={() => setMenuOpen(false)} />
           <div className="app-menu" role="menu">
+            <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setTradeTicker(''); setTradesOpen(true); }}>Politician trades</button>
             <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setPricesOpen(true); }}>Prices</button>
             <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setSettingsOpen(true); }}>
               Settings
@@ -148,10 +155,12 @@ export default function App() {
           <Hero model={model} riskRank={riskRank} />
           <div className="content">
             <Active model={model} goto={setView} riskRank={riskRank}
+              tradeBadges={tradeBadges}
               onEdit={() => { setEditWeights(null); setEditing(true); }}
               onClassify={setClassifying}
               onOptimizeApply={(weights) => { setEditWeights(weights); setEditing(true); }}
               onUpdatePrices={() => setPricesOpen(true)}
+              onOpenTrades={(ticker) => { setTradeTicker(ticker || ''); setTradesOpen(true); }}
             />
           </div>
           <button className="fab" aria-label="Edit model" onClick={() => { setEditWeights(null); setEditing(true); }}>+</button>
@@ -193,6 +202,13 @@ export default function App() {
           onClose={() => { setSettingsOpen(false); refreshAlerts(); }}
           onSaved={() => setSettingsRev((r) => r + 1)}
           onAlertCount={setAlertCount}
+        />
+      )}
+
+      {tradesOpen && (
+        <PoliticianTrades
+          initialTicker={tradeTicker}
+          onClose={() => { setTradesOpen(false); refreshTradeBadges(); }}
         />
       )}
 
