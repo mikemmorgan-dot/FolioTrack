@@ -15,7 +15,7 @@ import {
   parseHouseIndexXml,
   parseHousePtrText,
 } from './parseHouse.js';
-import { claimFresh, ocrSettled, pendingOcrResult } from './ocrPending.js';
+import { OCR_FAILED_NOTE, claimFresh, ocrSettled, pendingOcrResult } from './ocrPending.js';
 import { OGE_API, parseOgeApiRow } from './parseOge.js';
 import { parseSenatePtrHtml, parseSenateSearchRow, reviewPaperFiling, SENATE_BASE } from './parseSenate.js';
 import { buildFilingRecord, buildTradeRows, heldIndex, splitStateDst } from './records.js';
@@ -42,7 +42,7 @@ function past(deadline) {
   return Number.isFinite(deadline) && Date.now() > deadline;
 }
 
-async function http(fetchImpl, url, init = {}) {
+async function http(fetchImpl = globalThis.fetch, url, init = {}) {
   const headers = {
     'User-Agent': POLITICIAN_UA,
     Accept: init.accept || '*/*',
@@ -189,7 +189,7 @@ export async function readOgePdf(bytes, now) {
     return {
       status: 'needs_manual_review',
       trades: [],
-      note: 'The 278-T could not be OCR’d, so no rows were guessed.',
+      note: OCR_FAILED_NOTE,
       ocrDone: true,
       error: err.message,
     };
@@ -468,7 +468,7 @@ function ogeQuery(start) {
   return params;
 }
 
-async function ogePage(fetchImpl, start) {
+async function ogePage(fetchImpl = globalThis.fetch, start) {
   const url = `${OGE_API}?${ogeQuery(start).toString()}`;
   const res = await http(fetchImpl, url, { accept: 'application/json' });
   if (res.status === 429 || res.status >= 500) throw new SourceHttpError('oge', res.status);
@@ -485,7 +485,12 @@ function dateSpan(rows) {
   return { oldest: dates[0] || null, newest: dates[dates.length - 1] || null };
 }
 
-export async function loadOgeCandidates({ fetchImpl, windowStart, sleep, delayMs }) {
+export async function loadOgeCandidates({
+  fetchImpl = globalThis.fetch,
+  windowStart,
+  sleep,
+  delayMs,
+}) {
   const page0 = await ogePage(fetchImpl, 0);
   let rows = page0.data.slice();
   const span = dateSpan(page0.data);
@@ -519,7 +524,7 @@ function requestParsed() {
   };
 }
 
-export async function downloadOgePdf(fetchImpl, sourceUrl, maxPdfBytes) {
+export async function downloadOgePdf(fetchImpl = globalThis.fetch, sourceUrl, maxPdfBytes) {
   const head = await http(fetchImpl, sourceUrl, { method: 'HEAD' });
   const length = Number(head.headers?.get?.('content-length'));
   if (head.status === 429 || head.status >= 500) throw new SourceHttpError('oge', head.status);
@@ -570,7 +575,17 @@ export async function downloadOgePdf(fetchImpl, sourceUrl, maxPdfBytes) {
 }
 
 async function ingestOge({
-  fetchImpl, store, windowStart, cap, maxPdfBytes, delayMs, sleep, deadline, logger, tools, readPdf,
+  fetchImpl = globalThis.fetch,
+  store,
+  windowStart,
+  cap,
+  maxPdfBytes,
+  delayMs,
+  sleep,
+  deadline,
+  logger,
+  tools,
+  readPdf,
 }) {
   const haveTools = typeof tools === 'boolean' ? tools : await ocrToolsAvailable();
   const readPdfFn = readPdf || readOgePdf;
@@ -648,7 +663,7 @@ async function ingestOge({
       parsed = {
         status: 'needs_manual_review',
         trades: [],
-        note: 'The 278-T could not be OCR’d, so no rows were guessed.',
+        note: OCR_FAILED_NOTE,
         ocrDone: true,
       };
       logger.warn(`[politicians] oge ${candidate.filingKey} ocr failed`);

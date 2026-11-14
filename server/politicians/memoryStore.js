@@ -6,6 +6,7 @@ import { currentVersionOf } from '../util.js';
 import { canonicalTicker, matchableAssetClass } from './normalize.js';
 import {
   OCR_CLAIM_MS,
+  OCR_FAILED_NOTE,
   PENDING_OCR_NOTE,
   claimFresh,
   filingNeedsPresidentialOcr,
@@ -240,6 +241,26 @@ export const memoryMethods = {
     row.ocrClaimedAt = null;
     this.persist();
     return true;
+  },
+  async recoverFailedPresidentialOcr() {
+    politicianBucket(this.db);
+    const withTrades = new Set(
+      (this.db.politicianTrades || []).map((trade) => trade.filingId).filter(Boolean),
+    );
+    let recovered = 0;
+    for (const row of Object.values(this.db.politicianFilings)) {
+      if (row.source !== 'oge') continue;
+      if (row.office !== 'president' && row.office !== 'vice-president') continue;
+      if (row.parseNote !== OCR_FAILED_NOTE) continue;
+      if (withTrades.has(row.id)) continue;
+      row.parseStatus = 'pending_ocr';
+      row.parseNote = PENDING_OCR_NOTE;
+      row.ocrDone = false;
+      row.ocrClaimedAt = null;
+      recovered += 1;
+    }
+    if (recovered) this.persist();
+    return recovered;
   },
   async listPendingPresidentialFilings({ limit = 20, now = new Date() } = {}) {
     const nowMs = now instanceof Date ? now.getTime() : Date.parse(now);

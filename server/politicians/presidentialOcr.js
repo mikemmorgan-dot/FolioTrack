@@ -11,7 +11,7 @@ import {
   saveBundle,
 } from './ingest.js';
 import { windowStartIso } from './normalize.js';
-import { claimFresh, ocrSettled } from './ocrPending.js';
+import { OCR_FAILED_NOTE, claimFresh, ocrSettled } from './ocrPending.js';
 import { buildFilingRecord } from './records.js';
 
 export function missingDatabaseUrlMessage() {
@@ -38,7 +38,7 @@ export function redactSecrets(text, env = process.env) {
   let out = String(text ?? '');
   const url = String(env.DATABASE_URL || '').trim();
   if (url.length >= 8 && out.includes(url)) out = out.split(url).join('[redacted]');
-  return out;
+  return out.replace(/postgres(?:ql)?:\/\/\S+/gi, '[redacted]');
 }
 
 export function normalizeFilingKey(value) {
@@ -60,11 +60,34 @@ function withDigest(parsed) {
   };
 }
 
-function isTransient(err) {
+const PROGRAMMING_ERROR_NAMES = new Set(['TypeError', 'ReferenceError', 'SyntaxError', 'RangeError']);
+
+// A TypeError is a bug in this job, not a bad PDF. Leave the filing pending
+// so a later run can read it after the code is fixed.
+function isProgrammingError(err) {
+  if (!err || (typeof err !== 'object' && typeof err !== 'function')) return false;
+  if (PROGRAMMING_ERROR_NAMES.has(err.name)) return true;
+  return err instanceof TypeError
+    || err instanceof ReferenceError
+    || err instanceof SyntaxError
+    || err instanceof RangeError;
+}
+
+function isRetryable(err) {
+  if (isProgrammingError(err)) return true;
   if (err instanceof SourceHttpError) return true;
   const name = err?.name || '';
   if (name === 'AbortError' || name === 'TimeoutError') return true;
   return /timed out|ECONNRESET|EAI_AGAIN|fetch failed|network/i.test(String(err?.message || ''));
+}
+
+function failureDetail(err, env) {
+  const status = err?.status ? ` HTTP ${err.status}` : '';
+  const message = redactSecrets(err?.message || String(err ?? 'unknown error'), env);
+  const name = err?.name && err.name !== 'Error' && !message.startsWith(`${err.name}:`)
+    ? `${err.name}: `
+    : '';
+  return `${status}: ${name}${message}`;
 }
 
 function filingDraft(candidate) {
@@ -91,6 +114,7 @@ async function processOne({
   maxPdfBytes,
   now,
   logger,
+  env,
 }) {
   let stored = null;
   if (!candidate) {
@@ -130,16 +154,15 @@ async function processOne({
       ms,
     };
   } catch (err) {
-    const http = err?.status ? ` HTTP ${err.status}` : '';
-    logger.error(`[presidential-ocr] ${key} failed${http}`);
-    if (isTransient(err)) {
+    logger.error(`[presidential-ocr] ${key} failed${failureDetail(err, env)}`);
+    if (isRetryable(err)) {
       await store.releasePoliticianOcrClaim(draft.id);
       return { filingKey: key, action: 'retry', ms: Date.now() - started };
     }
     await saveBundle(store, draft, {
       status: 'needs_manual_review',
       trades: [],
-      note: 'The 278-T could not be OCR’d, so no rows were guessed.',
+      note: OCR_FAILED_NOTE,
       ocrDone: true,
     });
     return { filingKey: key, action: 'failed', ms: Date.now() - started };
@@ -148,7 +171,7 @@ async function processOne({
 
 export async function runPresidentialOcr({
   store,
-  fetchImpl,
+  fetchImpl = globalThis.fetch,
   readPdf = readOgePdf,
   download = downloadOgePdf,
   loadCandidates = loadOgeCandidates,
@@ -163,6 +186,12 @@ export async function runPresidentialOcr({
   const cfg = politicianConfig(env);
   const clock = now instanceof Date ? now : new Date(now);
   const windowStart = windowStartIso(clock, cfg.backfillYears);
+  if (typeof store?.recoverFailedPresidentialOcr === 'function') {
+    const recovered = await store.recoverFailedPresidentialOcr();
+    if (recovered) {
+      logger.log(`[presidential-ocr] restored ${recovered} presidential filing${recovered === 1 ? '' : 's'} to pending OCR`);
+    }
+  }
   let candidates = [];
   try {
     candidates = await loadCandidates({
@@ -172,7 +201,7 @@ export async function runPresidentialOcr({
       delayMs: cfg.delayMs,
     });
   } catch (err) {
-    logger.error(`[presidential-ocr] OGE index failed${err?.status ? ` HTTP ${err.status}` : ''}`);
+    logger.error(`[presidential-ocr] OGE index failed${failureDetail(err, env)}`);
   }
   const byKey = new Map(candidates.map((row) => [row.filingKey, row]));
   let queue = [];
@@ -214,6 +243,7 @@ export async function runPresidentialOcr({
       maxPdfBytes: cfg.maxPdfBytes,
       now: clock,
       logger,
+      env,
     });
     filings.push(outcome);
     if (outcome.action === 'ocr' || outcome.action === 'failed' || outcome.action === 'retry') {
@@ -221,6 +251,20 @@ export async function runPresidentialOcr({
     }
   }
   return { filings, windowStart };
+}
+
+const ATTEMPTED = new Set(['ocr', 'failed', 'retry']);
+
+export function everyAttemptedFilingFailed(result) {
+  const attempted = (result?.filings || []).filter((row) => ATTEMPTED.has(row.action));
+  return attempted.length > 0 && attempted.every((row) => row.action === 'failed' || row.action === 'retry');
+}
+
+export function exitCodeForOcrRun(result) {
+  const filings = result?.filings || [];
+  if (filings.some((row) => row.action === 'missing')) return 1;
+  if (everyAttemptedFilingFailed(result)) return 1;
+  return 0;
 }
 
 export function formatOcrSummary(result) {
@@ -234,6 +278,9 @@ export function formatOcrSummary(result) {
   for (const row of filings) {
     const seconds = row.ms == null ? '' : (row.ms / 1000).toFixed(1);
     lines.push(`${row.filingKey} | ${row.action} | ${row.trades ?? ''} | ${row.pages ?? ''} | ${seconds}`);
+  }
+  if (everyAttemptedFilingFailed(result)) {
+    lines.push('', 'Every attempted filing failed.');
   }
   return lines.join('\n');
 }
