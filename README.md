@@ -213,8 +213,10 @@ A stock, ETF, or mutual fund that the current model versions hold is flagged
 with the same ticker match as the filing cards (`.TO` does not match a US
 listing). At most 20 clustered tickers are returned.
 
-Filings in the window with no parsed ticker (still **Needs review**, or a
-stored row with no ticker) are left out of the ranks. The payload includes
+Filings in the window with no ticker after name matching (still **Needs review**,
+or a stored row whose name did not match) are left out of the ranks. A ticker
+printed on the filing is kept. A high-confidence match from the asset name is
+stored with `ticker_source` `name_match` and counts the same way. The payload includes
 that count. Postgres does the grouping (`GROUP BY` ticker and person,
 `count`, `sum` of the statutory bounds). Indexes: `politician_trades_window`
 on `(disclosed_date, tx_type)` for parsed tickers, and `politician_filings_filed`
@@ -238,7 +240,26 @@ tickers are still listed first in the digest.
 
 Amounts stay the printed range. A row that does not validate is not stored
 as a trade. The filing stays linked and marked **Needs review**. Rows read
-by OCR show an **OCR** label and the confidence.
+by OCR show an **OCR** label and the confidence. A ticker resolved from the
+printed name, rather than copied off the filing, shows **matched from name**.
+
+**Name match.** 278-Ts list "Micron Technology Inc" and "Berkshire Hathaway
+Class B", not `MU` and `BRK.B`. New OCR rows, and an idempotent backfill of
+stored House, Senate, and presidential rows whose ticker is still null, resolve
+those names. The source is the SEC `company_tickers_exchange.json` list
+(User-Agent `FolioTrack/1.0`, cached in `app_settings` and refreshed at most
+weekly) plus a small curated map for Vanguard, iShares, SPDR, Invesco, Schwab,
+and PIMCO funds. A match is kept only when the normalized name is exact, or
+when one fuzzy candidate clears 0.94 and the runner-up is not close. Share
+classes such as Class B become `BRK.B`. Bonds, notes, munis, Treasuries,
+percent coupons, and private funds are not given a ticker. A note, bond,
+`due <date>`, or coupon is classed as a bond even when the line also says
+Call. `ticker_source` stays `filing` for a symbol that was on the form, and
+that value is never replaced. The backfill updates tickers in batches and does
+not set `digest_pending`, so a trade that was already emailed is not sent again.
+The summary and held-ticker badge read `ticker_norm` the same way they always
+have, so a matched stock or ETF is included. The catalog is loaded only by the
+poll and the OCR job, not by a feed or summary request.
 
 ### What each source actually is
 | Source | What is fetched | What parses |

@@ -1,6 +1,9 @@
 # OCR scanned presidential and vice-presidential OGE 278-T filings.
 # The Render service is Node and has no tesseract. This job writes trades
 # back to the same Neon database. The app's next digest emails them once.
+# It also resolves asset names to tickers for new rows and for stored rows
+# that still have no ticker, including House and Senate. A ticker printed on
+# the filing is left alone, and a backfill does not send the digest again.
 #
 # GitHub may start the cron a few minutes late, and it turns scheduled
 # workflows off after 60 days without repository activity.

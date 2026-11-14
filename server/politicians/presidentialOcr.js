@@ -12,6 +12,7 @@ import {
 } from './ingest.js';
 import { windowStartIso } from './normalize.js';
 import { OCR_FAILED_NOTE, claimFresh, ocrSettled } from './ocrPending.js';
+import { backfillNullTickers, loadTickerCatalog } from './nameMatch.js';
 import { buildFilingRecord } from './records.js';
 
 export function missingDatabaseUrlMessage() {
@@ -115,6 +116,7 @@ async function processOne({
   now,
   logger,
   env,
+  catalog = null,
 }) {
   let stored = null;
   if (!candidate) {
@@ -142,7 +144,7 @@ async function processOne({
   try {
     const pdf = await download(fetchImpl, sourceUrl, maxPdfBytes);
     const parsed = withDigest(pdf.parsed || await readPdf(pdf.bytes, now));
-    await saveBundle(store, draft, parsed);
+    await saveBundle(store, draft, parsed, { catalog });
     const ms = Date.now() - started;
     logger.log(`[presidential-ocr] ${key} status=${parsed.status} kept=${parsed.trades.length} pages=${parsed.pageCount ?? ''} ms=${ms}`);
     return {
@@ -230,6 +232,12 @@ export async function runPresidentialOcr({
     queue = queue.slice(0, maxFilings);
   }
 
+  let catalog = null;
+  try {
+    catalog = await loadTickerCatalog({ store, fetchImpl, now: clock, logger });
+  } catch (err) {
+    logger.error(`[presidential-ocr] name catalog failed${failureDetail(err, env)}`);
+  }
   const filings = [];
   for (const key of queue) {
     const outcome = await processOne({
@@ -244,13 +252,23 @@ export async function runPresidentialOcr({
       now: clock,
       logger,
       env,
+      catalog,
     });
     filings.push(outcome);
     if (outcome.action === 'ocr' || outcome.action === 'failed' || outcome.action === 'retry') {
       await sleep(cfg.delayMs);
     }
   }
-  return { filings, windowStart };
+  let backfill = { examined: 0, matched: 0, updated: 0 };
+  if (catalog) {
+    try {
+      backfill = await backfillNullTickers({ store, catalog, logger });
+    } catch (err) {
+      logger.error(`[presidential-ocr] name backfill failed${failureDetail(err, env)}`);
+      backfill = { examined: 0, matched: 0, updated: 0, error: err.message };
+    }
+  }
+  return { filings, windowStart, backfill };
 }
 
 const ATTEMPTED = new Set(['ocr', 'failed', 'retry']);
@@ -281,6 +299,10 @@ export function formatOcrSummary(result) {
   }
   if (everyAttemptedFilingFailed(result)) {
     lines.push('', 'Every attempted filing failed.');
+  }
+  const backfill = result?.backfill;
+  if (backfill && (backfill.examined || backfill.matched)) {
+    lines.push('', `Name match backfill: examined ${backfill.examined}, matched ${backfill.matched}.`);
   }
   return lines.join('\n');
 }

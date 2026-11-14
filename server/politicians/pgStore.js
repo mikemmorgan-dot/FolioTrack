@@ -60,18 +60,20 @@ const FEED_SQL = `
 SELECT kind, id, disclosed_date, person_key, person_name, office, party, state,
        owner, ticker, ticker_norm, asset, asset_class, tx_type, partial,
        tx_date, lag_days, amount_range, source_url, parse_note, ocr, ocr_confidence,
-       filer_status
+       filer_status, ticker_source, ticker_match_confidence
 FROM (
   SELECT 'trade'::text AS kind, t.id, t.disclosed_date, t.person_key, t.person_name,
          t.office, t.party, t.state, t.owner, t.ticker, t.ticker_norm, t.asset,
          t.asset_class, t.tx_type, t.partial, t.tx_date, t.lag_days, t.amount_range,
-         t.source_url, NULL::text AS parse_note, t.ocr, t.ocr_confidence, t.filer_status
+         t.source_url, NULL::text AS parse_note, t.ocr, t.ocr_confidence, t.filer_status,
+         t.ticker_source, t.ticker_match_confidence
   FROM politician_trades t
   UNION ALL
   SELECT 'review'::text, f.id, f.filed_date, f.person_key, f.person_name,
          f.office, f.party, f.state, NULL::text, NULL::text, NULL::text, NULL::text,
          NULL::text, NULL::text, false, NULL::date, NULL::int, NULL::text,
-         f.source_url, f.parse_note, false, NULL::int, f.filer_status
+         f.source_url, f.parse_note, false, NULL::int, f.filer_status,
+         NULL::text, NULL::int
   FROM politician_filings f
   WHERE f.parse_status IN ('needs_manual_review', 'partial')
 ) feed
@@ -102,6 +104,8 @@ function rowToItem(r) {
     parseNote: r.parse_note || null,
     ocr: r.ocr === true,
     ocrConfidence: r.ocr_confidence == null ? null : Number(r.ocr_confidence),
+    tickerSource: r.ticker_source || null,
+    tickerMatchConfidence: r.ticker_match_confidence == null ? null : Number(r.ticker_match_confidence),
   };
 }
 
@@ -234,13 +238,13 @@ export function installPgPolitician(Store) {
              id, filing_id, row_index, person_key, person_name, office, party, filer_status, state,
              owner, ticker, ticker_norm, asset, asset_class, tx_type, partial,
              tx_date, disclosed_date, lag_days, amount_range, source_url, ocr, ocr_confidence,
-             digest_pending
+             digest_pending, ticker_source, ticker_match_confidence, name_match_at
            )
            SELECT * FROM unnest(
              $1::text[], $2::text[], $3::int[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[],
              $10::text[], $11::text[], $12::text[], $13::text[], $14::text[], $15::text[], $16::boolean[],
              $17::date[], $18::date[], $19::int[], $20::text[], $21::text[], $22::boolean[], $23::int[],
-             $24::boolean[]
+             $24::boolean[], $25::text[], $26::int[], $27::timestamptz[]
            )
            ON CONFLICT (filing_id, row_index) DO NOTHING`,
           [
@@ -268,6 +272,9 @@ export function installPgPolitician(Store) {
             col((t) => t.ocr === true),
             col((t) => (t.ocrConfidence == null ? null : t.ocrConfidence)),
             col((t) => t.digestPending === true),
+            col((t) => t.tickerSource || null),
+            col((t) => (t.tickerMatchConfidence == null ? null : t.tickerMatchConfidence)),
+            col((t) => t.nameMatchAt || null),
           ],
         );
       }
@@ -425,7 +432,8 @@ export function installPgPolitician(Store) {
     const { rows } = await this.q(
       `SELECT id, person_key, person_name, office, party, filer_status, state,
               owner, ticker, ticker_norm, asset, asset_class, tx_type, partial,
-              tx_date, disclosed_date, lag_days, amount_range, source_url, filing_id
+              tx_date, disclosed_date, lag_days, amount_range, source_url, filing_id,
+              ticker_source, ticker_match_confidence
        FROM politician_trades
        WHERE digest_pending
        ORDER BY disclosed_date DESC NULLS LAST, id DESC
@@ -454,6 +462,8 @@ export function installPgPolitician(Store) {
       amountRange: r.amount_range,
       sourceUrl: r.source_url,
       digestPending: true,
+      tickerSource: r.ticker_source || null,
+      tickerMatchConfidence: r.ticker_match_confidence == null ? null : Number(r.ticker_match_confidence),
     }));
   };
   Store.prototype.clearDigestPending = async function clearDigestPending(ids = []) {
@@ -475,13 +485,13 @@ export function installPgPolitician(Store) {
          id, filing_id, row_index, person_key, person_name, office, party, filer_status, state,
          owner, ticker, ticker_norm, asset, asset_class, tx_type, partial,
          tx_date, disclosed_date, lag_days, amount_range, source_url, ocr, ocr_confidence,
-         digest_pending
+         digest_pending, ticker_source, ticker_match_confidence, name_match_at
        )
        SELECT * FROM unnest(
          $1::text[], $2::text[], $3::int[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[],
          $10::text[], $11::text[], $12::text[], $13::text[], $14::text[], $15::text[], $16::boolean[],
          $17::date[], $18::date[], $19::int[], $20::text[], $21::text[], $22::boolean[], $23::int[],
-         $24::boolean[]
+         $24::boolean[], $25::text[], $26::int[], $27::timestamptz[]
        )
        ON CONFLICT (filing_id, row_index) DO NOTHING`,
       [
@@ -493,9 +503,78 @@ export function installPgPolitician(Store) {
         col((t) => (t.lagDays == null ? null : t.lagDays)), col((t) => t.amountRange), col((t) => t.sourceUrl),
         col((t) => t.ocr === true), col((t) => (t.ocrConfidence == null ? null : t.ocrConfidence)),
         col((t) => t.digestPending === true),
+        col((t) => t.tickerSource || null),
+        col((t) => (t.tickerMatchConfidence == null ? null : t.tickerMatchConfidence)),
+        col((t) => t.nameMatchAt || null),
       ],
     );
     return { inserted: result.rowCount || 0 };
+  };
+  Store.prototype.getTickerNameCatalog = async function getTickerNameCatalog() {
+    const doc = await readSetting.call(this, 'tickerNameCatalog');
+    return doc && typeof doc === 'object' ? doc : null;
+  };
+  Store.prototype.saveTickerNameCatalog = async function saveTickerNameCatalog(doc) {
+    await writeSetting.call(this, 'tickerNameCatalog', doc || {});
+    return doc;
+  };
+  Store.prototype.listUnmatchedPoliticianTrades = async function listUnmatchedPoliticianTrades({
+    checkedBefore = null,
+    limit = 500,
+  } = {}) {
+    const cap = Math.min(2000, Math.max(1, Number(limit) || 500));
+    const { rows } = await this.q(
+      `SELECT id, asset, asset_class, ticker, ticker_norm, ticker_source
+       FROM politician_trades
+       WHERE ticker IS NULL
+         AND ticker_norm IS NULL
+         AND COALESCE(ticker_source, '') <> 'filing'
+         AND ($1::timestamptz IS NULL OR name_match_at IS NULL OR name_match_at < $1::timestamptz)
+       ORDER BY id
+       LIMIT $2`,
+      [checkedBefore || null, cap],
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      asset: r.asset,
+      assetClass: r.asset_class,
+      ticker: null,
+      tickerNorm: null,
+      tickerSource: r.ticker_source || null,
+    }));
+  };
+  Store.prototype.applyPoliticianNameMatches = async function applyPoliticianNameMatches(updates = []) {
+    const rows = (updates || []).filter((row) => row?.id);
+    if (!rows.length) return { updated: 0, matched: 0 };
+    const result = await this.q(
+      `UPDATE politician_trades AS t
+       SET ticker = v.ticker,
+           ticker_norm = v.ticker_norm,
+           asset_class = COALESCE(v.asset_class, t.asset_class),
+           ticker_source = v.ticker_source,
+           ticker_match_confidence = v.confidence,
+           name_match_at = v.checked_at
+       FROM unnest(
+         $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::int[], $7::timestamptz[]
+       ) AS v(id, ticker, ticker_norm, asset_class, ticker_source, confidence, checked_at)
+       WHERE t.id = v.id
+         AND t.ticker IS NULL
+         AND t.ticker_norm IS NULL
+         AND COALESCE(t.ticker_source, '') <> 'filing'
+       RETURNING t.ticker`,
+      [
+        rows.map((row) => row.id),
+        rows.map((row) => row.ticker || null),
+        rows.map((row) => row.tickerNorm || null),
+        rows.map((row) => row.assetClass || null),
+        rows.map((row) => row.tickerSource || null),
+        rows.map((row) => (row.tickerMatchConfidence == null ? null : row.tickerMatchConfidence)),
+        rows.map((row) => row.nameMatchAt || null),
+      ],
+    );
+    const updated = result.rowCount || 0;
+    const matched = (result.rows || []).filter((row) => row.ticker).length;
+    return { updated, matched };
   };
   Store.prototype.listHeldPoliticianSymbols = async function listHeldPoliticianSymbols() {
     const { rows } = await this.q(HELD_SQL);

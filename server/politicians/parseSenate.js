@@ -8,6 +8,7 @@
 // is stored as a link and not fetched.
 
 import { load } from 'cheerio';
+import { isDebtDescription } from './nameMatch.js';
 import { canonicalAmountRange, canonicalTicker, normalizeOwner, parseUsDate } from './normalize.js';
 
 export const SENATE_BASE = 'https://efdsearch.senate.gov';
@@ -27,9 +28,11 @@ const HEADER_MAP = {
 function assetClassFromLabel(label) {
   const s = String(label || '').toLowerCase();
   if (!s) return 'other';
+  if (isDebtDescription(label)) return 'bond';
   if (s.includes('option')) return 'option';
   if (s.includes('crypto')) return 'crypto';
-  if (s.includes('bond') || s.includes('note') || s.includes('municipal')) return 'bond';
+  if (!s.includes('etf') && !s.includes('exchange traded')
+    && (s.includes('bond') || s.includes('note') || s.includes('municipal'))) return 'bond';
   if (s.includes('mutual fund') || s === 'fund') return 'fund';
   if (s.includes('etf') || s.includes('exchange traded')) return 'etf';
   if (s.includes('stock')) return 'stock';

@@ -230,6 +230,12 @@ ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS digest_pending boolean NO
 CREATE INDEX IF NOT EXISTS politician_trades_digest_pending
   ON politician_trades (disclosed_date DESC, id DESC)
   WHERE digest_pending;
+ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS ticker_source text;
+ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS ticker_match_confidence int;
+ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS name_match_at timestamptz;
+CREATE INDEX IF NOT EXISTS politician_trades_unnamed
+  ON politician_trades (id)
+  WHERE ticker_norm IS NULL;
 `;
 
 export const POLITICIAN_OCR_SCHEMA = `
@@ -238,6 +244,12 @@ ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS digest_pending boolean NO
 CREATE INDEX IF NOT EXISTS politician_trades_digest_pending
   ON politician_trades (disclosed_date DESC, id DESC)
   WHERE digest_pending;
+ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS ticker_source text;
+ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS ticker_match_confidence int;
+ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS name_match_at timestamptz;
+CREATE INDEX IF NOT EXISTS politician_trades_unnamed
+  ON politician_trades (id)
+  WHERE ticker_norm IS NULL;
 `;
 
 export async function initSchema(pool) {
