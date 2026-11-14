@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
+import PoliticianSearch from './PoliticianSearch.jsx';
 import PoliticianSummary from './PoliticianSummary.jsx';
 
 const OFFICES = [
@@ -131,24 +132,48 @@ function TradeCard({ item, onPerson }) {
   );
 }
 
-function PersonView({ personKey, onBack }) {
+function PersonView({ personKey, onBack, windowDays = 30 }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
   const [offset, setOffset] = useState(0);
   const [items, setItems] = useState([]);
+  const [scope, setScope] = useState('window');
+  const [widened, setWidened] = useState(false);
+  const viewKey = `${personKey}:${windowDays}`;
+  const [seenKey, setSeenKey] = useState(viewKey);
+  if (seenKey !== viewKey) {
+    setSeenKey(viewKey);
+    setData(null);
+    setErr(null);
+    setOffset(0);
+    setItems([]);
+    setScope('window');
+    setWidened(false);
+  }
 
   useEffect(() => {
     let cancel = false;
     setErr(null);
-    api.politician(personKey, { offset, limit: 40 })
+    const query = { offset, limit: 40 };
+    if (scope === 'window') query.window = windowDays;
+    api.politician(personKey, query)
       .then((body) => {
         if (cancel) return;
+        const outsideWindow = scope === 'window'
+          && offset === 0
+          && (body.total === 0)
+          && ((body.counts?.trades || 0) > 0);
+        if (outsideWindow) {
+          setWidened(true);
+          setScope('all');
+          return;
+        }
         setData(body);
         setItems((prev) => (offset === 0 ? body.items : prev.concat(body.items)));
       })
       .catch((e) => { if (!cancel) setErr(e.message); });
     return () => { cancel = true; };
-  }, [personKey, offset]);
+  }, [personKey, offset, scope, windowDays]);
 
   const person = data?.person;
   const party = partyName(person?.party);
@@ -161,11 +186,32 @@ function PersonView({ personKey, onBack }) {
       </header>
       <div className="editor-body">
         {err && <div className="banner">{err}</div>}
+        {!data && !err && <p className="ed-hint">Loading…</p>}
         {person && (
           <>
             <p className="ed-hint">
               {officeName(person.office)}{party ? ` · ${party}` : ''}{person.state ? ` · ${person.state}` : ''}{person.filerStatus === 'candidate' ? ' · Candidate' : ''}
             </p>
+            {widened && (
+              <p className="ptr-note" role="status">
+                No disclosures in the last {windowDays} days.
+                {data.latestDisclosure ? ` Latest disclosure was ${pretty(data.latestDisclosure)}.` : ''}
+                {' '}Showing every filing.
+              </p>
+            )}
+            {!widened && scope === 'window' && (
+              <p className="ptr-note">
+                Last {windowDays} days
+                {data.window?.from ? ` (${pretty(data.window.from)} – ${pretty(data.window.to)})` : ''}.
+                {' '}Counts below are every filing.
+                {' '}
+                <button
+                  type="button"
+                  className="ptr-text-btn"
+                  onClick={() => { setOffset(0); setItems([]); setScope('all'); }}
+                >Show every filing</button>
+              </p>
+            )}
             <div className="ptr-stats">
               <div><span className="ptr-stat-n">{data.counts?.buy ?? 0}</span><span>Buys</span></div>
               <div><span className="ptr-stat-n">{data.counts?.sell ?? 0}</span><span>Sells</span></div>
@@ -320,7 +366,7 @@ export default function PoliticianTrades({ onClose, initialTicker = '' }) {
   if (personKey) {
     return (
       <div className="editor">
-        <PersonView personKey={personKey} onBack={() => setPersonKey(null)} />
+        <PersonView personKey={personKey} windowDays={windowDays} onBack={() => setPersonKey(null)} />
       </div>
     );
   }
@@ -335,6 +381,7 @@ export default function PoliticianTrades({ onClose, initialTicker = '' }) {
         </button>
       </header>
       <div className="editor-body">
+        <PoliticianSearch onPerson={setPersonKey} onTicker={openTicker} />
         <p className="ed-hint">
           Public stock trades from House members and House candidates, senators, the President, and the Vice President. House candidates stay in the feed and are labeled Candidate.
           Amounts stay the reported range. Scanned presidential filings are OCR’d one page at a time; a row that does not validate stays linked for review. An OCR label marks rows read from a scan.

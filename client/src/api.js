@@ -117,6 +117,7 @@ export const api = {
     const qs = p.toString();
     return j(`/api/politician-trades${qs ? `?${qs}` : ''}`);
   },
+  politicianPeople: (q) => j(`/api/politician-trades/people?q=${encodeURIComponent(q || '')}`),
   politician: (personKey, query = {}) => {
     const p = new URLSearchParams();
     for (const [key, value] of Object.entries(query)) {

@@ -9,7 +9,7 @@
     "start": "npm --prefix server start",
     "dev:server": "npm --prefix server run dev",
     "dev:client": "npm --prefix client run dev",
-    "test": "npm --prefix server test"
+    "test": "npm --prefix server test && npm --prefix client test"
   },
   "engines": {
     "node": ">=20"

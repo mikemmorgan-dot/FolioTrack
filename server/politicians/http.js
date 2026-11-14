@@ -88,8 +88,16 @@ export function createPoliticianRouter({ store, startPoll, pollRunning } = {}) {
     res.json({ bySymbol: badgesBySymbol(symbols, summaries) });
   }));
 
+  router.get('/people', asyncRoute(async (req, res) => {
+    const found = await store.searchPoliticianPeople({ q: req.query?.q });
+    res.json(found);
+  }));
+
   router.get('/people/:personKey', asyncRoute(async (req, res) => {
-    const person = await store.getPolitician(req.params.personKey, req.query || {});
+    const query = { ...(req.query || {}) };
+    // The disclosure window is the US calendar through today.
+    delete query.asOf;
+    const person = await store.getPolitician(req.params.personKey, query);
     if (!person) {
       res.status(404).json({ error: 'No filings for that person yet' });
       return;

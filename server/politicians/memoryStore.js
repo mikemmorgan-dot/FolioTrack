@@ -13,6 +13,12 @@ import {
 } from './ocrPending.js';
 import { applyPoliticianAlertPatch, coercePoliticianAlertSettings } from './settings.js';
 import { aggregateSummary } from './summary.js';
+import {
+  PEOPLE_SEARCH_LIMIT,
+  peopleSearchQuery,
+  personNameMatches,
+  personWindowBounds,
+} from './peopleSearch.js';
 
 export const FEED_LIMIT_DEFAULT = 40;
 export const FEED_LIMIT_MAX = 50;
@@ -329,22 +335,79 @@ export const memoryMethods = {
     const held = q.heldOnly ? new Set(heldSymbolsFromDb(this.db).map((h) => h.tickerNorm).filter(Boolean)) : null;
     return pageFeed(filterFeedRows(feedRows(politicianBucket(this.db)), q, held), q);
   },
+  async searchPoliticianPeople(query = {}) {
+    const raw = String(query.q || '').trim().slice(0, 80);
+    const parsed = peopleSearchQuery(raw);
+    if (!parsed) return { q: raw, people: [] };
+    const db = politicianBucket(this.db);
+    const byKey = new Map();
+    const touch = (row, stamp, isTrade) => {
+      if (!personNameMatches(row.personName, row.personKey, parsed.tokens)) return;
+      let cur = byKey.get(row.personKey);
+      if (!cur) {
+        cur = {
+          personKey: row.personKey,
+          personName: row.personName,
+          office: row.office,
+          party: row.party || null,
+          state: row.state || null,
+          filerStatus: row.filerStatus || null,
+          tradeCount: 0,
+          latestDisclosure: null,
+          stamp: '',
+        };
+        byKey.set(row.personKey, cur);
+      }
+      if (stamp >= cur.stamp) {
+        cur.stamp = stamp;
+        cur.personName = row.personName || cur.personName;
+        cur.office = row.office || cur.office;
+        cur.party = row.party || cur.party;
+        cur.state = row.state || cur.state;
+        cur.filerStatus = row.filerStatus || cur.filerStatus;
+      }
+      if (isTrade) {
+        cur.tradeCount += 1;
+        if (row.disclosedDate && (!cur.latestDisclosure || row.disclosedDate > cur.latestDisclosure)) {
+          cur.latestDisclosure = row.disclosedDate;
+        }
+      }
+    };
+    for (const filing of Object.values(db.politicianFilings)) {
+      touch(filing, filing.filedDate || '', false);
+    }
+    for (const trade of db.politicianTrades) {
+      touch(trade, trade.disclosedDate || '', true);
+    }
+    const people = [...byKey.values()]
+      .map(({ stamp, ...person }) => person)
+      .sort((a, b) => b.tradeCount - a.tradeCount || a.personName.localeCompare(b.personName) || a.personKey.localeCompare(b.personKey))
+      .slice(0, PEOPLE_SEARCH_LIMIT);
+    return { q: raw, people };
+  },
   async getPolitician(personKey, query = {}) {
     const db = politicianBucket(this.db);
     const trades = db.politicianTrades.filter((t) => t.personKey === personKey);
-    const filing = Object.values(db.politicianFilings).find((f) => f.personKey === personKey);
+    const filings = Object.values(db.politicianFilings)
+      .filter((f) => f.personKey === personKey)
+      .sort((a, b) => ((a.filedDate || '') < (b.filedDate || '') ? 1 : (a.filedDate || '') > (b.filedDate || '') ? -1 : 0));
+    const filing = filings[0];
     if (!trades.length && !filing) return null;
-    const sample = trades[0] || filing;
+    const sample = filing || trades[0];
     const dated = [
       ...trades.map((t) => ({ status: t.filerStatus, date: t.disclosedDate || '' })),
-      ...(filing ? [{ status: filing.filerStatus, date: filing.filedDate || '' }] : []),
+      ...filings.map((f) => ({ status: f.filerStatus, date: f.filedDate || '' })),
     ].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
     const filerStatus = dated.find((row) => row.status)?.status || null;
     const counts = { buy: 0, sell: 0, exchange: 0, trades: trades.length };
     const byTicker = new Map();
+    let latestDisclosure = null;
     for (const trade of trades) {
       if (trade.txType === 'buy' || trade.txType === 'sell' || trade.txType === 'exchange') {
         counts[trade.txType] += 1;
+      }
+      if (trade.disclosedDate && (!latestDisclosure || trade.disclosedDate > latestDisclosure)) {
+        latestDisclosure = trade.disclosedDate;
       }
       if (!trade.ticker) continue;
       byTicker.set(trade.ticker, (byTicker.get(trade.ticker) || 0) + 1);
@@ -353,7 +416,15 @@ export const memoryMethods = {
       .map(([ticker, count]) => ({ ticker, count }))
       .sort((a, b) => b.count - a.count || a.ticker.localeCompare(b.ticker))
       .slice(0, 8);
-    const q = normalizeFeedQuery({ ...query, personKey });
+    const bounds = personWindowBounds(query);
+    const feedQuery = { ...query, personKey };
+    delete feedQuery.window;
+    delete feedQuery.asOf;
+    if (bounds) {
+      feedQuery.from = bounds.from;
+      feedQuery.to = bounds.to;
+    }
+    const q = normalizeFeedQuery(feedQuery);
     const held = q.heldOnly
       ? new Set(heldSymbolsFromDb(this.db).map((h) => h.tickerNorm).filter(Boolean))
       : null;
@@ -369,6 +440,8 @@ export const memoryMethods = {
       },
       counts,
       topTickers,
+      latestDisclosure,
+      window: bounds ? { days: bounds.windowDays, from: bounds.from, to: bounds.to } : null,
       ...feed,
     };
   },
