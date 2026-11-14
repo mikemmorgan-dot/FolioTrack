@@ -2,6 +2,7 @@
 // portfolios only — never a client, an account, or a dollar balance.
 
 import { escapeHtml, FOLIOTRACK_URL } from '../alerts/email.js';
+import { digestNetLines } from './net.js';
 import { matchableAssetClass, officeLabel, ownerLabel, partyLabel, txLabel } from './normalize.js';
 
 const TRADE_CAP = 30;
@@ -61,6 +62,7 @@ export function buildPoliticianDigest({
 
   const extra = Math.max(0, shown.length - TRADE_CAP);
   const visible = shown.slice(0, TRADE_CAP);
+  const netLines = digestNetLines(shown);
   const noun = shown.length === 1 ? 'trade' : 'trades';
   const subject = shown.length
     ? `FolioTrack: ${shown.length} new politician ${noun}${held.length ? ` (${held.length} in your models)` : ''}`
@@ -70,6 +72,13 @@ export function buildPoliticianDigest({
     'FolioTrack politician trades',
     '',
   ];
+  if (netLines.length) {
+    textParts.push(
+      'Net by ticker (estimated from range midpoints; Over $50,000,000 counts at its floor)',
+      ...netLines,
+      '',
+    );
+  }
   if (held.length) {
     textParts.push('In your models', '');
     for (const trade of visible.filter((t) => t.heldModels.length)) {
@@ -107,6 +116,7 @@ export function buildPoliticianDigest({
   const html = `<!DOCTYPE html>
 <html><body style="font-family:sans-serif;color:#111;line-height:1.45">
 <h2 style="margin:0 0 12px">FolioTrack politician trades</h2>
+${netLines.length ? `<h3 style="margin:16px 0 8px">Net by ticker</h3><p style="margin:0 0 8px">Estimated from the midpoint of each reported range. Over $50,000,000 is counted as $50,000,000, so those figures are a minimum. Amounts that could not be read are left out.</p><ul style="padding-left:18px">${netLines.map((line) => `<li style="margin:0 0 8px">${escapeHtml(line)}</li>`).join('')}</ul>` : ''}
 ${held.length ? `<h3 style="margin:16px 0 8px">In your models</h3><ul style="padding-left:18px">${visible.filter((t) => t.heldModels.length).map(itemHtml).join('')}</ul>` : ''}
 ${others.length ? `<h3 style="margin:16px 0 8px">${held.length ? 'Other new trades' : 'New trades'}</h3><ul style="padding-left:18px">${others.map(itemHtml).join('')}</ul>` : ''}
 ${extra ? `<p>+ ${extra} more in FolioTrack</p>` : ''}
