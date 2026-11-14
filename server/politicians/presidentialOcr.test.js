@@ -2,13 +2,15 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
-import { runPoliticianPoll } from './ingest.js';
+import { SourceHttpError, runPoliticianPoll } from './ingest.js';
 import { memoryMethods, politicianBucket } from './memoryStore.js';
 import { rowsFromOcrWords } from './ocrRows.js';
-import { TOOLS_MISSING_NOTE, ocrSettled } from './ocrPending.js';
+import { OCR_FAILED_NOTE, PENDING_OCR_NOTE, TOOLS_MISSING_NOTE, ocrSettled } from './ocrPending.js';
 import { buildFilingRecord, buildTradeRows } from './records.js';
+import { main as presidentialOcrMain } from './presidentialOcrCli.js';
 import {
   assertDatabaseUrl,
+  exitCodeForOcrRun,
   missingDatabaseUrlMessage,
   normalizeFilingKey,
   redactSecrets,
@@ -446,4 +448,271 @@ describe('presidential OCR job', () => {
     expect(email.send.mock.calls[1][0].text).not.toContain('AAPL');
     expect(rows.every((trade) => trade.digestPending === false)).toBe(true);
   });
+
+  it('uses global fetch when the CLI does not receive a fetchImpl', async () => {
+    const store = memoryStore();
+    const ocrCalls = [];
+    const { fetchImpl, calls } = indexFetch([ogeRow()]);
+    const previous = globalThis.fetch;
+    globalThis.fetch = fetchImpl;
+    try {
+      const code = await presidentialOcrMain(cliEnv(), {
+        store,
+        ocrToolsAvailable: async () => true,
+        readPdf: validatedRead(ocrCalls),
+        now: NOW,
+        sleep: async () => {},
+        logger: quiet,
+      });
+      expect(code).toBe(0);
+      expect(calls.length).toBeGreaterThan(0);
+      expect(ocrCalls).toHaveLength(1);
+      expect(store.db.politicianTrades.length).toBeGreaterThan(0);
+    } finally {
+      globalThis.fetch = previous;
+    }
+  });
+
+  it('defaults fetchImpl to global fetch when the runner is called without one', async () => {
+    const store = memoryStore();
+    const ocrCalls = [];
+    const { fetchImpl, calls } = indexFetch([ogeRow()]);
+    const previous = globalThis.fetch;
+    globalThis.fetch = fetchImpl;
+    try {
+      const result = await runPresidentialOcr({
+        store,
+        readPdf: validatedRead(ocrCalls),
+        now: NOW,
+        sleep: async () => {},
+        logger: quiet,
+        env: jobEnv(),
+      });
+      expect(calls.length).toBeGreaterThan(0);
+      expect(result.filings[0]).toMatchObject({ filingKey: KEY, action: 'ocr' });
+      expect(ocrCalls).toHaveLength(1);
+    } finally {
+      globalThis.fetch = previous;
+    }
+  });
+
+  it('logs the error message without the database URL, and leaves a TypeError pending', async () => {
+    const store = memoryStore();
+    const secret = 'postgresql://user:supersecret@ep-example.neon.tech/neondb?sslmode=require';
+    await store.insertPoliticianBundle(stuckFiling(KEY), []);
+    const lines = [];
+    const logger = {
+      log() {},
+      warn() {},
+      error(msg) { lines.push(String(msg)); },
+    };
+    const fetchImpl = async () => {
+      throw new TypeError(`fetchImpl is not a function ${secret}`);
+    };
+    const result = await runPresidentialOcr({
+      store,
+      fetchImpl,
+      now: NOW,
+      sleep: async () => {},
+      logger,
+      env: { ...jobEnv(), DATABASE_URL: secret },
+    });
+    const logged = lines.join('\n');
+    expect(logged).toMatch(/OGE index failed: TypeError: fetchImpl is not a function/);
+    expect(logged).toMatch(new RegExp(`${KEY} failed: TypeError: fetchImpl is not a function`));
+    expect(logged).not.toContain(secret);
+    expect(logged).not.toContain('supersecret');
+    expect(logged).toContain('[redacted]');
+    expect(result.filings).toEqual([
+      expect.objectContaining({ filingKey: KEY, action: 'retry' }),
+    ]);
+    const filing = store.db.politicianFilings[`oge:${KEY}`];
+    expect(filing.parseStatus).toBe('pending_ocr');
+    expect(filing.ocrDone).toBe(false);
+    expect(filing.parseNote).toBe(PENDING_OCR_NOTE);
+
+    lines.length = 0;
+    const httpErr = new SourceHttpError('oge', 503);
+    httpErr.message = `oge returned HTTP 503 for ${secret}`;
+    const httpResult = await runPresidentialOcr({
+      store,
+      fetchImpl: async () => { throw httpErr; },
+      now: NOW,
+      sleep: async () => {},
+      logger,
+      env: { ...jobEnv(), DATABASE_URL: secret },
+    });
+    const httpLog = lines.join('\n');
+    expect(httpLog).toMatch(/OGE index failed HTTP 503: SourceHttpError: oge returned HTTP 503/);
+    expect(httpLog).toMatch(new RegExp(`${KEY} failed HTTP 503: SourceHttpError: oge returned HTTP 503`));
+    expect(httpLog).not.toContain(secret);
+    expect(httpLog).not.toContain('supersecret');
+    expect(httpResult.filings[0].action).toBe('retry');
+    expect(store.db.politicianFilings[`oge:${KEY}`].parseStatus).toBe('pending_ocr');
+  });
+
+  it('exits non-zero when every attempted filing failed, and still marks a real OCR error needs-review', async () => {
+    expect(exitCodeForOcrRun({ filings: [] })).toBe(0);
+    expect(exitCodeForOcrRun({ filings: [{ action: 'skipped' }] })).toBe(0);
+    expect(exitCodeForOcrRun({ filings: [{ action: 'ocr' }, { action: 'failed' }] })).toBe(0);
+    expect(exitCodeForOcrRun({ filings: [{ action: 'failed' }, { action: 'retry' }] })).toBe(1);
+    expect(exitCodeForOcrRun({ filings: [{ action: 'missing' }] })).toBe(1);
+
+    const store = memoryStore();
+    const secret = 'postgresql://user:supersecret@ep-example.neon.tech/neondb?sslmode=require';
+    await store.insertPoliticianBundle(stuckFiling(KEY, {
+      status: 'pending_ocr',
+      note: PENDING_OCR_NOTE,
+      ocrDone: false,
+    }), []);
+    const lines = [];
+    const failed = await presidentialOcrMain(cliEnv(secret), {
+      store,
+      ocrToolsAvailable: async () => true,
+      loadCandidates: async () => [],
+      download: async () => { throw new Error(`pdf header missing ${secret}`); },
+      now: NOW,
+      sleep: async () => {},
+      logger: { log() {}, warn() {}, error(msg) { lines.push(String(msg)); } },
+    });
+    expect(failed).toBe(1);
+    const logged = lines.join('\n');
+    expect(logged).toContain(`${KEY} failed: pdf header missing`);
+    expect(logged).not.toContain(secret);
+    expect(logged).not.toContain('supersecret');
+    expect(logged).toContain('[redacted]');
+    const marked = store.db.politicianFilings[`oge:${KEY}`];
+    expect(marked.parseStatus).toBe('needs_manual_review');
+    expect(marked.ocrDone).toBe(true);
+    expect(marked.parseNote).toBe(OCR_FAILED_NOTE);
+
+    lines.length = 0;
+    const programming = await presidentialOcrMain(cliEnv(secret), {
+      store,
+      ocrToolsAvailable: async () => true,
+      loadCandidates: async () => [],
+      download: async () => { throw new TypeError('fetchImpl is not a function'); },
+      now: NOW,
+      sleep: async () => {},
+      logger: { log() {}, warn() {}, error(msg) { lines.push(String(msg)); } },
+    });
+    expect(programming).toBe(1);
+    expect(lines.join('\n')).toContain(`${KEY} failed: TypeError: fetchImpl is not a function`);
+    const pending = store.db.politicianFilings[`oge:${KEY}`];
+    expect(pending.parseStatus).toBe('pending_ocr');
+    expect(pending.ocrDone).toBe(false);
+  });
+
+  it('puts presidential OCR failures with no trades back in the queue and leaves everything else', async () => {
+    const store = memoryStore();
+    const vp = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
+    const withTrade = 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC';
+    const other = 'DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD';
+    const house = stuckFiling('house-ptr-1', undefined, { source: 'house', office: 'house' });
+    const senate = stuckFiling('929216d5-5dbd-429c-858c-1e9332924627', undefined, { source: 'senate', office: 'senate' });
+    const traded = stuckFiling(withTrade);
+    const keptNote = 'OCR could not validate any transaction row. Open the filing to review it.';
+    await store.insertPoliticianBundle(stuckFiling(KEY), []);
+    await store.insertPoliticianBundle(stuckFiling(vp, undefined, { office: 'vice-president', first: 'JD', last: 'Vance' }), []);
+    await store.insertPoliticianBundle(traded, buildTradeRows(traded, {
+      status: 'needs_manual_review',
+      trades: [{
+        owner: 'self', ticker: 'AAPL', asset: 'Apple Inc', assetClass: 'stock',
+        txType: 'buy', partial: false, txDate: '2026-08-01', amountRange: '$1,001 - $15,000',
+      }],
+    }));
+    await store.insertPoliticianBundle(stuckFiling(other, {
+      status: 'needs_manual_review',
+      note: keptNote,
+      ocrDone: true,
+    }), []);
+    await store.insertPoliticianBundle(house, []);
+    await store.insertPoliticianBundle(senate, []);
+    const tradeIds = store.db.politicianTrades.map((trade) => trade.id);
+
+    expect(await store.recoverFailedPresidentialOcr()).toBe(2);
+    expect(await store.recoverFailedPresidentialOcr()).toBe(0);
+
+    const president = store.db.politicianFilings[`oge:${KEY}`];
+    const vice = store.db.politicianFilings[`oge:${vp}`];
+    expect(president.parseStatus).toBe('pending_ocr');
+    expect(president.ocrDone).toBe(false);
+    expect(president.parseNote).toBe(PENDING_OCR_NOTE);
+    expect(vice.parseStatus).toBe('pending_ocr');
+    expect(vice.ocrDone).toBe(false);
+    expect(store.db.politicianFilings[`oge:${withTrade}`]).toMatchObject({
+      parseStatus: 'needs_manual_review',
+      parseNote: OCR_FAILED_NOTE,
+      ocrDone: true,
+    });
+    expect(store.db.politicianFilings[`oge:${other}`].parseNote).toBe(keptNote);
+    expect(store.db.politicianFilings[house.id]).toMatchObject({
+      parseStatus: 'needs_manual_review',
+      parseNote: OCR_FAILED_NOTE,
+    });
+    expect(store.db.politicianFilings[senate.id]).toMatchObject({
+      parseStatus: 'needs_manual_review',
+      parseNote: OCR_FAILED_NOTE,
+    });
+    expect(store.db.politicianTrades.map((trade) => trade.id)).toEqual(tradeIds);
+
+    const pg = readFileSync(join(dir, 'pgStore.js'), 'utf8');
+    const sql = pg.slice(pg.indexOf('recoverFailedPresidentialOcr'), pg.indexOf('listDigestPendingTrades'));
+    expect(sql).toMatch(/source = 'oge'/);
+    expect(sql).toMatch(/office IN \('president', 'vice-president'\)/);
+    expect(sql).toMatch(/NOT EXISTS/);
+    expect(sql).not.toMatch(/DELETE/i);
+
+    const ocrCalls = [];
+    const { fetchImpl } = indexFetch([]);
+    const result = await runPresidentialOcr({
+      store,
+      fetchImpl,
+      readPdf: validatedRead(ocrCalls),
+      now: NOW,
+      sleep: async () => {},
+      logger: quiet,
+      env: jobEnv(),
+    });
+    expect(result.filings.map((row) => row.filingKey).sort()).toEqual([KEY, vp].sort());
+    expect(result.filings.every((row) => row.action === 'ocr')).toBe(true);
+    expect(ocrCalls).toHaveLength(2);
+    expect(store.db.politicianFilings[`oge:${withTrade}`].parseStatus).toBe('needs_manual_review');
+    expect(store.db.politicianTrades.map((trade) => trade.id)).toEqual(expect.arrayContaining(tradeIds));
+    expect(store.db.politicianFilings[house.id].parseNote).toBe(OCR_FAILED_NOTE);
+    expect(store.db.politicianFilings[senate.id].parseNote).toBe(OCR_FAILED_NOTE);
+    expect(await store.recoverFailedPresidentialOcr()).toBe(0);
+  });
 });
+
+const DB_SECRET = 'postgresql://user:supersecret@ep-example.neon.tech/neondb?sslmode=require';
+
+function cliEnv(databaseUrl = DB_SECRET) {
+  return {
+    ...jobEnv(),
+    DATABASE_URL: databaseUrl,
+    GITHUB_STEP_SUMMARY: '',
+    OCR_FILING_KEY: '',
+  };
+}
+
+function stuckFiling(key, parsed = {
+  status: 'needs_manual_review',
+  note: OCR_FAILED_NOTE,
+  ocrDone: true,
+}, extra = {}) {
+  const source = extra.source || 'oge';
+  const office = extra.office || 'president';
+  return buildFilingRecord({
+    source,
+    filingKey: key,
+    first: extra.first || 'Donald J',
+    last: extra.last || 'Trump',
+    office,
+    filedDate: '2026-08-15',
+    sourceUrl: source === 'oge'
+      ? `https://extapps2.oge.gov/201/Presiden.nsf/PAS+Index/${key}/$FILE/sample-278T.pdf`
+      : `https://disclosures.example/${source}/${key}`,
+    parsed,
+  });
+}

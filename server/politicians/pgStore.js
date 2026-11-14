@@ -2,7 +2,7 @@
 // for the filing keys it is about to download, not for every stored trade.
 
 import { canonicalTicker } from './normalize.js';
-import { OCR_CLAIM_MS, PENDING_OCR_NOTE } from './ocrPending.js';
+import { OCR_CLAIM_MS, OCR_FAILED_NOTE, PENDING_OCR_NOTE } from './ocrPending.js';
 import { applyPoliticianAlertPatch, coercePoliticianAlertSettings } from './settings.js';
 import { normalizeFeedQuery } from './memoryStore.js';
 import {
@@ -373,6 +373,23 @@ export function installPgPolitician(Store) {
       [id, PENDING_OCR_NOTE],
     );
     return (result.rowCount || 0) > 0;
+  };
+  Store.prototype.recoverFailedPresidentialOcr = async function recoverFailedPresidentialOcr() {
+    const result = await this.q(
+      `UPDATE politician_filings AS f
+       SET parse_status = 'pending_ocr',
+           parse_note = $2,
+           ocr_done = false,
+           ocr_claimed_at = NULL
+       WHERE f.source = 'oge'
+         AND f.office IN ('president', 'vice-president')
+         AND f.parse_note = $1
+         AND NOT EXISTS (
+           SELECT 1 FROM politician_trades AS t WHERE t.filing_id = f.id
+         )`,
+      [OCR_FAILED_NOTE, PENDING_OCR_NOTE],
+    );
+    return result.rowCount || 0;
   };
   Store.prototype.listPendingPresidentialFilings = async function listPendingPresidentialFilings({ limit = 20, now = new Date() } = {}) {
     const staleBefore = new Date((now instanceof Date ? now.getTime() : Date.parse(now)) - OCR_CLAIM_MS).toISOString();

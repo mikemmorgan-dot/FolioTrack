@@ -7,6 +7,9 @@ export const OCR_CLAIM_MS = 3 * 60 * 60 * 1000;
 
 export const TOOLS_MISSING_NOTE = 'Scanned 278-T. OCR tools are not installed on this host, so no rows were guessed.';
 export const PENDING_OCR_NOTE = 'Pending OCR. This host has no tesseract, so the 278-T is left for the scheduled GitHub Actions job. No rows were guessed.';
+// Written when a presidential PDF could not be read. The apostrophe is
+// U+2019, matching the rows the failed job already stored.
+export const OCR_FAILED_NOTE = 'The 278-T could not be OCR\u2019d, so no rows were guessed.';
 
 export function toolsMissingFiling(filing) {
   return /OCR tools are not installed/.test(filing?.parseNote || '');
