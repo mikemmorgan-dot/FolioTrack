@@ -14,6 +14,21 @@ export function monthEndDate(ym) {
   const [y, m] = ym.split('-').map(Number);
   return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
 }
+
+// Last close in each calendar month. Daily bars collapse to one row per
+// month so a compare can score monthly returns without shipping every close.
+export function monthEndCloses(series) {
+  const last = new Map();
+  for (const p of series || []) {
+    const date = String(p?.date || '').slice(0, 10);
+    const close = Number(p?.close ?? p?.price ?? p?.value ?? p?.nav);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !(close > 0)) continue;
+    const ym = date.slice(0, 7);
+    const prev = last.get(ym);
+    if (!prev || date >= prev.date) last.set(ym, { date, close });
+  }
+  return [...last.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
 const firstDayOf = (ym) => `${ym}-01`;
 
 export function monthGrid(startYm, endYm) {

@@ -73,7 +73,7 @@ const SHORT_NAMES = {
   'Aggressive Growth': 'Agg',
 };
 
-function shortName(name) {
+export function shortName(name) {
   if (SHORT_NAMES[name]) return SHORT_NAMES[name];
   const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return '';
