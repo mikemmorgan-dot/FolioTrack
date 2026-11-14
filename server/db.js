@@ -6,6 +6,7 @@ import {
   PRICE_POINTS_BACKFILL_SQL,
   PRICE_SERIES_CLEAR_SQL,
 } from './seriesSql.js';
+import { HISTORICAL_DIGEST_SQL } from './politicians/emailed.js';
 
 const { Pool } = pg;
 
@@ -237,7 +238,7 @@ ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS name_match_version int;
 CREATE INDEX IF NOT EXISTS politician_trades_unnamed
   ON politician_trades (id)
   WHERE ticker_norm IS NULL;
-`;
+${HISTORICAL_DIGEST_SQL}`;
 
 export const POLITICIAN_OCR_SCHEMA = `
 ALTER TABLE politician_filings ADD COLUMN IF NOT EXISTS ocr_claimed_at timestamptz;
@@ -252,7 +253,7 @@ ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS name_match_version int;
 CREATE INDEX IF NOT EXISTS politician_trades_unnamed
   ON politician_trades (id)
   WHERE ticker_norm IS NULL;
-`;
+${HISTORICAL_DIGEST_SQL}`;
 
 export async function initSchema(pool) {
   await pool.query(SCHEMA);

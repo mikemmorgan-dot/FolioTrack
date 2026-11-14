@@ -114,5 +114,12 @@ ${reviewRows.length ? `<h3 style="margin:16px 0 8px">Needs manual review</h3><ul
 <p><a href="${escapeHtml(appUrl)}">Open FolioTrack</a></p>
 </body></html>`;
 
-  return { subject, text, html, held: held.length, listed: visible.length };
+  return {
+    subject,
+    text,
+    html,
+    held: held.length,
+    listed: visible.length,
+    tradeIds: shown.map((trade) => trade.id).filter(Boolean),
+  };
 }

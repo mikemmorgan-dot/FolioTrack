@@ -678,11 +678,11 @@ async function ingestOge({
 }
 
 async function sendDigest({ store, email, trades, reviews, heldOnly, enabled, logger }) {
-  if (!enabled) return { sent: false, reason: 'alerts off' };
+  if (!enabled) return { sent: false, reason: 'alerts off', tradeIds: [] };
   const symbols = await store.listHeldPoliticianSymbols();
   const heldByNorm = heldIndex(symbols);
   const message = buildPoliticianDigest({ trades, reviews, heldByNorm, heldOnly });
-  if (!message) return { sent: false, reason: 'nothing to send' };
+  if (!message) return { sent: false, reason: 'nothing to send', tradeIds: [] };
   const settings = await store.getAlertSettings();
   const result = await email.send({
     to: settings.alertEmail,
@@ -692,10 +692,28 @@ async function sendDigest({ store, email, trades, reviews, heldOnly, enabled, lo
   });
   if (!result?.ok) {
     logger.warn(`[politicians] digest not sent: ${result?.reason || 'email failed'}`);
-    return { sent: false, reason: result?.reason || 'email failed' };
+    return { sent: false, reason: result?.reason || 'email failed', tradeIds: [] };
   }
-  logger.log(`[politicians] digest sent id=${result.id || 'ok'} trades=${trades.length} held=${message.held}`);
-  return { sent: true, id: result.id || null };
+  const tradeIds = message.tradeIds || [];
+  logger.log(`[politicians] digest sent id=${result.id || 'ok'} trades=${tradeIds.length} held=${message.held}`);
+  return { sent: true, id: result.id || null, tradeIds };
+}
+
+// Resend has already accepted the message. Record that on the same rows
+// before this process does anything else. A failed update is retried; the
+// rows stay eligible until one attempt sticks.
+async function recordEmailed(store, ids, logger) {
+  if (!ids?.length || typeof store.markTradesEmailed !== 'function') return;
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await store.markTradesEmailed(ids);
+      return;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  logger.error(`[politicians] could not record emailed trades: ${lastErr?.message || 'update failed'}`);
 }
 
 export async function runPoliticianPoll({
@@ -812,51 +830,55 @@ export async function runPoliticianPoll({
   const settings = await store.getPoliticianAlertSettings();
   let digest = { sent: false, reason: 'backfill' };
   if (alertsWereArmed && email) {
-    let pending = [];
-    try {
-      pending = await store.listDigestPendingTrades(80);
-    } catch (err) {
-      logger.error('[politicians] pending digest trades failed');
-    }
-    // Held-tickers-only must not drop the other workflow trades forever.
-    // Leave them flagged until a digest is allowed to include them.
-    let queued = pending;
-    if (settings.politicianAlertsHeldOnly && pending.length) {
-      const symbols = await store.listHeldPoliticianSymbols();
-      const held = new Set(symbols.map((row) => row.tickerNorm).filter(Boolean));
-      queued = pending.filter((trade) => (
-        trade.tickerNorm
-        && held.has(trade.tickerNorm)
-        && (trade.assetClass === 'stock' || trade.assetClass === 'etf' || trade.assetClass === 'fund')
-      ));
-    }
-    const seen = new Set();
-    const merged = [];
-    for (const trade of [...newTrades, ...queued]) {
-      if (trade?.id && seen.has(trade.id)) continue;
-      if (trade?.id) seen.add(trade.id);
-      merged.push(trade);
-    }
-    try {
-      digest = await sendDigest({
-        store,
-        email,
-        trades: merged,
-        reviews: newReviews,
-        heldOnly: settings.politicianAlertsHeldOnly,
-        enabled: settings.politicianAlertsEnabled,
-        logger,
-      });
-    } catch (err) {
-      digest = { sent: false, reason: err.message };
-      logger.error(`[politicians] digest failed: ${err.message}`);
-    }
-    if (digest.sent && queued.length) {
-      try {
-        await store.clearDigestPending(queued.map((trade) => trade.id));
-      } catch (err) {
-        logger.error('[politicians] could not clear digest flags');
+    if (!settings.politicianAlertsEnabled) {
+      digest = { sent: false, reason: 'alerts off' };
+    } else {
+      // Queue trades found in this poll before reading the pending list, and
+      // only when they have never been emailed. The list itself is
+      // digest_pending AND emailed_at IS NULL, so a name-match write, an OCR
+      // re-run, or a restart cannot put a sent row back in the message.
+      // Held-only leaves the other rows pending; they are not marked emailed.
+      let fresh = [];
+      if (newTrades.length && typeof store.markDigestPending === 'function') {
+        try {
+          const queuedIds = new Set(await store.markDigestPending(
+            newTrades.map((trade) => trade?.id).filter(Boolean),
+          ));
+          fresh = newTrades.filter((trade) => trade?.id && queuedIds.has(trade.id));
+        } catch (err) {
+          logger.error(`[politicians] could not queue new trades for the digest: ${err.message}`);
+          fresh = newTrades.filter((trade) => trade?.id && !trade.emailedAt);
+        }
       }
+      let pending = [];
+      try {
+        pending = await store.listDigestPendingTrades(80);
+      } catch (err) {
+        logger.error('[politicians] pending digest trades failed');
+      }
+      const seen = new Set();
+      const merged = [];
+      for (const trade of [...fresh, ...pending]) {
+        if (!trade?.id || trade.emailedAt || seen.has(trade.id)) continue;
+        seen.add(trade.id);
+        merged.push(trade);
+      }
+      try {
+        digest = await sendDigest({
+          store,
+          email,
+          trades: merged,
+          reviews: newReviews,
+          heldOnly: settings.politicianAlertsHeldOnly,
+          enabled: true,
+          logger,
+        });
+      } catch (err) {
+        digest = { sent: false, reason: err.message };
+        logger.error(`[politicians] digest failed: ${err.message}`);
+      }
+      if (digest.sent) await recordEmailed(store, digest.tradeIds, logger);
+      if (digest.tradeIds) delete digest.tradeIds;
     }
   } else if (!alertsWereArmed) {
     logger.log('[politicians] digest held until the backfill window has been walked once');
