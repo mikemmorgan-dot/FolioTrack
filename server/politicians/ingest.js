@@ -23,6 +23,7 @@ import { classifyHouseFiler, matchHouseParty, matchSenateParty, parseHouseRoster
 import { readZipEntries, zipText } from './zip.js';
 import { buildPoliticianDigest } from './digest.js';
 import { backfillNullTickers, loadTickerCatalog } from './nameMatch.js';
+import { runAnnualSlice } from './annualIngest.js';
 
 export const POLITICIAN_UA = 'FolioTrack/1.0 (model-portfolio research; +https://foliotrack.onrender.com)';
 
@@ -884,6 +885,26 @@ export async function runPoliticianPoll({
     logger.log('[politicians] digest held until the backfill window has been walked once');
   }
 
+  let annual = null;
+  try {
+    annual = await runAnnualSlice({
+      fetchImpl,
+      store,
+      roster,
+      now: clock,
+      sleep,
+      delayMs: cfg.delayMs,
+      deadline: Date.now() + 45_000,
+      logger,
+      catalog,
+      maxPdfBytes: cfg.maxPdfBytes,
+      docsPerRun: backfill ? 3 : 2,
+    });
+  } catch (err) {
+    annual = { error: err.message };
+    logger.error(`[annual] slice failed: ${err.message}`);
+  }
+
   const finished = new Date().toISOString();
   const backfillComplete = backfill ? allCaughtUp : true;
   const next = {
@@ -901,6 +922,7 @@ export async function runPoliticianPoll({
       newReviews: newReviews.length,
       backfillComplete,
       mode: backfill ? 'backfill' : 'daily',
+      annual,
     },
     sources,
   };

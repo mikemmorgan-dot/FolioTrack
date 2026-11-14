@@ -319,6 +319,8 @@ slices, and it does not email the history.
 the timer only decides when to look, and the decision uses that timestamp.
 **Refresh** always starts a run and returns immediately.
 
+**Annual holdings.** The filer page also shows a donut of the latest annual disclosure (House FD Schedule A, Senate eFD Part 3, OGE Form 278e Parts 2, 5, and 6), separate from the periodic trades. Each slice is a printed value range. The chart uses the midpoint, or the printed floor when the form says Over $50,000,000, and it is labeled an estimate. Rows valued None or not disclosed are counted and left out. An amendment is stored as a new filing; the earlier filing is kept. A scanned House or Senate annual is linked and not guessed. A scanned 278e stays pending for the Actions job, which reads it one page at a time. The daily poll backfills the latest annual per current member, then checks for a newer filing, a few documents at a time. Holdings are not included in the digest email.
+
 A 429 or 5xx backs that source off (5 minutes, or 15 on 429, doubling up to
 6 hours). The backfill window is the current US calendar year plus the prior
 year (`POLITICIAN_BACKFILL_YEARS`, default 2). After that, digests go to the

@@ -2,6 +2,9 @@
 // for the filing keys it is about to download, not for every stored trade.
 
 import { canonicalTicker } from './normalize.js';
+import { isReadableAnnual, selectCurrentAnnual } from './annualRecords.js';
+import { presentHoldings } from './holdingsView.js';
+import { heldIndex } from './records.js';
 import { OCR_CLAIM_MS, OCR_FAILED_NOTE, PENDING_OCR_NOTE } from './ocrPending.js';
 import { applyPoliticianAlertPatch, coercePoliticianAlertSettings } from './settings.js';
 import { normalizeFeedQuery } from './memoryStore.js';
@@ -683,7 +686,16 @@ export function installPgPolitician(Store) {
        LIMIT 1`,
       [personKey],
     );
-    if (!rows[0]) return null;
+    const annualIdentity = rows[0] ? null : await this.q(
+      `SELECT person_name, office, party, state, filer_status
+       FROM politician_annual_filings
+       WHERE person_key = $1
+       ORDER BY filed_date DESC NULLS LAST
+       LIMIT 1`,
+      [personKey],
+    );
+    const identity = rows[0] || annualIdentity?.rows?.[0];
+    if (!identity) return null;
     const counts = await this.q(
       `SELECT
          count(*) FILTER (WHERE tx_type = 'buy')::int AS buys,
@@ -707,14 +719,15 @@ export function installPgPolitician(Store) {
     const rollup = await this.q(PERSON_ROLLUP_SQL, [personKey, windowQuery.from, windowQuery.to]);
     const feed = await this.listPoliticianFeed({ ...query, personKey });
     const c = counts.rows[0] || {};
+    const holdings = await this.getPoliticianHoldings(personKey);
     return {
       person: {
         personKey,
-        personName: rows[0].person_name,
-        office: rows[0].office,
-        party: rows[0].party || null,
-        filerStatus: rows[0].filer_status || null,
-        state: rows[0].state || null,
+        personName: identity.person_name,
+        office: identity.office,
+        party: identity.party || null,
+        filerStatus: identity.filer_status || null,
+        state: identity.state || null,
       },
       counts: {
         buy: Number(c.buys) || 0,
@@ -724,7 +737,264 @@ export function installPgPolitician(Store) {
       },
       topTickers: top.rows.map((r) => ({ ticker: r.ticker, count: Number(r.n) || 0 })),
       tickerRollup: rollupFromRows(rollup.rows, query),
+      holdings,
       ...feed,
     };
+  };
+
+  function annualFilingFromRow(r) {
+    return {
+      id: r.id,
+      source: r.source,
+      filingKey: r.filing_key,
+      personKey: r.person_key,
+      personName: r.person_name,
+      office: r.office,
+      party: r.party || null,
+      filerStatus: r.filer_status || null,
+      state: r.state || null,
+      district: r.district || null,
+      reportYear: r.report_year == null ? null : Number(r.report_year),
+      filedDate: day(r.filed_date),
+      filingKind: r.filing_kind,
+      sourceUrl: r.source_url,
+      parseStatus: r.parse_status,
+      parseNote: r.parse_note || null,
+      excludedCount: Number(r.excluded_count) || 0,
+      unreadableCount: Number(r.unreadable_count) || 0,
+      ocrDone: r.ocr_done === true,
+      ocrPage: r.ocr_page,
+      pageCount: r.page_count,
+      ocrClaimedAt: isoTs(r.ocr_claimed_at),
+    };
+  }
+
+  function holdingFromRow(r) {
+    return {
+      id: r.id,
+      filingId: r.filing_id,
+      rowIndex: Number(r.row_index),
+      asset: r.asset,
+      ticker: r.ticker || null,
+      tickerNorm: r.ticker_norm || null,
+      tickerSource: r.ticker_source || null,
+      tickerMatchConfidence: r.ticker_match_confidence == null ? null : Number(r.ticker_match_confidence),
+      assetClass: r.asset_class,
+      owner: r.owner,
+      valueRange: r.value_range,
+      valueMin: r.value_min == null ? null : Number(r.value_min),
+      valueMax: r.value_max == null ? null : Number(r.value_max),
+      valueMid: r.value_mid == null ? null : Number(r.value_mid),
+      valueBound: r.value_bound,
+      ocr: r.ocr === true,
+      ocrConfidence: r.ocr_confidence == null ? null : Number(r.ocr_confidence),
+    };
+  }
+
+  Store.prototype.getAnnualState = async function getAnnualState() {
+    return (await readSetting.call(this, 'politicianAnnual')) || {};
+  };
+  Store.prototype.setAnnualState = async function setAnnualState(state) {
+    await writeSetting.call(this, 'politicianAnnual', state || {});
+    return state || {};
+  };
+  Store.prototype.existingAnnualKeys = async function existingAnnualKeys(source, keys) {
+    if (!keys?.length) return [];
+    const { rows } = await this.q(
+      `SELECT filing_key FROM politician_annual_filings
+       WHERE source = $1 AND filing_key = ANY($2::text[])`,
+      [source, keys],
+    );
+    return rows.map((r) => r.filing_key);
+  };
+  Store.prototype.insertAnnualBundle = async function insertAnnualBundle(filing, holdings = []) {
+    const found = await this.q(
+      `SELECT id, parse_status FROM politician_annual_filings WHERE source = $1 AND filing_key = $2`,
+      [filing.source, filing.filingKey],
+    );
+    const existing = found.rows[0];
+    if (existing && existing.parse_status !== 'pending_ocr' && existing.parse_status !== 'ocr_running') {
+      return { created: false, holdings: 0 };
+    }
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      if (existing) {
+        await client.query('DELETE FROM politician_holdings WHERE filing_id = $1', [existing.id]);
+        await client.query(
+          `UPDATE politician_annual_filings SET
+             person_key = $2, person_name = $3, office = $4, party = $5, filer_status = $6,
+             state = $7, district = $8, report_year = $9, filed_date = $10, filing_kind = $11,
+             source_url = $12, parse_status = $13, parse_note = $14, excluded_count = $15,
+             unreadable_count = $16, ocr_done = $17, ocr_page = $18, page_count = $19, ocr_claimed_at = NULL
+           WHERE id = $1`,
+          [
+            existing.id, filing.personKey, filing.personName, filing.office, filing.party,
+            filing.filerStatus, filing.state, filing.district, filing.reportYear, filing.filedDate,
+            filing.filingKind, filing.sourceUrl, filing.parseStatus, filing.parseNote,
+            filing.excludedCount || 0, filing.unreadableCount || 0, filing.ocrDone === true,
+            filing.ocrPage, filing.pageCount,
+          ],
+        );
+      } else {
+        await client.query(
+          `INSERT INTO politician_annual_filings (
+             id, source, filing_key, person_key, person_name, office, party, filer_status,
+             state, district, report_year, filed_date, filing_kind, source_url, parse_status,
+             parse_note, excluded_count, unreadable_count, ocr_done, ocr_page, page_count
+           ) VALUES (
+             $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
+           )`,
+          [
+            filing.id, filing.source, filing.filingKey, filing.personKey, filing.personName,
+            filing.office, filing.party, filing.filerStatus, filing.state, filing.district,
+            filing.reportYear, filing.filedDate, filing.filingKind, filing.sourceUrl,
+            filing.parseStatus, filing.parseNote, filing.excludedCount || 0,
+            filing.unreadableCount || 0, filing.ocrDone === true, filing.ocrPage, filing.pageCount,
+          ],
+        );
+      }
+      const filingId = existing?.id || filing.id;
+      for (let i = 0; i < holdings.length; i += 80) {
+        const chunk = holdings.slice(i, i + 80);
+        const params = [];
+        const values = chunk.map((row) => {
+          const cols = [
+            row.id, filingId, row.rowIndex, row.asset, row.ticker, row.tickerNorm, row.tickerSource,
+            row.tickerMatchConfidence, row.assetClass, row.owner, row.valueRange, row.valueMin,
+            row.valueMax, row.valueMid, row.valueBound, row.ocr === true, row.ocrConfidence,
+          ];
+          const marks = cols.map((value) => {
+            params.push(value);
+            return `$${params.length}`;
+          });
+          return `(${marks.join(',')})`;
+        });
+        await client.query(
+          `INSERT INTO politician_holdings (
+             id, filing_id, row_index, asset, ticker, ticker_norm, ticker_source,
+             ticker_match_confidence, asset_class, owner, value_range, value_min,
+             value_max, value_mid, value_bound, ocr, ocr_confidence
+           ) VALUES ${values.join(',')}`,
+          params,
+        );
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+    return { created: !existing, holdings: holdings.length };
+  };
+  Store.prototype.listAnnualFilingsForPerson = async function listAnnualFilingsForPerson(personKey) {
+    const { rows } = await this.q(
+      `SELECT * FROM politician_annual_filings WHERE person_key = $1`,
+      [personKey],
+    );
+    return rows.map(annualFilingFromRow);
+  };
+  Store.prototype.listAnnualFilingSummaries = async function listAnnualFilingSummaries() {
+    const { rows } = await this.q(
+      `SELECT id, source, filing_key, person_key, person_name, office, party, filer_status,
+              state, district, report_year, filed_date, filing_kind, source_url, parse_status,
+              parse_note, excluded_count, unreadable_count, ocr_done, ocr_page, page_count,
+              ocr_claimed_at
+       FROM politician_annual_filings`,
+    );
+    return rows.map(annualFilingFromRow);
+  };
+  Store.prototype.listHoldingsForFiling = async function listHoldingsForFiling(filingId) {
+    const { rows } = await this.q(
+      `SELECT * FROM politician_holdings WHERE filing_id = $1 ORDER BY value_mid DESC NULLS LAST, row_index`,
+      [filingId],
+    );
+    return rows.map(holdingFromRow);
+  };
+  Store.prototype.getPoliticianHoldings = async function getPoliticianHoldings(personKey) {
+    const filings = await this.listAnnualFilingsForPerson(personKey);
+    const { current } = selectCurrentAnnual(filings);
+    const holdings = current && isReadableAnnual(current)
+      ? await this.listHoldingsForFiling(current.id)
+      : [];
+    const held = heldIndex(await this.listHeldPoliticianSymbols());
+    return presentHoldings({ filings, holdings, held });
+  };
+  Store.prototype.touchAnnualFiling = async function touchAnnualFiling(id, patch = {}) {
+    const sets = [];
+    const params = [id];
+    const col = {
+      parseStatus: 'parse_status',
+      parseNote: 'parse_note',
+      ocrDone: 'ocr_done',
+      ocrPage: 'ocr_page',
+      pageCount: 'page_count',
+      ocrClaimedAt: 'ocr_claimed_at',
+      excludedCount: 'excluded_count',
+      unreadableCount: 'unreadable_count',
+      reportYear: 'report_year',
+    };
+    for (const [key, sql] of Object.entries(col)) {
+      if (patch[key] !== undefined) {
+        params.push(patch[key]);
+        sets.push(`${sql} = $${params.length}`);
+      }
+    }
+    if (!sets.length) return null;
+    await this.q(`UPDATE politician_annual_filings SET ${sets.join(', ')} WHERE id = $1`, params);
+    return { id };
+  };
+  Store.prototype.appendAnnualHoldings = async function appendAnnualHoldings(filingId, rows = []) {
+    if (!rows.length) return { inserted: 0 };
+    const current = await this.q(
+      `SELECT COALESCE(MAX(row_index), 0)::int AS n FROM politician_holdings WHERE filing_id = $1`,
+      [filingId],
+    );
+    let n = Number(current.rows[0]?.n) || 0;
+    const numbered = rows.map((row) => {
+      n += 1;
+      return { ...row, rowIndex: n, id: `${filingId}:${n}`, filingId };
+    });
+    for (let i = 0; i < numbered.length; i += 80) {
+      const chunk = numbered.slice(i, i + 80);
+      const params = [];
+      const values = chunk.map((row) => {
+        const cols = [
+          row.id, filingId, row.rowIndex, row.asset, row.ticker, row.tickerNorm, row.tickerSource,
+          row.tickerMatchConfidence, row.assetClass, row.owner, row.valueRange, row.valueMin,
+          row.valueMax, row.valueMid, row.valueBound, row.ocr === true, row.ocrConfidence,
+        ];
+        const marks = cols.map((value) => {
+          params.push(value);
+          return `$${params.length}`;
+        });
+        return `(${marks.join(',')})`;
+      });
+      await this.q(
+        `INSERT INTO politician_holdings (
+           id, filing_id, row_index, asset, ticker, ticker_norm, ticker_source,
+           ticker_match_confidence, asset_class, owner, value_range, value_min,
+           value_max, value_mid, value_bound, ocr, ocr_confidence
+         ) VALUES ${values.join(',')}`,
+        params,
+      );
+    }
+    return { inserted: numbered.length };
+  };
+  Store.prototype.listPendingAnnualOcr = async function listPendingAnnualOcr({ limit = 5, now = new Date() } = {}) {
+    const nowMs = now instanceof Date ? now.getTime() : Date.parse(now);
+    const { rows } = await this.q(
+      `SELECT * FROM politician_annual_filings
+       WHERE source = 'oge'
+         AND (
+           parse_status = 'pending_ocr'
+           OR (parse_status = 'ocr_running' AND (ocr_claimed_at IS NULL OR ocr_claimed_at < $2::timestamptz))
+         )
+       ORDER BY filed_date DESC NULLS LAST
+       LIMIT $1`,
+      [limit, new Date(nowMs - OCR_CLAIM_MS).toISOString()],
+    );
+    return rows.map(annualFilingFromRow);
   };
 }

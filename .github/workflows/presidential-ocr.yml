@@ -1,6 +1,7 @@
-# OCR scanned presidential and vice-presidential OGE 278-T filings.
-# The Render service is Node and has no tesseract. This job writes trades
-# back to the same Neon database. The app's next digest emails them once.
+# OCR scanned presidential and vice-presidential OGE filings.
+# 278-T trades are written back for the next digest. 278e annual holdings
+# are written to the holdings tables and are not emailed.
+# The Render service is Node and has no tesseract.
 # It also resolves asset names to tickers for new rows and for stored rows
 # that still have no ticker, including House and Senate. A ticker printed on
 # the filing is left alone, and a backfill does not send the digest again.
@@ -46,7 +47,7 @@ jobs:
         working-directory: server
         run: npm ci
 
-      - name: OCR pending 278-T filings
+      - name: OCR pending 278-T filings and 278e annual reports
         working-directory: server
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}

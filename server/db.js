@@ -240,6 +240,64 @@ CREATE INDEX IF NOT EXISTS politician_trades_unnamed
   WHERE ticker_norm IS NULL;
 ${HISTORICAL_DIGEST_SQL}`;
 
+// Annual disclosure holdings. A filing row is inserted once. An amendment is
+// a new filing key. Holdings are not updated in place and are not part of
+// the trade digest.
+export const ANNUAL_HOLDINGS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS politician_annual_filings (
+  id text PRIMARY KEY,
+  source text NOT NULL,
+  filing_key text NOT NULL,
+  person_key text NOT NULL,
+  person_name text NOT NULL,
+  office text NOT NULL,
+  party text,
+  filer_status text,
+  state text,
+  district text,
+  report_year int,
+  filed_date date,
+  filing_kind text NOT NULL,
+  source_url text NOT NULL,
+  parse_status text NOT NULL,
+  parse_note text,
+  excluded_count int NOT NULL DEFAULT 0,
+  unreadable_count int NOT NULL DEFAULT 0,
+  ocr_done boolean NOT NULL DEFAULT false,
+  ocr_page int,
+  page_count int,
+  ocr_claimed_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS politician_annual_source_key
+  ON politician_annual_filings (source, filing_key);
+CREATE INDEX IF NOT EXISTS politician_annual_person
+  ON politician_annual_filings (person_key, filed_date DESC);
+CREATE TABLE IF NOT EXISTS politician_holdings (
+  id text PRIMARY KEY,
+  filing_id text NOT NULL REFERENCES politician_annual_filings(id) ON DELETE CASCADE,
+  row_index int NOT NULL,
+  asset text NOT NULL,
+  ticker text,
+  ticker_norm text,
+  ticker_source text,
+  ticker_match_confidence int,
+  asset_class text NOT NULL,
+  owner text NOT NULL,
+  value_range text NOT NULL,
+  value_min bigint,
+  value_max bigint,
+  value_mid bigint,
+  value_bound text NOT NULL,
+  ocr boolean NOT NULL DEFAULT false,
+  ocr_confidence int,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (filing_id, row_index)
+);
+CREATE INDEX IF NOT EXISTS politician_holdings_filing
+  ON politician_holdings (filing_id, value_mid DESC);
+`;
+
 export const POLITICIAN_OCR_SCHEMA = `
 ALTER TABLE politician_filings ADD COLUMN IF NOT EXISTS ocr_claimed_at timestamptz;
 ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS digest_pending boolean NOT NULL DEFAULT false;
@@ -257,6 +315,7 @@ ${HISTORICAL_DIGEST_SQL}`;
 
 export async function initSchema(pool) {
   await pool.query(SCHEMA);
+  await pool.query(ANNUAL_HOLDINGS_SCHEMA);
 }
 
 // Copy any leftover JSON histories into price_points, then empty the blob
