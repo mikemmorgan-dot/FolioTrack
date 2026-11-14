@@ -4,6 +4,13 @@
 // uses aggregateSummary() so dev and tests follow the same rules.
 
 import { AMOUNT_RANGES, matchableAssetClass } from './normalize.js';
+import {
+  bothSideNets,
+  compareNetRows,
+  netForTicker,
+  netFromColumns,
+  aggregateNetByTicker,
+} from './net.js';
 import { heldIndex } from './records.js';
 
 export const SUMMARY_WINDOWS = [7, 30, 90];
@@ -55,6 +62,7 @@ export function normalizeSummaryQuery(query = {}, now = new Date()) {
   const asOf = DAY.test(query.asOf) ? query.asOf : usTodayIso(now);
   const { from, to } = summaryBounds(windowDays, asOf);
   const filer = query.filer === 'member' || query.filer === 'candidate' ? query.filer : '';
+  const rankAll = ['limit', 'rankLimit'].some((key) => String(query[key] ?? '').toLowerCase() === 'all');
   return {
     windowDays,
     asOf,
@@ -62,6 +70,7 @@ export function normalizeSummaryQuery(query = {}, now = new Date()) {
     to,
     filer,
     clusterMin: normalizeClusterMin(query.clusterMin),
+    rankAll,
     rankLimit: RANK_LIMIT,
     clusterLimit: CLUSTER_LIMIT,
   };
@@ -93,6 +102,14 @@ export function amountMaxSql(column = 'amount_range') {
     .map(([, max, label]) => `WHEN ${sqlLiteral(label)} THEN ${max}`)
     .join(' ');
   return `CASE ${column} ${whens} ELSE NULL END`;
+}
+
+// Closed ranges use the midpoint. The open-ended top bucket uses its floor.
+export function amountMidSql(column = 'amount_range') {
+  const whens = AMOUNT_RANGES
+    .map(([min, max, label]) => `WHEN ${sqlLiteral(label)} THEN ${(min + max) / 2}`)
+    .join(' ');
+  return `CASE ${column} ${whens} WHEN ${sqlLiteral(OVER_50M)} THEN ${OVER_50M_MIN} ELSE NULL END`;
 }
 
 export function amountRangeBounds(label) {
@@ -182,7 +199,7 @@ function inWindow(date, from, to) {
   return Boolean(date) && date >= from && date <= to;
 }
 
-function rankSide(trades, txType, limit) {
+function rankSide(trades, txType) {
   const groups = new Map();
   for (const trade of trades) {
     if (trade.txType !== txType || !trade.tickerNorm) continue;
@@ -210,8 +227,11 @@ function rankSide(trades, txType, limit) {
       matchable: group.matchable,
       ...amountSpan(group.amounts),
     }))
-    .sort(compareRank)
-    .slice(0, limit);
+    .sort(compareRank);
+}
+
+function withNet(rows, netMap) {
+  return rows.map((row) => ({ ...row, net: netForTicker(netMap, row.ticker) }));
 }
 
 function clusterBuys(trades, minPeople, limit) {
@@ -311,16 +331,27 @@ export function aggregateSummary({ trades = [], filings = [], query = {}, now } 
     if (!trade.tickerNorm) continue;
     scoped.push(trade);
   }
+  const netMap = aggregateNetByTicker(scoped);
   const { clusters, clusterTotal } = clusterBuys(scoped, q.clusterMin, q.clusterLimit);
+  for (const cluster of clusters) cluster.net = netForTicker(netMap, cluster.ticker);
+  const boughtAll = withNet(rankSide(scoped, 'buy'), netMap);
+  const soldAll = withNet(rankSide(scoped, 'sell'), netMap);
+  const cap = q.rankAll ? undefined : q.rankLimit;
+  const { nets, netTotal } = bothSideNets(netMap, q.rankAll ? null : q.rankLimit);
   return {
     window: q.windowDays,
     from: q.from,
     to: q.to,
     filer: q.filer,
     clusterMin: q.clusterMin,
+    rankLimit: q.rankAll ? null : q.rankLimit,
     excludedFilings: countExcluded(filings, trades, q),
-    bought: rankSide(scoped, 'buy', q.rankLimit),
-    sold: rankSide(scoped, 'sell', q.rankLimit),
+    bought: boughtAll.slice(0, cap),
+    sold: soldAll.slice(0, cap),
+    boughtTotal: boughtAll.length,
+    soldTotal: soldAll.length,
+    nets,
+    netTotal,
     clusters,
     clusterTotal,
   };
@@ -333,16 +364,31 @@ function num(value) {
 }
 
 function mapRankRow(row) {
+  const net = netFromColumns(row);
   return {
     ticker: row.ticker_norm,
     trades: Number(row.trades) || 0,
     politicians: Number(row.politicians) || 0,
     matchable: row.matchable === true,
     ...spanFromSums(row.amount_min, row.amount_max, row.open_rows, row.known_amounts),
+    ...(net ? { net } : {}),
   };
 }
 
-export function summaryFromSql({ rankRows = [], clusterRows = [], excluded = 0, query = {}, now } = {}) {
+function sideTotal(rows, txType, shown) {
+  const raw = rows.find((row) => row.tx_type === txType)?.side_total;
+  if (raw == null || raw === '') return shown;
+  return Number(raw) || 0;
+}
+
+export function summaryFromSql({
+  rankRows = [],
+  clusterRows = [],
+  netRows = [],
+  excluded = 0,
+  query = {},
+  now,
+} = {}) {
   const q = normalizeSummaryQuery(query, now);
   const bought = [];
   const sold = [];
@@ -370,6 +416,8 @@ export function summaryFromSql({ rankRows = [], clusterRows = [], excluded = 0, 
       clusters.push(cluster);
     }
     const dates = Array.isArray(row.dates) ? row.dates.map((d) => String(d).slice(0, 10)) : [];
+    const net = netFromColumns(row);
+    if (net) cluster.net = net;
     cluster.buyers.push({
       personKey: row.person_key,
       name: row.person_name,
@@ -381,18 +429,49 @@ export function summaryFromSql({ rankRows = [], clusterRows = [], excluded = 0, 
       ...spanFromSums(row.amount_min, row.amount_max, row.open_rows, row.known_amounts),
     });
   }
+  const nets = [];
+  let netTotal = 0;
+  for (const row of netRows) {
+    if (row.net_total != null && row.net_total !== '') netTotal = Number(row.net_total) || 0;
+    const net = netFromColumns(row);
+    if (!net || !row.ticker_norm) continue;
+    nets.push({
+      ticker: row.ticker_norm,
+      matchable: row.matchable === true,
+      net,
+    });
+  }
+  if (!netRows.length) netTotal = 0;
+  else if (netRows.every((row) => row.net_total == null || row.net_total === '')) netTotal = nets.length;
   return {
     window: q.windowDays,
     from: q.from,
     to: q.to,
     filer: q.filer,
     clusterMin: q.clusterMin,
+    rankLimit: q.rankAll ? null : q.rankLimit,
     excludedFilings: num(excluded) || 0,
     bought,
     sold,
+    boughtTotal: sideTotal(rankRows, 'buy', bought.length),
+    soldTotal: sideTotal(rankRows, 'sell', sold.length),
+    nets,
+    netTotal,
     clusters,
     clusterTotal,
   };
+}
+
+export function rollupFromRows(rows, query = {}, now) {
+  const q = normalizeSummaryQuery(query, now);
+  const tickers = [];
+  for (const row of rows || []) {
+    const net = netFromColumns(row);
+    if (!net || !row.ticker) continue;
+    tickers.push({ ticker: row.ticker, net });
+  }
+  tickers.sort(compareNetRows);
+  return { window: q.windowDays, from: q.from, to: q.to, tickers };
 }
 
 export function attachHeldModels(summary, symbols) {
@@ -411,6 +490,7 @@ export function attachHeldModels(summary, symbols) {
     ...summary,
     bought: (summary.bought || []).map(mark),
     sold: (summary.sold || []).map(mark),
+    nets: (summary.nets || []).map(mark),
     clusters: (summary.clusters || []).map(mark),
   };
 }
@@ -420,15 +500,37 @@ const SCOPED_COLUMNS = `
          ${amountMinSql('amount_range')} AS amount_min,
          ${amountMaxSql('amount_range')} AS amount_max`;
 
+const NET_VALUE_COLUMNS = `
+         ${amountMinSql('amount_range')} AS amount_min,
+         ${amountMaxSql('amount_range')} AS amount_max,
+         ${amountMidSql('amount_range')} AS amount_mid`;
+
+const NET_AGG = `
+         count(*) FILTER (WHERE tx_type = 'buy')::int AS net_buys,
+         count(*) FILTER (WHERE tx_type = 'sell')::int AS net_sells,
+         count(*) FILTER (WHERE tx_type = 'exchange')::int AS net_exchanges,
+         sum(amount_mid) FILTER (WHERE tx_type = 'buy')::float8 AS net_buy_mid,
+         sum(amount_mid) FILTER (WHERE tx_type = 'sell')::float8 AS net_sell_mid,
+         count(*) FILTER (WHERE tx_type IN ('buy', 'sell') AND amount_mid IS NOT NULL)::int AS net_known,
+         count(*) FILTER (WHERE tx_type IN ('buy', 'sell') AND amount_mid IS NULL)::int AS net_excluded,
+         count(*) FILTER (WHERE tx_type IN ('buy', 'sell') AND amount_min IS NOT NULL AND amount_max IS NULL)::int AS net_open`;
+
 export const SUMMARY_RANK_SQL = `
 WITH scoped AS (
-  SELECT tx_type, ${SCOPED_COLUMNS}
+  SELECT tx_type, person_key, asset_class, ticker_norm,
+         ${NET_VALUE_COLUMNS}
   FROM politician_trades
   WHERE disclosed_date >= $1::date
     AND disclosed_date <= $2::date
     AND ticker_norm IS NOT NULL
-    AND tx_type IN ('buy', 'sell')
+    AND tx_type IN ('buy', 'sell', 'exchange')
     AND ${filerSql('filer_status')}
+),
+nets AS (
+  SELECT ticker_norm,
+         ${NET_AGG}
+  FROM scoped
+  GROUP BY ticker_norm
 ),
 grouped AS (
   SELECT tx_type,
@@ -441,21 +543,82 @@ grouped AS (
          count(*) FILTER (WHERE amount_min IS NOT NULL)::int AS known_amounts,
          bool_or(asset_class IN ('stock', 'etf', 'fund')) AS matchable
   FROM scoped
+  WHERE tx_type IN ('buy', 'sell')
   GROUP BY tx_type, ticker_norm
 ),
 ranked AS (
   SELECT grouped.*,
+         (count(*) OVER (PARTITION BY tx_type))::int AS side_total,
          row_number() OVER (
            PARTITION BY tx_type
            ORDER BY trades DESC, politicians DESC, ticker_norm
          ) AS rn
   FROM grouped
 )
-SELECT tx_type, ticker_norm, trades, politicians, amount_min, amount_max,
-       open_rows, known_amounts, matchable
+SELECT r.tx_type, r.ticker_norm, r.trades, r.politicians, r.amount_min, r.amount_max,
+       r.open_rows, r.known_amounts, r.matchable, r.side_total,
+       n.net_buys, n.net_sells, n.net_exchanges, n.net_buy_mid, n.net_sell_mid,
+       n.net_known, n.net_excluded, n.net_open
+FROM ranked r
+JOIN nets n USING (ticker_norm)
+WHERE ($4::int IS NULL OR r.rn <= $4::int)
+ORDER BY r.tx_type, r.rn
+`;
+
+export const SUMMARY_NET_SQL = `
+WITH scoped AS (
+  SELECT tx_type, ticker_norm, asset_class,
+         ${NET_VALUE_COLUMNS}
+  FROM politician_trades
+  WHERE disclosed_date >= $1::date
+    AND disclosed_date <= $2::date
+    AND ticker_norm IS NOT NULL
+    AND tx_type IN ('buy', 'sell', 'exchange')
+    AND ${filerSql('filer_status')}
+),
+nets AS (
+  SELECT ticker_norm,
+         ${NET_AGG},
+         bool_or(asset_class IN ('stock', 'etf', 'fund')) AS matchable
+  FROM scoped
+  GROUP BY ticker_norm
+  HAVING count(*) FILTER (WHERE tx_type = 'buy') > 0
+     AND count(*) FILTER (WHERE tx_type = 'sell') > 0
+),
+ranked AS (
+  SELECT nets.*,
+         (count(*) OVER ())::int AS net_total,
+         row_number() OVER (
+           ORDER BY
+             CASE WHEN net_known > 0
+               THEN abs(coalesce(net_buy_mid, 0) - coalesce(net_sell_mid, 0))
+             END DESC NULLS LAST,
+             abs(net_buys - net_sells) DESC,
+             ticker_norm
+         ) AS rn
+  FROM nets
+)
+SELECT ticker_norm, net_buys, net_sells, net_exchanges, net_buy_mid, net_sell_mid,
+       net_known, net_excluded, net_open, matchable, net_total
 FROM ranked
-WHERE rn <= ${RANK_LIMIT}
-ORDER BY tx_type, rn
+WHERE ($4::int IS NULL OR rn <= $4::int)
+ORDER BY rn
+`;
+
+export const PERSON_ROLLUP_SQL = `
+WITH scoped AS (
+  SELECT ticker_norm, tx_type,
+         ${NET_VALUE_COLUMNS}
+  FROM politician_trades
+  WHERE person_key = $1
+    AND disclosed_date >= $2::date
+    AND disclosed_date <= $3::date
+    AND ticker_norm IS NOT NULL
+)
+SELECT ticker_norm AS ticker,
+       ${NET_AGG}
+FROM scoped
+GROUP BY ticker_norm
 `;
 
 export const SUMMARY_CLUSTER_SQL = `
@@ -504,6 +667,22 @@ top_clusters AS (
   SELECT * FROM clusters
   ORDER BY politicians DESC, trades DESC, ticker_norm
   LIMIT ${CLUSTER_LIMIT}
+),
+net_scoped AS (
+  SELECT ticker_norm, tx_type,
+         ${NET_VALUE_COLUMNS}
+  FROM politician_trades
+  WHERE disclosed_date >= $1::date
+    AND disclosed_date <= $2::date
+    AND ticker_norm IS NOT NULL
+    AND tx_type IN ('buy', 'sell', 'exchange')
+    AND ${filerSql('filer_status')}
+),
+nets AS (
+  SELECT ticker_norm,
+         ${NET_AGG}
+  FROM net_scoped
+  GROUP BY ticker_norm
 )
 SELECT c.cluster_total,
        c.politicians,
@@ -514,9 +693,12 @@ SELECT c.cluster_total,
        c.known_amounts AS cluster_known,
        c.matchable AS cluster_matchable,
        b.ticker_norm, b.person_key, b.person_name, b.office, b.party, b.filer_status,
-       b.trades, b.dates, b.amount_min, b.amount_max, b.open_rows, b.known_amounts
+       b.trades, b.dates, b.amount_min, b.amount_max, b.open_rows, b.known_amounts,
+       n.net_buys, n.net_sells, n.net_exchanges, n.net_buy_mid, n.net_sell_mid,
+       n.net_known, n.net_excluded, n.net_open
 FROM top_clusters c
 JOIN buyers b USING (ticker_norm)
+JOIN nets n USING (ticker_norm)
 ORDER BY c.politicians DESC, c.trades DESC, c.ticker_norm, b.dates[1], b.person_name
 `;
 

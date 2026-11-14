@@ -80,6 +80,21 @@ export function personWindowBounds(query = {}, now = new Date()) {
   return { windowDays: windowRaw, asOf, from, to };
 }
 
+// `feed=all` keeps the disclosure window for the net rollup and returns every filing.
+export function personFeedQuery(query = {}, personKey) {
+  const bounds = personWindowBounds(query);
+  const feedQuery = { ...query, personKey };
+  delete feedQuery.window;
+  delete feedQuery.asOf;
+  delete feedQuery.feed;
+  const all = query.feed === 'all';
+  if (bounds && !all) {
+    feedQuery.from = bounds.from;
+    feedQuery.to = bounds.to;
+  }
+  return { bounds, feedQuery, all };
+}
+
 function isoDay(value) {
   if (value == null || value === '') return null;
   if (value instanceof Date) return value.toISOString().slice(0, 10);

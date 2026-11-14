@@ -12,6 +12,7 @@ import {
   OVER_50M_MIN,
   SUMMARY_CLUSTER_SQL,
   SUMMARY_EXCLUDED_SQL,
+  SUMMARY_NET_SQL,
   SUMMARY_RANK_SQL,
   aggregateSummary,
   amountSpan,
@@ -365,7 +366,14 @@ describe('summary SQL shape', () => {
     }
     expect(SUMMARY_RANK_SQL).toMatch(/GROUP BY tx_type, ticker_norm/);
     expect(SUMMARY_RANK_SQL).toMatch(/count\(DISTINCT person_key\)/);
-    expect(SUMMARY_RANK_SQL).toMatch(/WHERE rn <= 10/);
+    expect(SUMMARY_RANK_SQL).toMatch(/\$4::int IS NULL OR r\.rn <= \$4::int/);
+    expect(SUMMARY_RANK_SQL).toContain('THEN 8000.5');
+    expect(SUMMARY_RANK_SQL).toMatch(/side_total/);
+    expect(SUMMARY_NET_SQL).toMatch(/\$4::int IS NULL OR rn <= \$4::int/);
+    expect(SUMMARY_NET_SQL).toMatch(/tx_type = 'buy'\) > 0/);
+    expect(SUMMARY_NET_SQL).toMatch(/tx_type = 'sell'\) > 0/);
+    expect(SUMMARY_NET_SQL).toContain('THEN 8000.5');
+    expect(SUMMARY_CLUSTER_SQL).toMatch(/net_buys/);
     expect(SUMMARY_RANK_SQL).toMatch(/disclosed_date >= \$1::date/);
     expect(SUMMARY_RANK_SQL).toMatch(/disclosed_date <= \$2::date/);
     expect(SUMMARY_RANK_SQL).toMatch(/ticker_norm IS NOT NULL/);
@@ -440,6 +448,60 @@ describe('summary SQL shape', () => {
       amountLabel: '$1,001 - $15,000',
       dates: ['2026-11-01'],
     });
+  });
+
+  it('maps net columns, side totals, and the both-sides list', () => {
+    const body = summaryFromSql({
+      query: { window: 30, asOf: AS_OF, limit: 'all' },
+      rankRows: [{
+        tx_type: 'buy',
+        ticker_norm: 'NVDA',
+        trades: 2,
+        politicians: 2,
+        amount_min: '50001001',
+        amount_max: null,
+        open_rows: 1,
+        known_amounts: 2,
+        matchable: true,
+        side_total: '61',
+        net_buys: 2,
+        net_sells: 1,
+        net_exchanges: 1,
+        net_buy_mid: 50008000.5,
+        net_sell_mid: 32500.5,
+        net_known: 3,
+        net_excluded: 0,
+        net_open: 1,
+      }],
+      netRows: [{
+        ticker_norm: 'NVDA',
+        net_buys: 2,
+        net_sells: 1,
+        net_exchanges: 1,
+        net_buy_mid: 50008000.5,
+        net_sell_mid: 32500.5,
+        net_known: 3,
+        net_excluded: 0,
+        net_open: 1,
+        matchable: true,
+        net_total: '4',
+      }],
+    });
+    expect(body.rankLimit).toBeNull();
+    expect(body.boughtTotal).toBe(61);
+    expect(body.soldTotal).toBe(0);
+    expect(body.bought[0].net).toMatchObject({
+      buys: 2,
+      sells: 1,
+      exchanges: 1,
+      netCount: 1,
+      estimatedNet: 49_975_500,
+      minimum: true,
+      estimateLabel: 'Est. net at least +$50M',
+    });
+    expect(body.netTotal).toBe(4);
+    expect(body.nets[0].ticker).toBe('NVDA');
+    expect(body.nets[0].net.countLabel).toBe('Net +1');
   });
 
   it('clamps the cluster threshold', () => {

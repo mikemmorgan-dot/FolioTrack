@@ -149,6 +149,12 @@ describe('politician people search', () => {
     expect(trump.items).toEqual([]);
     expect(trump.counts.trades).toBe(1);
     expect(trump.latestDisclosure).toBe('2026-10-08');
+    expect(trump.tickerRollup).toMatchObject({ window: 30, from: '2026-10-16', to: '2026-11-14', tickers: [] });
+
+    const all = await store.getPolitician('president:trump:donald', { window: 30, asOf: '2026-11-14', feed: 'all' });
+    expect(all.window).toEqual({ days: 30, from: '2026-10-16', to: '2026-11-14' });
+    expect(all.items.map((item) => item.disclosedDate)).toEqual(['2026-10-08']);
+    expect(all.tickerRollup.tickers).toEqual([]);
 
     const widened = await store.getPolitician('president:trump:donald', { asOf: '2026-11-14' });
     expect(widened.window).toBeNull();
@@ -158,6 +164,7 @@ describe('politician people search', () => {
     expect(pelosi.total).toBe(3);
     expect(pelosi.latestDisclosure).toBe('2026-11-06');
     expect(pelosi.counts).toMatchObject({ buy: 2, sell: 1, trades: 3 });
+    expect(pelosi.tickerRollup.tickers.map((row) => row.ticker).sort()).toEqual(['AAPL', 'MSFT', 'NVDA']);
   });
 });
 

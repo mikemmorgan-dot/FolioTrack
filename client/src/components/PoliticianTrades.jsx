@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import PoliticianSearch from './PoliticianSearch.jsx';
-import PoliticianSummary from './PoliticianSummary.jsx';
+import PoliticianSummary, { NetLine, NET_TIP, signClass } from './PoliticianSummary.jsx';
 
 const OFFICES = [
   { id: '', label: 'All' },
@@ -132,21 +132,28 @@ function TradeCard({ item, onPerson }) {
   );
 }
 
-function PersonView({ personKey, onBack, windowDays = 30 }) {
+const PERSON_WINDOWS = [
+  { id: 7, label: '7 days' },
+  { id: 30, label: '30 days' },
+  { id: 90, label: '90 days' },
+];
+
+function PersonView({ personKey, initialWindow = 30, onBack }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
   const [offset, setOffset] = useState(0);
   const [items, setItems] = useState([]);
+  const [windowDays, setWindowDays] = useState(initialWindow);
   const [scope, setScope] = useState('window');
   const [widened, setWidened] = useState(false);
-  const viewKey = `${personKey}:${windowDays}`;
-  const [seenKey, setSeenKey] = useState(viewKey);
-  if (seenKey !== viewKey) {
-    setSeenKey(viewKey);
+  const [seenKey, setSeenKey] = useState(personKey);
+  if (seenKey !== personKey) {
+    setSeenKey(personKey);
     setData(null);
     setErr(null);
     setOffset(0);
     setItems([]);
+    setWindowDays(initialWindow);
     setScope('window');
     setWidened(false);
   }
@@ -154,8 +161,8 @@ function PersonView({ personKey, onBack, windowDays = 30 }) {
   useEffect(() => {
     let cancel = false;
     setErr(null);
-    const query = { offset, limit: 40 };
-    if (scope === 'window') query.window = windowDays;
+    const query = { offset, limit: 40, window: windowDays };
+    if (scope === 'all') query.feed = 'all';
     api.politician(personKey, query)
       .then((body) => {
         if (cancel) return;
@@ -175,8 +182,20 @@ function PersonView({ personKey, onBack, windowDays = 30 }) {
     return () => { cancel = true; };
   }, [personKey, offset, scope, windowDays]);
 
+  function changeWindow(days) {
+    if (days === windowDays) return;
+    setOffset(0);
+    setItems([]);
+    setData(null);
+    setScope('window');
+    setWidened(false);
+    setWindowDays(days);
+  }
+
   const person = data?.person;
   const party = partyName(person?.party);
+  const rollup = data?.tickerRollup?.window === windowDays ? data.tickerRollup : null;
+  const rollupTickers = rollup?.tickers || [];
   return (
     <>
       <header className="editor-bar">
@@ -217,19 +236,43 @@ function PersonView({ personKey, onBack, windowDays = 30 }) {
               <div><span className="ptr-stat-n">{data.counts?.sell ?? 0}</span><span>Sells</span></div>
               <div><span className="ptr-stat-n">{data.counts?.exchange ?? 0}</span><span>Exchanges</span></div>
             </div>
-            {(data.topTickers || []).length > 0 && (
-              <>
-                <div className="ed-section">Most traded</div>
-                <div className="ptr-top">
-                  {data.topTickers.map((row) => (
-                    <span key={row.ticker} className="pill neutral">{row.ticker} · {row.count}</span>
-                  ))}
-                </div>
-              </>
+            <div className="ed-section">By ticker</div>
+            <div className="segmented ptr-chips" role="group" aria-label="Disclosure window">
+              {PERSON_WINDOWS.map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  className={windowDays === opt.id ? 'on' : ''}
+                  aria-pressed={windowDays === opt.id}
+                  onClick={() => changeWindow(opt.id)}
+                >{opt.label}</button>
+              ))}
+            </div>
+            <p className="ptr-note">
+              This window is by disclosure date{rollup?.from ? ` (${pretty(rollup.from)} – ${pretty(rollup.to)})` : ''}.
+              Net is this filer's buys minus sells. Dollars are estimates from range midpoints.
+            </p>
+            {person && !rollup && <p className="ed-hint">Loading tickers…</p>}
+            {rollup && rollupTickers.length === 0 && (
+              <p className="ptr-note">No ticker trades disclosed in this window.</p>
             )}
+            {rollupTickers.map((row) => (
+              <div key={row.ticker} className="ptr-rank ptr-rollup">
+                <span className="ptr-rank-top">
+                  <span className="ptr-rank-ticker">{row.ticker}</span>
+                  {row.net?.estimateLabel && (
+                    <span className={`ptr-rank-amt ${signClass(row.net.estimatedNet)}`} title={NET_TIP}>
+                      {row.net.estimateLabel}
+                    </span>
+                  )}
+                </span>
+                <NetLine net={row.net} hideEstimate />
+              </div>
+            ))}
           </>
         )}
         <div className="ed-section">Trades</div>
+        <p className="ptr-note">Rows without a ticker, including bonds, stay in this list.</p>
         {items.map((item) => <TradeCard key={item.id} item={item} onPerson={() => {}} />)}
         {data?.hasMore && (
           <button type="button" className="rp-run alert-secondary" onClick={() => setOffset((n) => n + 40)}>Load more</button>
@@ -251,6 +294,8 @@ export default function PoliticianTrades({ onClose, initialTicker = '' }) {
   const [filer, setFiler] = useState('');
   const [windowDays, setWindowDays] = useState(30);
   const [clusterMin, setClusterMin] = useState(3);
+  const [expanded, setExpanded] = useState({ buy: false, sell: false, net: false });
+  const [fullRanks, setFullRanks] = useState(false);
   const [summary, setSummary] = useState(null);
   const [summaryErr, setSummaryErr] = useState(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
@@ -275,12 +320,14 @@ export default function PoliticianTrades({ onClose, initialTicker = '' }) {
     let cancel = false;
     setSummaryLoading(true);
     setSummaryErr(null);
-    api.politicianSummary({ window: windowDays, filer, clusterMin })
+    const query = { window: windowDays, filer, clusterMin };
+    if (fullRanks) query.limit = 'all';
+    api.politicianSummary(query)
       .then((body) => { if (!cancel) setSummary(body); })
       .catch((e) => { if (!cancel) setSummaryErr(e.message); })
       .finally(() => { if (!cancel) setSummaryLoading(false); });
     return () => { cancel = true; };
-  }, [windowDays, filer, clusterMin, reloadKey]);
+  }, [windowDays, filer, clusterMin, fullRanks, reloadKey]);
 
   useEffect(() => {
     if (!feedOpen) return undefined;
@@ -363,10 +410,19 @@ export default function PoliticianTrades({ onClose, initialTicker = '' }) {
     }
   }
 
+  function expandList(side) {
+    setExpanded((prev) => ({ ...prev, [side]: true }));
+    if (summary?.rankLimit != null) setFullRanks(true);
+  }
+
+  function collapseList(side) {
+    setExpanded((prev) => ({ ...prev, [side]: false }));
+  }
+
   if (personKey) {
     return (
       <div className="editor">
-        <PersonView personKey={personKey} windowDays={windowDays} onBack={() => setPersonKey(null)} />
+        <PersonView personKey={personKey} initialWindow={windowDays} onBack={() => setPersonKey(null)} />
       </div>
     );
   }
@@ -398,6 +454,9 @@ export default function PoliticianTrades({ onClose, initialTicker = '' }) {
           onClusterMin={(n) => setClusterMin(n)}
           onTicker={openTicker}
           onPerson={setPersonKey}
+          expanded={expanded}
+          onExpand={expandList}
+          onCollapse={collapseList}
         />
 
         <button

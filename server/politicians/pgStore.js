@@ -6,13 +6,16 @@ import { OCR_CLAIM_MS, OCR_FAILED_NOTE, PENDING_OCR_NOTE } from './ocrPending.js
 import { applyPoliticianAlertPatch, coercePoliticianAlertSettings } from './settings.js';
 import { normalizeFeedQuery } from './memoryStore.js';
 import {
+  PERSON_ROLLUP_SQL,
   SUMMARY_CLUSTER_SQL,
   SUMMARY_EXCLUDED_SQL,
+  SUMMARY_NET_SQL,
   SUMMARY_RANK_SQL,
   normalizeSummaryQuery,
+  rollupFromRows,
   summaryFromSql,
 } from './summary.js';
-import { buildPeopleSearchSql, peopleFromRows, peopleSearchQuery, personWindowBounds } from './peopleSearch.js';
+import { buildPeopleSearchSql, peopleFromRows, peopleSearchQuery, personFeedQuery } from './peopleSearch.js';
 
 function day(value) {
   if (value == null || value === '') return null;
@@ -613,15 +616,18 @@ export function installPgPolitician(Store) {
   };
   Store.prototype.summarizePoliticianTrades = async function summarizePoliticianTrades(query = {}) {
     const q = normalizeSummaryQuery(query);
-    const params = [q.from, q.to, q.filer, q.clusterMin];
-    const [ranks, clusters, excluded] = await Promise.all([
-      this.q(SUMMARY_RANK_SQL, params.slice(0, 3)),
-      this.q(SUMMARY_CLUSTER_SQL, params),
-      this.q(SUMMARY_EXCLUDED_SQL, params.slice(0, 3)),
+    const rankParams = [q.from, q.to, q.filer, q.rankAll ? null : q.rankLimit];
+    const clusterParams = [q.from, q.to, q.filer, q.clusterMin];
+    const [ranks, clusters, netList, excluded] = await Promise.all([
+      this.q(SUMMARY_RANK_SQL, rankParams),
+      this.q(SUMMARY_CLUSTER_SQL, clusterParams),
+      this.q(SUMMARY_NET_SQL, rankParams),
+      this.q(SUMMARY_EXCLUDED_SQL, rankParams.slice(0, 3)),
     ]);
     return summaryFromSql({
       rankRows: ranks.rows,
       clusterRows: clusters.rows,
+      netRows: netList.rows,
       excluded: excluded.rows[0]?.n,
       query,
     });
@@ -707,14 +713,9 @@ export function installPgPolitician(Store) {
        LIMIT 8`,
       [personKey],
     );
-    const bounds = personWindowBounds(query);
-    const feedQuery = { ...query, personKey };
-    delete feedQuery.asOf;
-    delete feedQuery.window;
-    if (bounds) {
-      feedQuery.from = bounds.from;
-      feedQuery.to = bounds.to;
-    }
+    const windowQuery = normalizeSummaryQuery(query);
+    const { bounds, feedQuery } = personFeedQuery(query, personKey);
+    const rollup = await this.q(PERSON_ROLLUP_SQL, [personKey, windowQuery.from, windowQuery.to]);
     const feed = await this.listPoliticianFeed(feedQuery);
     const c = counts.rows[0] || {};
     return {
@@ -735,6 +736,7 @@ export function installPgPolitician(Store) {
       topTickers: top.rows.map((r) => ({ ticker: r.ticker, count: Number(r.n) || 0 })),
       latestDisclosure: day(c.latest),
       window: bounds ? { days: bounds.windowDays, from: bounds.from, to: bounds.to } : null,
+      tickerRollup: rollupFromRows(rollup.rows, query),
       ...feed,
     };
   };

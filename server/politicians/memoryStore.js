@@ -12,12 +12,13 @@ import {
   filingNeedsPresidentialOcr,
 } from './ocrPending.js';
 import { applyPoliticianAlertPatch, coercePoliticianAlertSettings } from './settings.js';
-import { aggregateSummary } from './summary.js';
+import { rollupByTicker } from './net.js';
+import { aggregateSummary, normalizeSummaryQuery } from './summary.js';
 import {
   PEOPLE_SEARCH_LIMIT,
   peopleSearchQuery,
+  personFeedQuery,
   personNameMatches,
-  personWindowBounds,
 } from './peopleSearch.js';
 
 export const FEED_LIMIT_DEFAULT = 40;
@@ -416,14 +417,9 @@ export const memoryMethods = {
       .map(([ticker, count]) => ({ ticker, count }))
       .sort((a, b) => b.count - a.count || a.ticker.localeCompare(b.ticker))
       .slice(0, 8);
-    const bounds = personWindowBounds(query);
-    const feedQuery = { ...query, personKey };
-    delete feedQuery.window;
-    delete feedQuery.asOf;
-    if (bounds) {
-      feedQuery.from = bounds.from;
-      feedQuery.to = bounds.to;
-    }
+    const windowQuery = normalizeSummaryQuery(query);
+    const tickerRollup = rollupByTicker(trades, windowQuery);
+    const { bounds, feedQuery } = personFeedQuery(query, personKey);
     const q = normalizeFeedQuery(feedQuery);
     const held = q.heldOnly
       ? new Set(heldSymbolsFromDb(this.db).map((h) => h.tickerNorm).filter(Boolean))
@@ -442,6 +438,7 @@ export const memoryMethods = {
       topTickers,
       latestDisclosure,
       window: bounds ? { days: bounds.windowDays, from: bounds.from, to: bounds.to } : null,
+      tickerRollup,
       ...feed,
     };
   },

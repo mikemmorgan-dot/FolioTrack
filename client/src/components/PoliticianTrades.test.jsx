@@ -166,7 +166,7 @@ describe('politician search bar', () => {
       }],
     });
     api.politician.mockImplementation(async (_key, query) => {
-      if (query.window) {
+      if (query.window && query.feed !== 'all') {
         return {
           person: {
             personKey: 'president:trump:donald',
@@ -223,6 +223,7 @@ describe('politician search bar', () => {
     expect(screen.getByText(/No disclosures in the last 30 days/)).toBeTruthy();
     expect(screen.getByText('Trump Media')).toBeTruthy();
     expect(api.politician.mock.calls[0][1].window).toBe(30);
-    expect(api.politician.mock.calls[1][1].window).toBeUndefined();
+    expect(api.politician.mock.calls[0][1].feed).toBeUndefined();
+    expect(api.politician.mock.calls[1][1]).toMatchObject({ window: 30, feed: 'all' });
   });
 });
