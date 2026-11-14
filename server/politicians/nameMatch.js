@@ -24,7 +24,7 @@ export const FUZZY_MIN_STEM = 12;
 export const FUZZY_GAP = 0.04;
 // Bump when the resolver can match names the previous pass left null.
 // Rows still missing a ticker are eligible again; a filing ticker is not.
-export const MATCHER_VERSION = 2;
+export const MATCHER_VERSION = 3;
 
 const TRAILING = new Set([
   'inc', 'incorporated', 'corp', 'corporation', 'co', 'company', 'companies',
@@ -33,7 +33,7 @@ const TRAILING = new Set([
   'ny', 'nj', 'va', 'nc', 'il', 'ma', 'ga', 'mi', 'wi', 'mo', 'az', 'or', 'ut',
   'tn', 'ky', 'la', 'al', 'ok', 'ct', 'ia', 'ks', 'ar', 'ms', 'sc', 'ne', 'nm',
   'wv', 'id', 'hi', 'me', 'nh', 'ri', 'mt', 'nd', 'sd', 'ak', 'wy', 'dc', 'usa',
-  'wis',
+  'wis', 'the',
 ]);
 
 // Whole-token expansions. Applied to SEC names and filing names, so
@@ -138,6 +138,49 @@ const SHARE_CLASS_LISTINGS = [
   ['Zillow Group, Inc.', 'c', 'Z'],
   ['Watsco, Inc.', 'a', 'WSO'],
   ['Watsco, Inc.', 'b', 'WSO.B'],
+];
+
+// Filing names that are not the SEC string, or that share the SEC name with
+// preferreds and notes. The value is the common stock. A line that says
+// PFD, preferred, depositary shares, or series does not use this map.
+const COMMON_ALIASES = [
+  ['IBM Corp.', 'IBM'],
+  ['JPMorgan Chase & Co.', 'JPM'],
+  ['AT&T Inc.', 'T'],
+  ['3M Co.', 'MMM'],
+  ['Procter & Gamble Co.', 'PG'],
+  ['Coca-Cola Co.', 'KO'],
+  ['PepsiCo Inc.', 'PEP'],
+  ['Bank of America Corp.', 'BAC'],
+  ['Wells Fargo & Co.', 'WFC'],
+  ['Goldman Sachs Group Inc.', 'GS'],
+  ['Morgan Stanley', 'MS'],
+  ['Citigroup Inc.', 'C'],
+  ['Southern Co.', 'SO'],
+  ['Duke Energy Corp.', 'DUK'],
+  ['Charles Schwab Corp.', 'SCHW'],
+  ['Prudential Financial Inc.', 'PRU'],
+  ['CMS Energy Corp.', 'CMS'],
+  ['Xcel Energy Inc.', 'XEL'],
+  ['Disney Walt Co.', 'DIS'],
+  ['Genl Dynamics Corp.', 'GD'],
+  ['Abbott Labs', 'ABT'],
+  ['United Parcel Svc Inc.', 'UPS'],
+  ['Western Un Co.', 'WU'],
+  ['Eastman Chem Co.', 'EMN'],
+  ['Goodyear Tire & Rubr Co.', 'GT'],
+  ['Gallagher Arthur J & Co.', 'AJG'],
+  ['Costco Whsl Corp.', 'COST'],
+  ['Lauder Estee Cos Inc.', 'EL'],
+  ['IntercontinentalExchange Inc.', 'ICE'],
+  ['PNC Finl Services', 'PNC'],
+  ['GE Aerospace', 'GE'],
+  ['EversourceEnergy', 'ES'],
+  ['Capital One Fincl Corp.', 'COF'],
+  ['Verizon Communications I', 'VZ'],
+  ['Chipotle Mexican Grill I', 'CMG'],
+  ['McCormick & Co Inc Non Voting', 'MKC'],
+  ['McCormick & Co Inc Class N', 'MKC'],
 ];
 
 const WHEN_ISSUED_TAIL = new Set(['m', 'n', 'v', 'w', 'z']);
@@ -370,6 +413,25 @@ function compiledClasses() {
   return compiledShareClass;
 }
 
+let compiledAliasMap = null;
+function compiledAliases() {
+  if (compiledAliasMap) return compiledAliasMap;
+  const map = new Map();
+  for (const [name, ticker] of COMMON_ALIASES) {
+    const stem = normalizeAssetName(name).stem;
+    const canonical = canonicalTicker(ticker);
+    if (!stem || !canonical) continue;
+    const prev = map.get(stem);
+    if (prev && prev !== canonical) {
+      map.set(stem, null);
+      continue;
+    }
+    if (!prev) map.set(stem, canonical);
+  }
+  compiledAliasMap = map;
+  return compiledAliasMap;
+}
+
 export function secRow(row) {
   if (Array.isArray(row)) {
     if (row.length >= 4 && typeof row[0] === 'number') {
@@ -408,6 +470,11 @@ export function indexSecRows(rows) {
   const exact = new Map();
   const classedStems = new Set();
   const tickersByStem = new Map();
+  const allTickers = new Set();
+  for (const raw of rows || []) {
+    const ticker = canonicalTicker(secRow(raw).ticker);
+    if (ticker) allTickers.add(ticker);
+  }
   for (const [stem, list] of grouped) {
     const best = Math.min(...list.map((item) => exchangeTier(item.exchange)));
     const kept = list.filter((item) => exchangeTier(item.exchange) === best);
@@ -442,7 +509,7 @@ export function indexSecRows(rows) {
       }
     }
   }
-  return { exact, classedStems, tickersByStem };
+  return { exact, classedStems, tickersByStem, allTickers };
 }
 
 function curatedExactMap(entries = CURATED_FUNDS) {
@@ -503,7 +570,9 @@ export function buildCatalog({ rows = [], fetchedAt = null, curated = CURATED_FU
     exact: indexed.exact,
     classedStems: indexed.classedStems,
     tickersByStem: indexed.tickersByStem,
+    allTickers: indexed.allTickers,
     shareClass: classes.byKey,
+    aliases: compiledAliases(),
     mappedStems,
     curated: curatedMap,
     fuzzyPlain: fuzzy.plain,
@@ -625,8 +694,56 @@ function isPreferredOrWarrant(value) {
   if (/\bwarrants?\b/i.test(text)) return true;
   if (/\bdepositary\s+shares?\b/i.test(text)) return true;
   if (/\bpreferred\s+(?:stock|shares|series)\b/i.test(text)) return true;
+  if (/\bpfd\b/i.test(text)) return true;
   if (/\bperp(?:etual)?\b/i.test(text)) return true;
   return false;
+}
+
+// Preferred stock and a numbered series stay off the common-stock alias.
+// "series" is not a global block: Nike Class B and Visa Class A still match.
+function isCommonAliasBlocked(value) {
+  const text = String(value || '');
+  if (isPreferredOrWarrant(text)) return true;
+  if (/\bseries\b/i.test(text)) return true;
+  return false;
+}
+
+function aliasKeyForStem(stem, aliases) {
+  if (!stem || !aliases) return null;
+  if (aliases.has(stem)) return stem;
+  let best = null;
+  for (const key of aliases.keys()) {
+    if (!key || aliases.get(key) == null) continue;
+    if (stem.startsWith(`${key} `) && (!best || key.length > best.length)) best = key;
+  }
+  return best;
+}
+
+function aliasHit(asset, catalog) {
+  const aliases = catalog?.aliases;
+  const known = catalog?.allTickers;
+  if (!aliases || !known) return null;
+  const stem = normalizeAssetName(asset).stem;
+  const key = aliasKeyForStem(stem, aliases);
+  if (!key) return null;
+  const ticker = aliases.get(key);
+  if (!ticker || !known.has(ticker)) return null;
+  const blocked = isCommonAliasBlocked(asset);
+  if (stem !== key) {
+    if (!blocked) return null;
+    return { ticker: null, assetClass: 'other', confidence: null, reason: 'preferred' };
+  }
+  if (blocked) return { ticker: null, assetClass: 'other', confidence: null, reason: 'preferred' };
+  return { ticker, assetClass: 'stock', confidence: 100, reason: 'alias' };
+}
+
+// A series, PFD, or depositary line for one of these names is not the common stock.
+function guardAliasPreferred(asset, hit, catalog) {
+  if (!hit?.ticker || !isCommonAliasBlocked(asset)) return hit;
+  const stem = normalizeAssetName(asset).stem;
+  const key = aliasKeyForStem(stem, catalog?.aliases);
+  if (!key) return hit;
+  return { ticker: null, assetClass: 'other', confidence: null, reason: 'preferred' };
 }
 
 function blockedMatch(asset) {
@@ -687,7 +804,7 @@ export function matchAssetName(asset, catalog) {
   const blocked = blockedMatch(asset);
   if (blocked) return blocked;
   const primary = resolveNormalized(asset, catalog);
-  if (primary.ticker) return primary;
+  if (primary.ticker) return guardAliasPreferred(asset, primary, catalog);
   const alternates = [];
   const repaired = repairJoinedSuffix(asset);
   if (repaired !== asset) alternates.push(repaired);
@@ -699,8 +816,10 @@ export function matchAssetName(asset, catalog) {
   if (reit !== asset) alternates.push(reit);
   for (const alt of alternates) {
     const hit = exactAlternate(alt, catalog);
-    if (hit) return hit;
+    if (hit) return guardAliasPreferred(asset, hit, catalog);
   }
+  const alias = aliasHit(asset, catalog);
+  if (alias) return alias;
   return primary;
 }
 

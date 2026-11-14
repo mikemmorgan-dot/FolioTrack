@@ -539,3 +539,145 @@ describe('abbreviations, joined suffixes, and share classes', () => {
     expect(filing.tickerSource).toBe('filing');
   });
 });
+
+const ALIAS_ROWS = [
+  ['INTERNATIONAL BUSINESS MACHINES CORP', 'IBM', 'NYSE'],
+  ['JPMORGAN CHASE & CO', 'JPM', 'NYSE'],
+  ['JPMORGAN CHASE & CO', 'AMJB', 'NYSE'],
+  ['AT&T INC.', 'T', 'NYSE'],
+  ['AT&T INC.', 'TBB', 'NYSE'],
+  ['3M CO', 'MMM', 'NYSE'],
+  ['PROCTER & GAMBLE Co', 'PG', 'NYSE'],
+  ['COCA COLA CO', 'KO', 'NYSE'],
+  ['COCA COLA FEMSA SAB DE CV', 'KOF', 'NYSE'],
+  ['PEPSICO INC', 'PEP', 'Nasdaq'],
+  ['BANK OF AMERICA CORP /DE/', 'BAC', 'NYSE'],
+  ['WELLS FARGO & COMPANY/MN', 'WFC', 'NYSE'],
+  ['GOLDMAN SACHS GROUP INC', 'GS', 'NYSE'],
+  ['MORGAN STANLEY', 'MS', 'NYSE'],
+  ['CITIGROUP INC', 'C', 'NYSE'],
+  ['SOUTHERN CO', 'SO', 'NYSE'],
+  ['SOUTHERN CO', 'SOJC', 'NYSE'],
+  ['SOUTHERN COPPER CORP', 'SCCO', 'NYSE'],
+  ['Duke Energy CORP', 'DUK', 'NYSE'],
+  ['Duke Energy CORP', 'DUKB', 'NYSE'],
+  ['SCHWAB CHARLES CORP', 'SCHW', 'NYSE'],
+  ['PRUDENTIAL FINANCIAL INC', 'PRU', 'NYSE'],
+  ['PRUDENTIAL FINANCIAL INC', 'PFH', 'NYSE'],
+  ['CMS ENERGY CORP', 'CMS', 'NYSE'],
+  ['CMS ENERGY CORP', 'CMSA', 'NYSE'],
+  ['XCEL ENERGY INC', 'XEL', 'Nasdaq'],
+  ['XCEL ENERGY INC', 'XELLL', 'Nasdaq'],
+  ['Walt Disney Co', 'DIS', 'NYSE'],
+  ['GENERAL DYNAMICS CORP', 'GD', 'NYSE'],
+  ['ABBOTT LABORATORIES', 'ABT', 'NYSE'],
+  ['UNITED PARCEL SERVICE INC', 'UPS', 'NYSE'],
+  ['Western Union CO', 'WU', 'NYSE'],
+  ['EASTMAN CHEMICAL CO', 'EMN', 'NYSE'],
+  ['GOODYEAR TIRE & RUBBER CO', 'GT', 'Nasdaq'],
+  ['Arthur J. Gallagher & Co.', 'AJG', 'NYSE'],
+  ['COSTCO WHOLESALE CORP', 'COST', 'Nasdaq'],
+  ['ESTEE LAUDER COMPANIES INC', 'EL', 'NYSE'],
+  ['Intercontinental Exchange, Inc.', 'ICE', 'NYSE'],
+  ['PNC FINANCIAL SERVICES GROUP, INC.', 'PNC', 'NYSE'],
+  ['GENERAL ELECTRIC CO', 'GE', 'NYSE'],
+  ['GE Vernova Inc.', 'GEV', 'NYSE'],
+  ['EVERSOURCE ENERGY', 'ES', 'NYSE'],
+  ['CAPITAL ONE FINANCIAL CORP', 'COF', 'NYSE'],
+  ['VERIZON COMMUNICATIONS INC', 'VZ', 'NYSE'],
+  ['CHIPOTLE MEXICAN GRILL INC', 'CMG', 'NYSE'],
+  ['MCCORMICK & CO INC', 'MKC', 'NYSE'],
+  ['MCCORMICK & CO INC', 'MKC-V', 'NYSE'],
+  ['HERSHEY CO', 'HSY', 'NYSE'],
+  ['NIKE, Inc.', 'NKE', 'NYSE'],
+  ['Alphabet Inc.', 'GOOGL', 'Nasdaq'],
+  ['Alphabet Inc.', 'GOOG', 'Nasdaq'],
+];
+
+describe('curated common-stock aliases', () => {
+  const book = buildCatalog({ rows: ALIAS_ROWS, fetchedAt: FETCHED });
+
+  it('maps filing names that are not the SEC string onto the common stock', () => {
+    expect(matchAssetName('IBM CORP', book)).toMatchObject({ ticker: 'IBM', reason: 'alias' });
+    expect(matchAssetName('JPMORGAN CHASE & CO', book)).toMatchObject({ ticker: 'JPM', reason: 'alias' });
+    expect(matchAssetName('AT&T INC', book)).toMatchObject({ ticker: 'T', reason: 'alias' });
+    expect(matchAssetName('DISNEY WALT CO', book).ticker).toBe('DIS');
+    expect(matchAssetName('GENL DYNAMICS CORP', book).ticker).toBe('GD');
+    expect(matchAssetName('ABBOTT LABS', book).ticker).toBe('ABT');
+    expect(matchAssetName('UNITED PARCEL SVC INC', book).ticker).toBe('UPS');
+    expect(matchAssetName('WESTERN UN CO', book).ticker).toBe('WU');
+    expect(matchAssetName('EASTMAN CHEM CO', book).ticker).toBe('EMN');
+    expect(matchAssetName('GOODYEAR TIRE & RUBR CO', book).ticker).toBe('GT');
+    expect(matchAssetName('GALLAGHER ARTHUR J & CO', book).ticker).toBe('AJG');
+    expect(matchAssetName('COSTCO WHSL CORP NEW', book).ticker).toBe('COST');
+    expect(matchAssetName('LAUDER ESTEE COS CL A', book).ticker).toBe('EL');
+    expect(matchAssetName('INTERCONTINENTALEXCHANGE INC', book).ticker).toBe('ICE');
+    expect(matchAssetName('PNC FINL SERVICES', book).ticker).toBe('PNC');
+    expect(matchAssetName('GE AEROSPACE', book).ticker).toBe('GE');
+    expect(matchAssetName('GE Vernova Inc', book).ticker).toBe('GEV');
+    expect(matchAssetName('EVERSOURCEENERGY', book).ticker).toBe('ES');
+    expect(matchAssetName('CAPITAL ONE FINCL CORP', book).ticker).toBe('COF');
+    expect(matchAssetName('VERIZON COMMUNICATIONS I', book).ticker).toBe('VZ');
+    expect(matchAssetName('CHIPOTLE MEXICAN GRILL I', book).ticker).toBe('CMG');
+    expect(matchAssetName('CHARLES SCHWAB CORP', book).ticker).toBe('SCHW');
+    expect(matchAssetName('SOUTHERN CO', book).ticker).toBe('SO');
+    expect(matchAssetName('DUKE ENERGY CORP NEW', book).ticker).toBe('DUK');
+    expect(matchAssetName('XCEL ENERGY INC', book).ticker).toBe('XEL');
+    expect(matchAssetName('CMS ENERGY CORP', book).ticker).toBe('CMS');
+    expect(matchAssetName('PRUDENTIAL FINANCIAL INC', book).ticker).toBe('PRU');
+    expect(matchAssetName('MCCORMICK & CO INC NON VOTING', book).ticker).toBe('MKC');
+    expect(matchAssetName('MCCORMICK & CO INC CLASS N', book).ticker).toBe('MKC');
+    expect(matchAssetName('HERSHEY COMPANY (THE)', book).ticker).toBe('HSY');
+  });
+
+  it('keeps names that already match, and does not guess a different company', () => {
+    expect(matchAssetName('3M CO', book).ticker).toBe('MMM');
+    expect(matchAssetName('PROCTER & GAMBLE CO', book).ticker).toBe('PG');
+    expect(matchAssetName('COCA COLA CO', book).ticker).toBe('KO');
+    expect(matchAssetName('THE COCA-COLA COMPANY', book).ticker).toBe('KO');
+    expect(matchAssetName('COCA COLA FEMSA SAB DE CV', book).ticker).toBe('KOF');
+    expect(matchAssetName('PEPSICO INC', book).ticker).toBe('PEP');
+    expect(matchAssetName('BANK OF AMERICA CORP', book).ticker).toBe('BAC');
+    expect(matchAssetName('WELLS FARGO & COMPANY', book).ticker).toBe('WFC');
+    expect(matchAssetName('GOLDMAN SACHS GROUP INC', book).ticker).toBe('GS');
+    expect(matchAssetName('MORGAN STANLEY', book).ticker).toBe('MS');
+    expect(matchAssetName('CITIGROUP INC', book).ticker).toBe('C');
+    expect(matchAssetName('SOUTHERN COPPER CORP', book).ticker).toBe('SCCO');
+    expect(matchAssetName('NIKE INC CLASS B', book).ticker).toBe('NKE');
+    expect(matchAssetName('ALPHABET INC CL A', book).ticker).toBe('GOOGL');
+    expect(matchAssetName('Alphabet Inc', book).ticker).toBeNull();
+    expect(matchAssetName('McCormick & Co Inc', book).ticker).toBe('MKC');
+  });
+
+  it('assigns no ticker when the line is preferred, depositary, or a series', () => {
+    for (const line of [
+      'JPMORGAN CHASE & CO PFD',
+      'JPMORGAN CHASE & CO PREFERRED SERIES EE',
+      'JPMORGAN CHASE & CO DEPOSITARY SHARES',
+      'JPMORGAN CHASE & CO SERIES L',
+      'JPMORGAN CHASE & CO SERIES A',
+      'AT&T INC PFD',
+      'AT&T INC SERIES A',
+      'BANK OF AMERICA CORP SERIES E',
+      'BANK OF AMERICA CORP SERIES A',
+      'WELLS FARGO & CO PFD',
+      'WELLS FARGO & CO SERIES L',
+      'GOLDMAN SACHS GROUP INC SERIES A',
+      'MORGAN STANLEY DEPOSITARY SHARES',
+      'CITIGROUP INC PFD SERIES B',
+      'DUKE ENERGY CORP SERIES A',
+      'SOUTHERN CO SERIES 2020',
+      'CHARLES SCHWAB CORP PFD',
+      'PRUDENTIAL FINANCIAL INC SERIES D',
+      'CMS ENERGY CORP SERIES C',
+    ]) {
+      expect(matchAssetName(line, book).ticker, line).toBeNull();
+    }
+    expect(matchAssetName('JPMorgan Chase 3.375% Note due 04/01/2027', book).reason).toBe('debt');
+    const filing = annotateTrade({
+      ticker: 'T', tickerNorm: 'T', tickerSource: 'filing', asset: 'IBM CORP', assetClass: 'stock',
+    }, book);
+    expect(filing.ticker).toBe('T');
+    expect(filing.tickerSource).toBe('filing');
+  });
+});

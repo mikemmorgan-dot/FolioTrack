@@ -259,7 +259,11 @@ and drops a leading `The`. A repeated `Class Class A` is read as Class A.
 ticker does not carry the letter (`GOOGL`, `GOOG`, `BRK.B`, and a handful of
 other common pairs). An OCR run that glues a known suffix (`NETFLIXINC`) is
 split and kept only on an exact hit. `ADR`, `ADS`, and `Sponsored ADR` are
-stripped. `BANCORP` is left whole. Bonds, notes, munis, Treasuries, percent
+stripped. `BANCORP` is left whole. A small alias list sends a filing name that
+is not the SEC string, or that shares its SEC name with preferreds, to the
+common stock (`IBM CORP` to `IBM`, `JPMORGAN CHASE & CO` to `JPM`, `AT&T` to
+`T`, and the other names in that list). A line that says PFD, preferred,
+depositary shares, or series does not use that list. Bonds, notes, munis, Treasuries, percent
 coupons, `due <date>`, preferred series, and private funds are not given a
 ticker. A note, bond, `due <date>`, or coupon is classed as a bond even when
 the line also says Call. `ticker_source` stays `filing` for a symbol that was
