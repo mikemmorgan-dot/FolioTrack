@@ -152,7 +152,7 @@ function feedRows(db) {
       parseNote: f.parseNote || null,
     }));
   const trades = db.politicianTrades.map((t) => {
-    const { digestPending, ...rest } = t;
+    const { digestPending, emailedAt, ...rest } = t;
     return { kind: 'trade', ...rest };
   });
   return [...trades, ...reviews];
@@ -275,24 +275,42 @@ export const memoryMethods = {
   },
   async listDigestPendingTrades(limit = 80) {
     return (this.db.politicianTrades || [])
-      .filter((trade) => trade.digestPending === true)
+      .filter((trade) => trade.digestPending === true && !trade.emailedAt)
       .sort((a, b) => String(b.disclosedDate || '').localeCompare(String(a.disclosedDate || ''))
         || String(b.id).localeCompare(String(a.id)))
       .slice(0, limit)
       .map((trade) => ({ ...trade }));
   },
-  async clearDigestPending(ids = []) {
-    const want = new Set(ids || []);
-    if (!want.size) return 0;
-    let cleared = 0;
+  // Rows already emailed are left alone, including when an OCR re-run asks
+  // to queue the same id again.
+  async markDigestPending(ids = []) {
+    const want = new Set((ids || []).filter(Boolean));
+    if (!want.size) return [];
+    const queued = [];
+    let changed = false;
     for (const trade of this.db.politicianTrades || []) {
-      if (want.has(trade.id) && trade.digestPending) {
-        trade.digestPending = false;
-        cleared += 1;
+      if (!want.has(trade.id) || trade.emailedAt) continue;
+      if (!trade.digestPending) {
+        trade.digestPending = true;
+        changed = true;
       }
+      queued.push(trade.id);
     }
-    if (cleared) this.persist();
-    return cleared;
+    if (changed) this.persist();
+    return queued;
+  },
+  async markTradesEmailed(ids = [], emailedAt = new Date().toISOString()) {
+    const want = new Set((ids || []).filter(Boolean));
+    if (!want.size) return 0;
+    let marked = 0;
+    for (const trade of this.db.politicianTrades || []) {
+      if (!want.has(trade.id) || trade.emailedAt) continue;
+      trade.emailedAt = emailedAt;
+      trade.digestPending = false;
+      marked += 1;
+    }
+    if (marked) this.persist();
+    return marked;
   },
   async insertPoliticianTrades(trades = []) {
     const have = new Set((this.db.politicianTrades || []).map((t) => t.id));
@@ -424,6 +442,7 @@ export const memoryMethods = {
       if (trade.ticker || trade.tickerNorm) continue;
       if (trade.tickerSource === 'filing') continue;
       const pending = trade.digestPending === true;
+      const emailedAt = trade.emailedAt;
       trade.assetClass = update.assetClass || trade.assetClass;
       trade.nameMatchAt = update.nameMatchAt || trade.nameMatchAt || null;
       trade.nameMatchVersion = Number(update.nameMatchVersion) || trade.nameMatchVersion || null;
@@ -437,6 +456,7 @@ export const memoryMethods = {
         matched += 1;
       }
       trade.digestPending = pending;
+      trade.emailedAt = emailedAt;
       updated += 1;
     }
     if (updated) this.persist();

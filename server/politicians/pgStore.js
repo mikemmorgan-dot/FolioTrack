@@ -436,6 +436,7 @@ export function installPgPolitician(Store) {
               ticker_source, ticker_match_confidence
        FROM politician_trades
        WHERE digest_pending
+         AND emailed_at IS NULL
        ORDER BY disclosed_date DESC NULLS LAST, id DESC
        LIMIT $1`,
       [cap],
@@ -466,14 +467,29 @@ export function installPgPolitician(Store) {
       tickerMatchConfidence: r.ticker_match_confidence == null ? null : Number(r.ticker_match_confidence),
     }));
   };
-  Store.prototype.clearDigestPending = async function clearDigestPending(ids = []) {
+  Store.prototype.markDigestPending = async function markDigestPending(ids = []) {
+    const list = (ids || []).filter(Boolean);
+    if (!list.length) return [];
+    const result = await this.q(
+      `UPDATE politician_trades
+       SET digest_pending = true
+       WHERE emailed_at IS NULL
+         AND id = ANY($1::text[])
+       RETURNING id`,
+      [list],
+    );
+    return (result.rows || []).map((row) => row.id);
+  };
+  Store.prototype.markTradesEmailed = async function markTradesEmailed(ids = [], emailedAt = new Date().toISOString()) {
     const list = (ids || []).filter(Boolean);
     if (!list.length) return 0;
     const result = await this.q(
       `UPDATE politician_trades
-       SET digest_pending = false
-       WHERE digest_pending AND id = ANY($1::text[])`,
-      [list],
+       SET emailed_at = $2::timestamptz,
+           digest_pending = false
+       WHERE emailed_at IS NULL
+         AND id = ANY($1::text[])`,
+      [list, emailedAt],
     );
     return result.rowCount || 0;
   };
