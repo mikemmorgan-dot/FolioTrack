@@ -701,12 +701,14 @@ a.ext { color: var(--green); text-decoration: none; }
   overflow-x: auto; -webkit-overflow-scrolling: touch;
   margin: 0 -16px; padding: 0 16px 8px;
   scrollbar-width: thin;
+  border-radius: var(--r);
 }
 .compare-table {
   width: max-content; min-width: 100%;
   border-collapse: separate; border-spacing: 0;
   background: var(--surface); border-radius: var(--r);
-  overflow: hidden;
+  /* overflow other than visible makes the table the sticky scrollport,
+     so the first column scrolls away with the rest of the row. */
 }
 .compare-table th, .compare-table td {
   padding: 11px 10px; font-size: 13px; font-weight: 700;
@@ -729,6 +731,47 @@ a.ext { color: var(--green); text-decoration: none; }
 .compare-table tbody tr:last-child td { border-bottom: none; }
 .cmp-sym { font-size: 14px; }
 .cmp-n { font-size: 11px; font-weight: 600; margin-top: 2px; }
+
+.risk-periods { margin: 0 0 8px; }
+.risk-range {
+  font-size: 13px; font-weight: 700; color: var(--text-2);
+  margin: 0 4px 8px; font-variant-numeric: tabular-nums;
+}
+.risk-rf { padding-top: 2px; padding-bottom: 10px; }
+.risk-loading { padding: 24px 16px; }
+.compare-table-wrap.is-loading { opacity: 0.55; }
+.compare-table.risk-table .sticky {
+  min-width: 104px; max-width: 128px; white-space: normal; line-height: 1.25;
+}
+.compare-table.risk-table td { vertical-align: top; }
+.compare-table.risk-table thead th.model-col {
+  box-shadow: inset 0 3px 0 var(--risk, transparent);
+}
+.compare-table td.best {
+  background: rgba(43, 227, 138, 0.10);
+  box-shadow: inset 0 -2px 0 rgba(43, 227, 138, 0.95);
+}
+.compare-table td.worst {
+  background: rgba(255, 90, 99, 0.10);
+  box-shadow: inset 0 -2px 0 rgba(255, 90, 99, 0.9);
+}
+.cmp-partial, .cmp-dagger { color: #E5A84B; font-weight: 700; }
+.cmp-partial {
+  font-size: 10px; letter-spacing: 0.02em; text-transform: none; margin-top: 2px;
+}
+.cmp-dagger { font-size: 12px; margin-left: 1px; }
+.cmp-why {
+  font-size: 10px; font-weight: 600; color: var(--text-3);
+  white-space: normal; line-height: 1.3; margin-top: 3px; max-width: 96px;
+}
+.compare-table td.bench {
+  font-size: 11px; font-weight: 700; white-space: normal;
+  min-width: 78px; max-width: 112px; line-height: 1.35;
+}
+.sr {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
 
 @media (max-width: 400px) {
   .compare-card-stats { grid-template-columns: 1fr 1fr; }

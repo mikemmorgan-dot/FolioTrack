@@ -13,6 +13,8 @@ import {
   PRICE_SNAPSHOT_SQL,
   NAV_SNAPSHOT_SQL,
   PRICE_WINDOW_SQL,
+  PRICE_MONTH_END_SQL,
+  NAV_MONTH_END_SQL,
   NAV_WINDOW_SQL,
   PRICE_META_SQL,
   PRICE_META_UPSERT_SQL,
@@ -117,13 +119,13 @@ export class PgStore {
     const key = priceSymbol(symbol);
     const prefix = `px:${key}:`;
     for (const k of [...this._mem.keys()]) {
-      if (k === `meta:${key}` || k.startsWith(prefix) || k.startsWith(`snap:${key}`)) this._mem.delete(k);
+      if (k === `meta:${key}` || k.startsWith(prefix) || k.startsWith(`me:${key}:`) || k.startsWith(`snap:${key}`)) this._mem.delete(k);
     }
   }
 
   _forgetNav(instrumentId) {
     for (const k of [...this._mem.keys()]) {
-      if (k.startsWith(`nav:${instrumentId}:`) || k === `nsnap:${instrumentId}`) this._mem.delete(k);
+      if (k.startsWith(`nav:${instrumentId}:`) || k.startsWith(`menav:${instrumentId}:`) || k === `nsnap:${instrumentId}`) this._mem.delete(k);
     }
   }
 
@@ -334,6 +336,15 @@ export class PgStore {
     const { rows } = await this.q(NAV_WINDOW_SQL, [instrumentId, since, until]);
     return rows.map((r) => ({ date: d(r.date), nav: Number(r.nav) }));
   }
+  async getMonthEndNav(instrumentId, opts = {}) {
+    if (!instrumentId) return [];
+    const since = boundOrNull(opts?.since);
+    const cacheKey = `menav:${instrumentId}:${since || ''}`;
+    const hit = this._recall(cacheKey);
+    if (hit !== undefined) return hit;
+    const { rows } = await this.q(NAV_MONTH_END_SQL, [instrumentId, since]);
+    return this._remember(cacheKey, rows.map((r) => ({ date: d(r.date), nav: Number(r.nav) })));
+  }
   async latestNav(instrumentId) {
     const { rows } = await this.q(
       'SELECT date,nav FROM nav_series WHERE instrument_id=$1 ORDER BY date DESC LIMIT 1', [instrumentId]
@@ -488,6 +499,28 @@ export class PgStore {
       provider: meta.provider,
       range: meta.range,
       fetchedAt: meta.fetchedAt,
+    });
+  }
+
+  // Month-end closes only. Compare risk uses this so a 5-year window does
+  // not pull every daily row out of Neon. Null since is the full cache.
+  async getMonthEndPrices(symbol, opts = {}) {
+    const key = priceSymbol(symbol);
+    if (!key) return null;
+    const since = boundOrNull(opts?.since);
+    const cacheKey = `me:${key}:${since || ''}`;
+    const hit = this._recall(cacheKey);
+    if (hit !== undefined) return hit;
+    const meta = await this.getPriceHistoryMeta(key);
+    if (!meta) return this._remember(cacheKey, null);
+    if (!meta.pointCount && meta.hasLegacy) {
+      const points = await this._promoteLegacySeries(key, meta);
+      if (!points) return this._remember(cacheKey, null);
+    }
+    const { rows } = await this.q(PRICE_MONTH_END_SQL, [key, since]);
+    return this._remember(cacheKey, {
+      symbol: meta.symbol || key,
+      series: rows.map((r) => ({ date: d(r.date), close: Number(r.close) })),
     });
   }
 

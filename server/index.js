@@ -34,6 +34,7 @@ import { periodReturnsFromSeries } from './periodReturns.js';
 import { createPriceUploadRouter } from './historyUpload.js';
 import { publishedToPeriodRow } from './factsheet/publishedReturns.js';
 import { buildCompare } from './compare.js';
+import { createCompareRiskHandler } from './compareRisk.js';
 import { createEmailSender } from './alerts/email.js';
 import { createAlertService } from './alerts/check.js';
 import { createAlertRouter } from './alerts/http.js';
@@ -121,6 +122,11 @@ app.get('/api/compare', async (_req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// Current-version risk for every model on one shared month range.
+// Registered before /api/models/:key/risk so "compare" is not captured as a key.
+// Reads month-end rows from the price cache only — no live provider calls.
+app.get('/api/models/compare/risk', createCompareRiskHandler(store));
 
 app.get('/api/models/:key', async (req, res) => {
   const m = await store.getModel(req.params.key);
