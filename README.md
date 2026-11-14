@@ -250,13 +250,28 @@ those names. The source is the SEC `company_tickers_exchange.json` list
 (User-Agent `FolioTrack/1.0`, cached in `app_settings` and refreshed at most
 weekly) plus a small curated map for Vanguard, iShares, SPDR, Invesco, Schwab,
 and PIMCO funds. A match is kept only when the normalized name is exact, or
-when one fuzzy candidate clears 0.94 and the runner-up is not close. Share
-classes such as Class B become `BRK.B`. Bonds, notes, munis, Treasuries,
-percent coupons, and private funds are not given a ticker. A note, bond,
-`due <date>`, or coupon is classed as a bond even when the line also says
-Call. `ticker_source` stays `filing` for a symbol that was on the form, and
-that value is never replaced. The backfill updates tickers in batches and does
-not set `digest_pending`, so a trade that was already emailed is not sent again.
+when one fuzzy candidate clears 0.94 and the runner-up is not close. The same
+normalization expands a short list of corporate abbreviations on both sides
+(`INTL` / `International`, `HLDGS` / `Holdings`, `CORP`, `CO` / `COS`, `GRP`,
+`TECH` / `TECHS`, and the other families in the resolver), treats `&` as `and`,
+and drops a leading `The`. A repeated `Class Class A` is read as Class A.
+`CL A` / `CLASS C` uses a small dual-class map when the
+ticker does not carry the letter (`GOOGL`, `GOOG`, `BRK.B`, and a handful of
+other common pairs). An OCR run that glues a known suffix (`NETFLIXINC`) is
+split and kept only on an exact hit. `ADR`, `ADS`, and `Sponsored ADR` are
+stripped. `BANCORP` is left whole. A small alias list sends a filing name that
+is not the SEC string, or that shares its SEC name with preferreds, to the
+common stock (`IBM CORP` to `IBM`, `JPMORGAN CHASE & CO` to `JPM`, `AT&T` to
+`T`, and the other names in that list). A line that says PFD, preferred,
+depositary shares, or series does not use that list. Bonds, notes, munis, Treasuries, percent
+coupons, `due <date>`, preferred series, and private funds are not given a
+ticker. A note, bond, `due <date>`, or coupon is classed as a bond even when
+the line also says Call. `ticker_source` stays `filing` for a symbol that was
+on the form, and that value is never replaced. The backfill updates tickers in
+batches and does not set `digest_pending`, so a trade that was already emailed
+is not sent again. A row that is still null is checked again when the resolver
+version changes, including on the next poll, and a second pass with the same
+version does not rewrite it.
 The summary and held-ticker badge read `ticker_norm` the same way they always
 have, so a matched stock or ETF is included. The catalog is loaded only by the
 poll and the OCR job, not by a feed or summary request.

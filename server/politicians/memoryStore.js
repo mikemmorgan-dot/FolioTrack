@@ -390,13 +390,17 @@ export const memoryMethods = {
     });
     return doc;
   },
-  async listUnmatchedPoliticianTrades({ checkedBefore = null, limit = 500 } = {}) {
+  async listUnmatchedPoliticianTrades({ checkedBefore = null, matcherVersion = 0, limit = 500 } = {}) {
     const cap = Math.min(2000, Math.max(1, Number(limit) || 500));
+    const version = Number(matcherVersion) || 0;
     return (this.db.politicianTrades || [])
       .filter((trade) => {
         if (trade.ticker || trade.tickerNorm) return false;
         if (trade.tickerSource === 'filing') return false;
-        if (checkedBefore && trade.nameMatchAt && String(trade.nameMatchAt) >= String(checkedBefore)) return false;
+        if (checkedBefore && trade.nameMatchAt && String(trade.nameMatchAt) >= String(checkedBefore)) {
+          const seen = Number(trade.nameMatchVersion) || 0;
+          if (seen >= version) return false;
+        }
         return true;
       })
       .sort((a, b) => String(a.id).localeCompare(String(b.id)))
@@ -422,6 +426,7 @@ export const memoryMethods = {
       const pending = trade.digestPending === true;
       trade.assetClass = update.assetClass || trade.assetClass;
       trade.nameMatchAt = update.nameMatchAt || trade.nameMatchAt || null;
+      trade.nameMatchVersion = Number(update.nameMatchVersion) || trade.nameMatchVersion || null;
       trade.tickerMatchConfidence = null;
       trade.tickerSource = null;
       if (update.ticker) {
