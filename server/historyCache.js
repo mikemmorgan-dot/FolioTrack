@@ -303,11 +303,15 @@ export function createHistoryCache({
     });
   }
 
-  async function getHistory(symbol, range = 'max', { force = false, omitSeries = false } = {}) {
+  async function getHistory(symbol, range = 'max', { force = false, omitSeries = false, bypassFresh = false } = {}) {
     const key = normalizeSymbol(symbol);
     if (!key) throw new Error('Missing symbol');
     const meta = await loadMeta(key);
-    if (isFresh(meta) && !force) {
+    // bypassFresh is for the history backfill. A one-day quote written in the
+    // last 18h looks fresh and would otherwise block a max fetch forever.
+    // It does not skip the recent-failure window below, and it is not a
+    // Retry: force still means "ignore the fail window".
+    if (isFresh(meta) && !force && !bypassFresh) {
       if (omitSeries) return slim(meta, range, { stale: false, fromCache: true });
       const rec = await readWindow(key, range, meta?.series ? meta : null);
       return respond(rec, range, { stale: false, fromCache: true });

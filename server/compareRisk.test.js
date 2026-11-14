@@ -219,21 +219,96 @@ describe('common-range alignment', () => {
     expect(out.models[0].metricReasons.informationRatio).toBe('Tracking error is zero');
   });
 
-  it('nulls benchmark-relative figures when the benchmark does not cover the window', () => {
+  it('nulls benchmark-relative figures when the benchmark has no cached months', () => {
     const full = monthlyPath('2019-01', '2026-10', wave(0.004));
-    const shortBench = monthlyPath('2026-01', '2026-10', wave(0.004));
     const out = buildCompareRisk(
       [book('a', 'A', 1, [hold('x', 'X', 1)])],
       { x: full },
-      { 'XBB.TO': shortBench },
+      {},
       { period: '3y', rf: 0.04, asOf: AS_OF },
     );
+    expect(out.range).toEqual({ start: '2023-11', end: '2026-10', months: 36 });
     expect(out.models[0].metrics.sharpe).toEqual(expect.any(Number));
     expect(out.models[0].metrics.beta).toBeNull();
     expect(out.models[0].metrics.trackingError).toBeNull();
     expect(out.models[0].metrics.informationRatio).toBeNull();
     expect(out.models[0].metricReasons.beta).toBe('Benchmark gap');
     expect(out.models[0].benchmarkLabel).toBe('XBB.TO 100%');
+  });
+
+  it('starts Max common at the latest priced holding and benchmark, not the oldest sleeve', () => {
+    const old = monthlyPath('1995-01', '2026-10', wave(0.004));
+    const etf = monthlyPath('2012-11', '2026-10', wave(0.006));
+    const lateAlt = monthlyPath('2020-01', '2026-10', wave(0.01));
+    const out = buildCompareRisk(
+      [
+        book('conservative', 'Conservative', 1, [
+          hold('old', 'ENB.TO', 0.1),
+          hold('etf', 'VFV.TO', 0.7),
+          hold('missing', 'ATZ.TO', 0.1),
+          { ...hold('alt', 'OCIC', 0.1), monthlyPriceable: false },
+        ]),
+        book('growth', 'Growth', 4, [hold('old', 'ENB.TO', 1)]),
+      ],
+      { old, etf, missing: [], alt: lateAlt },
+      { 'XBB.TO': etf },
+      { period: 'max', rf: 0.04, asOf: AS_OF },
+    );
+    // The old union of "any holding" ran 1995-02 to 2026-10 (381 months) and
+    // then dropped VFV because it does not cover 1995. Max common is the
+    // overlap of the priced names plus the benchmark.
+    expect(out.common).toEqual({ start: '2012-12', end: '2026-10', months: 167 });
+    expect(out.range).toEqual(out.common);
+    expect(out.months[0]).toBe('2012-12');
+    expect(out.months.at(-1)).toBe('2026-10');
+    expect(out.months).not.toContain('1995-02');
+    expect(out.months).toContain('2020-02');
+    const cons = out.models.find((m) => m.key === 'conservative');
+    expect(cons.coverage).toBeCloseTo(0.8, 8);
+    expect(cons.leftOut.map((h) => h.symbol).sort()).toEqual(['ATZ.TO', 'OCIC']);
+    expect(cons.metrics.volatility).toBeLessThan(0.2);
+    expect(cons.metrics.maxDrawdown).toBeGreaterThan(-0.5);
+    expect(cons.metrics.beta).toEqual(expect.any(Number));
+    expect(cons.metricReasons.beta).toBeNull();
+    const gro = out.models.find((m) => m.key === 'growth');
+    expect(gro.coverage).toBeCloseTo(1, 8);
+    expect(gro.metrics.n).toBe(167);
+
+    const year = buildCompareRisk(
+      [
+        book('conservative', 'Conservative', 1, [
+          hold('old', 'ENB.TO', 0.1),
+          hold('etf', 'VFV.TO', 0.7),
+          hold('missing', 'ATZ.TO', 0.1),
+          { ...hold('alt', 'OCIC', 0.1), monthlyPriceable: false },
+        ], { benchmark: [] }),
+      ],
+      { old, etf, missing: [], alt: lateAlt },
+      {},
+      { period: '1y', rf: 0.04, asOf: AS_OF },
+    );
+    expect(year.range).toEqual({ start: '2025-11', end: '2026-10', months: 12 });
+    expect(year.common.start).toBe('2012-12');
+    const thin = year.models[0];
+    // OCIC's own monthly run covers this 1y slice, so it stays in. ATZ has no cache.
+    expect(thin.coverage).toBeCloseTo(0.9, 8);
+    expect(thin.leftOut).toEqual([{ symbol: 'ATZ.TO', weight: 0.1 }]);
+
+    const filled = buildCompareRisk(
+      [
+        book('conservative', 'Conservative', 1, [
+          hold('old', 'ENB.TO', 0.1),
+          hold('etf', 'VFV.TO', 0.7),
+          hold('missing', 'ATZ.TO', 0.1),
+          { ...hold('alt', 'OCIC', 0.1), monthlyPriceable: false },
+        ], { benchmark: [] }),
+      ],
+      { old, etf, missing: etf, alt: lateAlt },
+      {},
+      { period: '1y', rf: 0.04, asOf: AS_OF },
+    );
+    expect(filled.models[0].coverage).toBeCloseTo(1, 8);
+    expect(filled.models[0].leftOut).toEqual([]);
   });
 });
 
@@ -249,6 +324,7 @@ describe('GET /api/models/compare/risk', () => {
       'ENB.TO': monthlyPath('2019-01', '2026-10', wave(0.004)),
       'TOU.TO': monthlyPath('2019-01', '2026-10', wave(0.012)),
       'HIGH.TO': monthlyPath('2019-01', '2026-10', wave(0.03)),
+      'ATZ.TO': monthlyPath('2016-01', '2026-10', wave(0.008)),
     };
     const nav = {
       inst_rbf: [
@@ -266,6 +342,13 @@ describe('GET /api/models/compare/risk', () => {
         { date: '2025-06-30', nav: 107.5 },
         { date: '2025-12-31', nav: 113.2 },
       ],
+      inst_atz: [{ date: '2026-09-04', nav: 128.67 }],
+      inst_ry_nav: monthlyPath('1995-01', '2026-10', wave(0.004)).map((p) => ({ date: p.date, nav: p.close })),
+      inst_fid: [
+        { date: '2025-01-02', nav: 60 },
+        { date: '2025-06-30', nav: 64 },
+        { date: '2025-12-31', nav: 69 },
+      ],
     };
     const instruments = {
       inst_xbb: { id: 'inst_xbb', symbol: 'XBB.TO', source: 'auto', type: 'etf' },
@@ -278,6 +361,9 @@ describe('GET /api/models/compare/risk', () => {
       inst_rbf: { id: 'inst_rbf', symbol: 'RBF1005', source: 'manual', type: 'mutualfund' },
       inst_ocic: { id: 'inst_ocic', symbol: 'OCIC', source: 'manual', type: 'alt' },
       inst_cvc: { id: 'inst_cvc', symbol: 'CVC-EU', source: 'manual', type: 'alt' },
+      inst_atz: { id: 'inst_atz', symbol: 'ATZ.TO', source: 'manual', type: 'stock' },
+      inst_ry_nav: { id: 'inst_ry_nav', symbol: 'RY.TO', source: 'manual', type: 'stock' },
+      inst_fid: { id: 'inst_fid', symbol: 'FID5982', source: 'manual', type: 'mutualfund' },
     };
     const H = (id, weight) => ({ instrumentId: id, weight });
     const models = extra.models || [
@@ -440,6 +526,32 @@ describe('GET /api/models/compare/risk', () => {
     const vfv = riskMetrics(out.months.map(wave(0.01)), out.months.map(wave(0.01)), 0.04);
     expect(out.models[0].metrics.annualizedReturn).toBeCloseTo(vfv.annualizedReturn, 8);
     expect(dedicated.priceCalls).not.toContain('HIGH.TO');
+    expect(live).toEqual([]);
+  });
+
+  it('scores a manual listed stock from the price cache and leaves a fund on NAV', async () => {
+    const store = storeFor();
+    store.listModels = async () => [{
+      key: 'aggressive-growth', name: 'Aggressive Growth', riskRank: 5,
+      benchmark: [{ symbol: 'VFV.TO', weight: 1 }],
+      versions: [{
+        id: 'ver_agg', effectiveDate: '2026-10-07',
+        holdings: [
+          { instrumentId: 'inst_vfv', weight: 0.5 },
+          { instrumentId: 'inst_atz', weight: 0.4 },
+          { instrumentId: 'inst_ry_nav', weight: 0.05 },
+          { instrumentId: 'inst_fid', weight: 0.05 },
+        ],
+      }],
+    }];
+    const out = await loadCompareRisk(store, { period: '1y', rf: 0.04, asOf: AS_OF });
+    const row = out.models[0];
+    expect(row.coverage).toBeCloseTo(0.95, 8);
+    expect(row.leftOut).toEqual([{ symbol: 'FID5982', weight: 0.05 }]);
+    expect(row.partial).toBe(true);
+    expect(store.priceCalls).toContain('ATZ.TO');
+    expect(store.priceCalls).toContain('RY.TO');
+    expect(store.priceCalls).not.toContain('FID5982');
     expect(live).toEqual([]);
   });
 });

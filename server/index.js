@@ -46,7 +46,8 @@ import { runPoliticianPoll } from './politicians/ingest.js';
 import { createPoliticianCoordinator } from './politicians/runner.js';
 import { startPoliticianScheduler } from './politicians/schedule.js';
 import { listenThenStart } from './boot.js';
-import { egressMiddleware, openEgressScope } from './egress.js';
+import { egressMiddleware, logEgress, openEgressScope } from './egress.js';
+import { createHistoryBackfill, startHistoryBackfill } from './historyBackfill.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -784,6 +785,18 @@ void (async () => {
   startAlertScheduler({
     run: () => openEgressScope('scheduler alert-check', () => alertRuns.start({ refresh: true, kind: 'check' })),
     lastRunAt: alertRuns.status().lastRunAt,
+    logger: console,
+  });
+  const historyBackfill = createHistoryBackfill({
+    store,
+    getHistory: (symbol, range, opts) => cachedHistory(symbol, range || 'max', opts),
+  });
+  startHistoryBackfill({
+    run: () => openEgressScope('scheduler history-backfill', async () => {
+      const summary = await historyBackfill.run();
+      logEgress('scheduler history-backfill');
+      return summary;
+    }),
     logger: console,
   });
   startPoliticianScheduler({
