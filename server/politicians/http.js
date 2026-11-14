@@ -46,6 +46,7 @@ export function createPoliticianRouter({ store, startPoll, pollRunning } = {}) {
       lastError: state.lastError || null,
       summary: state.lastSummary || null,
       sources: state.sources || {},
+      annual: typeof store.getAnnualState === 'function' ? await store.getAnnualState() : null,
     });
   }));
 

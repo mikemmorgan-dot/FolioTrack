@@ -2,7 +2,7 @@
 // This process prints filing keys and timings. It does not print the URL.
 
 import { appendFile } from 'node:fs/promises';
-import { POLITICIAN_OCR_SCHEMA } from '../db.js';
+import { ANNUAL_HOLDINGS_SCHEMA, POLITICIAN_OCR_SCHEMA } from '../db.js';
 import { PgStore } from '../store-pg.js';
 import { ocrToolsAvailable } from './ocr.js';
 import {
@@ -12,6 +12,7 @@ import {
   redactSecrets,
   runPresidentialOcr,
 } from './presidentialOcr.js';
+import { runPendingAnnualOcr } from './annualOcr.js';
 
 export async function main(env = process.env, deps = {}) {
   try {
@@ -28,7 +29,10 @@ export async function main(env = process.env, deps = {}) {
   }
   const store = deps.store || new PgStore();
   try {
-    if (!deps.store) await store.pool.query(POLITICIAN_OCR_SCHEMA);
+    if (!deps.store) {
+      await store.pool.query(POLITICIAN_OCR_SCHEMA);
+      await store.pool.query(ANNUAL_HOLDINGS_SCHEMA);
+    }
     const result = await runPresidentialOcr({
       store,
       fetchImpl: deps.fetchImpl || globalThis.fetch,
@@ -41,8 +45,22 @@ export async function main(env = process.env, deps = {}) {
       ...(deps.download ? { download: deps.download } : {}),
       ...(deps.loadCandidates ? { loadCandidates: deps.loadCandidates } : {}),
     });
+    let annual = { filings: [] };
+    if (typeof store.listPendingAnnualOcr === 'function') {
+      annual = await runPendingAnnualOcr({
+        store,
+        fetchImpl: deps.fetchImpl || globalThis.fetch,
+        ...(deps.logger ? { logger: deps.logger } : {}),
+        ...(deps.now ? { now: deps.now } : {}),
+        ...(deps.download ? { download: deps.download } : {}),
+        ...(deps.readAnnualPdf ? { readPdf: deps.readAnnualPdf } : {}),
+      });
+    }
     const summary = formatOcrSummary(result);
     console.log(summary);
+    if (annual.filings?.length) {
+      console.log(`[annual-ocr] filings=${annual.filings.length}`);
+    }
     if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, `${summary}\n`);
     return exitCodeForOcrRun(result);
   } catch (err) {

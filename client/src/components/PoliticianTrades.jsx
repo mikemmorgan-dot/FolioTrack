@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
+import HoldingsChart from './HoldingsChart.jsx';
 import PoliticianSummary, { NetLine, NET_TIP, signClass } from './PoliticianSummary.jsx';
 
 const OFFICES = [
@@ -182,6 +183,7 @@ function PersonView({ personKey, initialWindow = 30, onBack }) {
             <p className="ed-hint">
               {officeName(person.office)}{party ? ` · ${party}` : ''}{person.state ? ` · ${person.state}` : ''}{person.filerStatus === 'candidate' ? ' · Candidate' : ''}
             </p>
+            <HoldingsChart holdings={data.holdings} />
             <div className="ptr-stats">
               <div><span className="ptr-stat-n">{data.counts?.buy ?? 0}</span><span>Buys</span></div>
               <div><span className="ptr-stat-n">{data.counts?.sell ?? 0}</span><span>Sells</span></div>
