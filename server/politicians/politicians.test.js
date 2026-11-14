@@ -389,6 +389,23 @@ describe('digest email', () => {
     expect(message.html).toMatch(/Candidate/);
   });
 
+  it('shows an estimated net when one ticker was both bought and sold', () => {
+    const message = buildPoliticianDigest({
+      trades: [
+        { ...trades[1], txType: 'buy', amountRange: '$1,001 - $15,000' },
+        { ...trades[1], txType: 'sell', amountRange: '$15,001 - $50,000' },
+        { ...trades[1], txType: 'exchange', amountRange: '$1,001 - $15,000' },
+        { ...trades[0], ticker: null, tickerNorm: null, asset: 'Municipal bond', assetClass: 'other' },
+      ],
+      heldByNorm: held,
+    });
+    expect(message.text).toMatch(/Net by ticker/);
+    expect(message.text).toMatch(/AAPL · Net 0 · Est\. net -\$24\.5K · 1 buy · 1 sell · 1 exchange/);
+    expect(message.text).not.toMatch(/Municipal bond · Net/);
+    expect(message.html).toMatch(/Estimated from the midpoint/);
+    expect(message.html).toMatch(/AAPL · Net 0/);
+  });
+
   it('drops other tickers when held-only is on, and skips an empty digest', () => {
     const message = buildPoliticianDigest({ trades, heldByNorm: held, heldOnly: true });
     expect(message.text).toMatch(/AAPL/);

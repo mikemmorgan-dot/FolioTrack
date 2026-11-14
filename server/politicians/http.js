@@ -89,7 +89,9 @@ export function createPoliticianRouter({ store, startPoll, pollRunning } = {}) {
   }));
 
   router.get('/people/:personKey', asyncRoute(async (req, res) => {
-    const person = await store.getPolitician(req.params.personKey, req.query || {});
+    const query = { ...(req.query || {}) };
+    delete query.asOf;
+    const person = await store.getPolitician(req.params.personKey, query);
     if (!person) {
       res.status(404).json({ error: 'No filings for that person yet' });
       return;

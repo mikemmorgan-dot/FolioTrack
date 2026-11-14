@@ -817,3 +817,17 @@ a.ext { color: var(--green); text-decoration: none; }
   padding: 14px; margin: 8px 0 10px; font-size: 17px; font-weight: 700; min-height: 48px;
 }
 .ptr-feed-toggle span:last-child { font-size: 14px; color: var(--green); }
+.ptr-net {
+  display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline;
+  margin-top: 2px; font-size: 13px; font-weight: 700; line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+}
+.ptr-net-extra { color: var(--text-2); font-weight: 600; }
+.ptr-more {
+  width: 100%; text-align: left; background: transparent; color: var(--green);
+  border: none; border-radius: 12px; padding: 10px 14px; margin: -2px 0 8px;
+  font-size: 14px; font-weight: 700; min-height: 44px;
+}
+.ptr-rollup { cursor: default; }
+.ptr-rank-amt.pos { color: var(--green); }
+.ptr-rank-amt.neg { color: var(--red); }

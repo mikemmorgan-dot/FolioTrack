@@ -185,7 +185,8 @@ in over 2 hours. The header menu shows a red dot while any holding is breached.
 Menu → **Politician trades**. A summary sits at the top. The filing list
 stays underneath, collapsed, with the same search, office, party, side, date,
 and held-ticker filters. Open a name for that filer's trades, buy and sell
-counts, and most-traded tickers. Coverage is every House PTR in the Clerk index for the backfill
+counts, and a per-ticker net for the disclosure window. Rows without a ticker
+stay in the trade list. Coverage is every House PTR in the Clerk index for the backfill
 window (sitting members and candidates), every Senate eFD PTR from a senator,
 and OGE 278-T reports whose title is exactly President or Vice President.
 The feed filter is **Members / Candidates / All**, and All is the default.
@@ -198,12 +199,22 @@ US Eastern calendar, by **disclosure date**. Transaction dates can lag that
 by up to 45 days; the summary does not use the transaction date. Every card
 uses the same window.
 
-**Most bought** and **most sold** are the top 10 tickers: trade count,
+**Most bought** and **most sold** default to the top 10 tickers: trade count,
 distinct politicians, and the summed reported range (sum of the range
-minimums through sum of the range maximums). `Over $50,000,000` has no
+minimums through sum of the range maximums). The payload also includes
+`boughtTotal` and `soldTotal`. `limit=all` returns every ticker in the window;
+the page uses that for **Show all**. `Over $50,000,000` has no
 ceiling, so a total that includes it is labeled `Over $…` using the sum of
 the printed floors. Tap a ticker to open the filing list filtered to that
 exact ticker.
+
+Each ticker row also carries a **net** across every politician in the window.
+Net count is buys minus sells. Exchanges are counted separately and are not
+part of that subtraction. Estimated dollars are the sum of buy-range midpoints
+minus the sum of sell-range midpoints. The open-ended top range counts as
+$50,000,000 and the estimate is marked a minimum. Rows with no parseable
+amount are left out of the dollars (`excluded`). **Net buyers vs sellers**
+lists tickers that have both a buy and a sell, same default cap of 10.
 
 **Cluster buys** are tickers bought by at least 3 distinct politicians in the
 window (2–10 via `clusterMin`, or `POLITICIAN_CLUSTER_MIN`). The page offers
@@ -236,7 +247,9 @@ a badge when a parsed stock, ETF, or mutual-fund trade uses that ticker.
 
 Spouse, joint, and child trades are included and labeled. Alerts default to
 **all new trades**. Held-tickers-only stays available and defaults off. Held
-tickers are still listed first in the digest.
+tickers are still listed first in the digest. When a ticker in that batch was
+both bought and sold, the digest also shows the net count and the estimated
+dollar net for that ticker.
 
 Amounts stay the printed range. A row that does not validate is not stored
 as a trade. The filing stays linked and marked **Needs review**. Rows read
