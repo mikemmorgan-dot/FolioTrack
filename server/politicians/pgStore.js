@@ -520,19 +520,26 @@ export function installPgPolitician(Store) {
   };
   Store.prototype.listUnmatchedPoliticianTrades = async function listUnmatchedPoliticianTrades({
     checkedBefore = null,
+    matcherVersion = 0,
     limit = 500,
   } = {}) {
     const cap = Math.min(2000, Math.max(1, Number(limit) || 500));
+    const version = Number(matcherVersion) || 0;
     const { rows } = await this.q(
       `SELECT id, asset, asset_class, ticker, ticker_norm, ticker_source
        FROM politician_trades
        WHERE ticker IS NULL
          AND ticker_norm IS NULL
          AND COALESCE(ticker_source, '') <> 'filing'
-         AND ($1::timestamptz IS NULL OR name_match_at IS NULL OR name_match_at < $1::timestamptz)
+         AND (
+           $1::timestamptz IS NULL
+           OR name_match_at IS NULL
+           OR name_match_at < $1::timestamptz
+           OR COALESCE(name_match_version, 0) < $2::int
+         )
        ORDER BY id
-       LIMIT $2`,
-      [checkedBefore || null, cap],
+       LIMIT $3`,
+      [checkedBefore || null, version, cap],
     );
     return rows.map((r) => ({
       id: r.id,
@@ -553,10 +560,11 @@ export function installPgPolitician(Store) {
            asset_class = COALESCE(v.asset_class, t.asset_class),
            ticker_source = v.ticker_source,
            ticker_match_confidence = v.confidence,
-           name_match_at = v.checked_at
+           name_match_at = v.checked_at,
+           name_match_version = v.version
        FROM unnest(
-         $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::int[], $7::timestamptz[]
-       ) AS v(id, ticker, ticker_norm, asset_class, ticker_source, confidence, checked_at)
+         $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::int[], $7::timestamptz[], $8::int[]
+       ) AS v(id, ticker, ticker_norm, asset_class, ticker_source, confidence, checked_at, version)
        WHERE t.id = v.id
          AND t.ticker IS NULL
          AND t.ticker_norm IS NULL
@@ -570,6 +578,7 @@ export function installPgPolitician(Store) {
         rows.map((row) => row.tickerSource || null),
         rows.map((row) => (row.tickerMatchConfidence == null ? null : row.tickerMatchConfidence)),
         rows.map((row) => row.nameMatchAt || null),
+        rows.map((row) => (row.nameMatchVersion == null ? null : row.nameMatchVersion)),
       ],
     );
     const updated = result.rowCount || 0;

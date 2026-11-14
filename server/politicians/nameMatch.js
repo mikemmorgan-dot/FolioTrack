@@ -5,6 +5,11 @@
 // candidate above a strict bar. Bonds, notes, munis, Treasuries, coupons,
 // and private funds never receive a ticker. A ticker that arrived on the
 // filing is left alone.
+//
+// Abbreviations are expanded on both the SEC name and the filing name.
+// OCR that glues a legal suffix on ("NETFLIXINC") is split and matched only
+// when that repaired name is an exact catalog hit. Dual-class letters that
+// the ticker itself does not encode (GOOGL / GOOG) come from a small map.
 
 import { canonicalTicker } from './normalize.js';
 import { CURATED_FUNDS } from './etfNames.js';
@@ -17,6 +22,9 @@ export const CATALOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 export const FUZZY_MIN_SIMILARITY = 0.94;
 export const FUZZY_MIN_STEM = 12;
 export const FUZZY_GAP = 0.04;
+// Bump when the resolver can match names the previous pass left null.
+// Rows still missing a ticker are eligible again; a filing ticker is not.
+export const MATCHER_VERSION = 2;
 
 const TRAILING = new Set([
   'inc', 'incorporated', 'corp', 'corporation', 'co', 'company', 'companies',
@@ -25,7 +33,112 @@ const TRAILING = new Set([
   'ny', 'nj', 'va', 'nc', 'il', 'ma', 'ga', 'mi', 'wi', 'mo', 'az', 'or', 'ut',
   'tn', 'ky', 'la', 'al', 'ok', 'ct', 'ia', 'ks', 'ar', 'ms', 'sc', 'ne', 'nm',
   'wv', 'id', 'hi', 'me', 'nh', 'ri', 'mt', 'nd', 'sd', 'ak', 'wy', 'dc', 'usa',
+  'wis',
 ]);
+
+// Whole-token expansions. Applied to SEC names and filing names, so
+// "INTL" and "International" land on the same stem. TECH and TECHS stay
+// apart (Technology vs Technologies). BANCORP is a word, not BANC + CORP.
+const ABBREVIATIONS = {
+  intl: 'international',
+  international: 'international',
+  hldg: 'holdings',
+  hldgs: 'holdings',
+  holding: 'holdings',
+  holdings: 'holdings',
+  corp: 'corporation',
+  corporation: 'corporation',
+  co: 'company',
+  company: 'company',
+  cos: 'companies',
+  companies: 'companies',
+  grp: 'group',
+  group: 'group',
+  tech: 'technology',
+  technology: 'technology',
+  techs: 'technologies',
+  technologies: 'technologies',
+  mfg: 'manufacturing',
+  manufacturing: 'manufacturing',
+  svcs: 'services',
+  services: 'services',
+  sys: 'systems',
+  systems: 'systems',
+  pharma: 'pharmaceuticals',
+  pharms: 'pharmaceuticals',
+  pharmaceutical: 'pharmaceuticals',
+  pharmaceuticals: 'pharmaceuticals',
+  finl: 'financial',
+  financial: 'financial',
+  natl: 'national',
+  national: 'national',
+  amer: 'american',
+  american: 'american',
+  commun: 'communications',
+  communication: 'communications',
+  communications: 'communications',
+  entmt: 'entertainment',
+  entertainment: 'entertainment',
+  inds: 'industries',
+  industry: 'industries',
+  industries: 'industries',
+  pptys: 'properties',
+  property: 'properties',
+  properties: 'properties',
+  rlty: 'realty',
+  realty: 'realty',
+  tr: 'trust',
+  trust: 'trust',
+  mgmt: 'management',
+  management: 'management',
+  dev: 'development',
+  development: 'development',
+};
+
+// OCR drops the space before a legal suffix. CO is only split off a long
+// stem so COSTCO, GEICO, and CISCO stay intact. BANCORP is not "BANC CORP".
+const JOINED_SUFFIXES = ['hldgs', 'group', 'corp', 'inc', 'ltd', 'plc', 'llc', 'co'];
+const JOINED_MIN_STEM = { co: 5, corp: 3, inc: 3, ltd: 3, plc: 3, llc: 3 };
+const INTACT_JOINED = new Set([
+  'costco', 'geico', 'cisco', 'sysco', 'tesco', 'sunoco', 'conoco', 'amerco',
+  'mexico', 'morocco', 'monaco', 'nacco', 'chico', 'disco', 'pepco', 'medco',
+  'serco', 'banco', 'franco',
+]);
+
+// A Nasdaq fifth letter that is not a share class. Dropping it lets
+// "T-Mobile US, Inc." resolve to TMUS when the same name also lists the
+// baby bonds TMUSI / TMUSL / TMUSZ. A, B, C, G, and K stay (dual class).
+// M, N, O, and P stay too (preferred series); those names remain ambiguous.
+const NON_COMMON_TAIL = new Set([
+  'd', 'e', 'f', 'h', 'i', 'j', 'l', 'q', 'r', 's', 't', 'u', 'v', 'w', 'y', 'z',
+]);
+
+// Tickers whose class letter is not a ".A" / ".B" suffix. The filing class
+// is used only when that ticker is actually in the SEC list for the stem.
+const SHARE_CLASS_LISTINGS = [
+  ['Alphabet Inc.', 'a', 'GOOGL'],
+  ['Alphabet Inc.', 'c', 'GOOG'],
+  ['Berkshire Hathaway Inc.', 'a', 'BRK.A'],
+  ['Berkshire Hathaway Inc.', 'b', 'BRK.B'],
+  ['Brown-Forman Corp.', 'a', 'BF.A'],
+  ['Brown-Forman Corp.', 'b', 'BF.B'],
+  ['Fox Corp.', 'a', 'FOXA'],
+  ['Fox Corp.', 'b', 'FOX'],
+  ['News Corp.', 'a', 'NWSA'],
+  ['News Corp.', 'b', 'NWS'],
+  ['Comcast Corp.', 'a', 'CMCSA'],
+  ['Under Armour, Inc.', 'a', 'UAA'],
+  ['Under Armour, Inc.', 'c', 'UA'],
+  ['Molson Coors Beverage Co.', 'a', 'TAP.A'],
+  ['Molson Coors Beverage Co.', 'b', 'TAP'],
+  ['Lennar Corp.', 'a', 'LEN'],
+  ['Lennar Corp.', 'b', 'LEN.B'],
+  ['HEICO Corp.', 'a', 'HEI.A'],
+  ['Zillow Group, Inc.', 'a', 'ZG'],
+  ['Zillow Group, Inc.', 'c', 'Z'],
+  ['Watsco, Inc.', 'a', 'WSO'],
+  ['Watsco, Inc.', 'b', 'WSO.B'],
+];
 
 const WHEN_ISSUED_TAIL = new Set(['m', 'n', 'v', 'w', 'z']);
 
@@ -90,6 +203,69 @@ function suffixTypo(token) {
     || editDistance(token, 'llc') <= 1;
 }
 
+function joinCountryUs(tokens) {
+  const out = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    if (tokens[i] === 'u' && tokens[i + 1] === 's') {
+      out.push('us');
+      i += 1;
+      continue;
+    }
+    out.push(tokens[i]);
+  }
+  return out;
+}
+
+// "N.V." and "N V" are the same suffix as "NV". Only the trailing run is joined.
+function joinTrailingForms(tokens) {
+  const out = tokens.slice();
+  const forms = [
+    ['p', 'l', 'c', 'plc'],
+    ['l', 'l', 'c', 'llc'],
+    ['n', 'v', 'nv'],
+    ['s', 'a', 'sa'],
+    ['a', 'g', 'ag'],
+    ['l', 'p', 'lp'],
+  ];
+  for (const form of forms) {
+    const letters = form.slice(0, -1);
+    if (out.length <= letters.length) continue;
+    const tail = out.slice(-letters.length);
+    if (tail.every((token, i) => token === letters[i])) {
+      out.splice(-letters.length, letters.length, form[form.length - 1]);
+    }
+  }
+  return out;
+}
+
+function stripDepositary(tokens) {
+  const out = tokens.slice();
+  let guard = 0;
+  while (out.length > 1 && guard < 4) {
+    guard += 1;
+    const last = out[out.length - 1];
+    if (last === 'adr' || last === 'ads') {
+      out.pop();
+      if (out[out.length - 1] === 'sponsored') out.pop();
+      continue;
+    }
+    break;
+  }
+  return out;
+}
+
+export function repairJoinedSuffix(raw) {
+  return String(raw || '').replace(/[A-Za-z]+/g, (token) => {
+    const lower = token.toLowerCase();
+    if (INTACT_JOINED.has(lower) || lower.endsWith('bancorp')) return token;
+    const suffix = JOINED_SUFFIXES.find((item) => lower.endsWith(item) && lower.length > item.length);
+    if (!suffix) return token;
+    const stemLen = lower.length - suffix.length;
+    if (stemLen < (JOINED_MIN_STEM[suffix] || 4)) return token;
+    return `${token.slice(0, stemLen)} ${token.slice(stemLen)}`;
+  });
+}
+
 export function normalizeAssetName(raw) {
   const original = String(raw || '');
   let text = original
@@ -100,13 +276,17 @@ export function normalizeAssetName(raw) {
     .toLowerCase();
   const looksEtf = isExchangeTraded(text);
   const looksFund = /\bfund\b/i.test(text);
-  let shareClass = '';
-  const classMatch = text.match(/\b(?:class|cl|series)\s+([a-c])\b/);
-  if (classMatch) shareClass = classMatch[1];
-  text = text.replace(/\b(?:class|cl|series)\s+[a-c]\b/g, ' ');
   text = text.replace(/[^a-z0-9]+/g, ' ');
+  let shareClass = '';
+  const classMatch = text.match(/\b(?:class|cl|series)(?:\s+(?:class|cl|series))*\s+([a-c])\b/);
+  if (classMatch) shareClass = classMatch[1];
+  text = text.replace(/\b(?:class|cl|series)(?:\s+(?:class|cl|series))*\s+[a-c]\b/g, ' ');
   let tokens = text.split(/\s+/).filter(Boolean);
   if (tokens[0] === 'the') tokens.shift();
+  tokens = joinCountryUs(tokens);
+  tokens = tokens.map((token) => ABBREVIATIONS[token] || token);
+  tokens = stripDepositary(tokens);
+  tokens = joinTrailingForms(tokens);
   let guard = 0;
   while (tokens.length > 1 && guard < 8) {
     guard += 1;
@@ -157,6 +337,39 @@ function dropWhenIssued(tickers) {
   });
 }
 
+// Baby bonds and units sit on the same SEC name as the common stock
+// (TMUSI / TMUSL / TMUSZ beside TMUS). Drop a one-letter tail that is not a
+// share class when the shorter ticker is listed too. A mapped class ticker
+// (GOOGL beside GOOG) is kept.
+function dropNonCommonTails(tickers, protect) {
+  const set = new Set(tickers);
+  const kept = protect || new Set();
+  return tickers.filter((ticker) => {
+    if (kept.has(ticker) || ticker.length < 2) return true;
+    const extra = ticker[ticker.length - 1].toLowerCase();
+    if (!NON_COMMON_TAIL.has(extra)) return true;
+    return !set.has(ticker.slice(0, -1));
+  });
+}
+
+let compiledShareClass = null;
+function compiledClasses() {
+  if (compiledShareClass) return compiledShareClass;
+  const byKey = new Map();
+  const protectedByStem = new Map();
+  for (const [name, shareClass, ticker] of SHARE_CLASS_LISTINGS) {
+    const stem = normalizeAssetName(name).stem;
+    const canonical = canonicalTicker(ticker);
+    if (!stem || !canonical) continue;
+    byKey.set(`${stem}|${shareClass}`, canonical);
+    const set = protectedByStem.get(stem) || new Set();
+    set.add(canonical);
+    protectedByStem.set(stem, set);
+  }
+  compiledShareClass = { byKey, protectedByStem };
+  return compiledShareClass;
+}
+
 export function secRow(row) {
   if (Array.isArray(row)) {
     if (row.length >= 4 && typeof row[0] === 'number') {
@@ -191,15 +404,19 @@ export function indexSecRows(rows) {
     grouped.set(stem, list);
   }
 
+  const classes = compiledClasses();
   const exact = new Map();
   const classedStems = new Set();
+  const tickersByStem = new Map();
   for (const [stem, list] of grouped) {
     const best = Math.min(...list.map((item) => exchangeTier(item.exchange)));
     const kept = list.filter((item) => exchangeTier(item.exchange) === best);
     const plain = [];
     const byClass = new Map();
     let assetClass = 'stock';
+    const known = new Set();
     for (const item of kept) {
+      known.add(item.ticker);
       if (item.assetClass === 'etf') assetClass = 'etf';
       else if (item.assetClass === 'fund' && assetClass !== 'etf') assetClass = 'fund';
       if (!item.shareClass) plain.push(item.ticker);
@@ -209,7 +426,9 @@ export function indexSecRows(rows) {
         byClass.set(item.shareClass, arr);
       }
     }
-    const plainTickers = dropWhenIssued(unique(plain));
+    tickersByStem.set(stem, known);
+    const protect = classes.protectedByStem.get(stem) || new Set();
+    const plainTickers = dropNonCommonTails(dropWhenIssued(unique(plain)), protect);
     if (plainTickers.length === 1) {
       exact.set(`${stem}|`, { ticker: plainTickers[0], assetClass, source: 'sec' });
     }
@@ -223,7 +442,7 @@ export function indexSecRows(rows) {
       }
     }
   }
-  return { exact, classedStems };
+  return { exact, classedStems, tickersByStem };
 }
 
 function curatedExactMap(entries = CURATED_FUNDS) {
@@ -272,10 +491,20 @@ export function buildCatalog({ rows = [], fetchedAt = null, curated = CURATED_FU
     if (existing?.ticker) continue;
     fuzzy.plain.push({ stem, ticker: hit.ticker, assetClass: hit.assetClass, source: 'curated' });
   }
+  const classes = compiledClasses();
+  const mappedStems = new Set();
+  for (const [stem, protect] of classes.protectedByStem) {
+    const have = indexed.tickersByStem.get(stem);
+    if (!have) continue;
+    if ([...protect].some((ticker) => have.has(ticker))) mappedStems.add(stem);
+  }
   return {
     fetchedAt: fetchedAt || null,
     exact: indexed.exact,
     classedStems: indexed.classedStems,
+    tickersByStem: indexed.tickersByStem,
+    shareClass: classes.byKey,
+    mappedStems,
     curated: curatedMap,
     fuzzyPlain: fuzzy.plain,
     fuzzyByClass: fuzzy.byClass,
@@ -361,25 +590,57 @@ function fuzzyPick(stem, pool) {
   return best;
 }
 
+function mappedClassHit(catalog, stem, shareClass) {
+  if (!shareClass) return null;
+  const ticker = catalog.shareClass?.get(`${stem}|${shareClass}`);
+  if (!ticker) return null;
+  const known = catalog.tickersByStem?.get(stem);
+  if (!known || !known.has(ticker)) return null;
+  return { ticker, assetClass: 'stock', source: 'class-map', reason: 'exact' };
+}
+
 function exactHit(catalog, stem, shareClass) {
   if (!stem) return null;
   if (shareClass) {
     const keyed = catalog.exact.get(`${stem}|${shareClass}`);
     if (keyed?.ticker) return { ...keyed, reason: 'exact' };
+    const mapped = mappedClassHit(catalog, stem, shareClass);
+    if (mapped) return mapped;
+    // A class letter falls through only when this company has a single
+    // listing and the map does not name a different class (Nike Class B
+    // is NKE; Alphabet Class B is not GOOG).
     const plain = catalog.exact.get(`${stem}|`);
-    if (plain?.ticker && !catalog.classedStems.has(stem)) return { ...plain, reason: 'exact' };
+    if (plain?.ticker && !catalog.classedStems.has(stem) && !catalog.mappedStems?.has(stem)) {
+      return { ...plain, reason: 'exact' };
+    }
     return null;
   }
   const plain = catalog.exact.get(`${stem}|`);
   return plain?.ticker ? { ...plain, reason: 'exact' } : null;
 }
 
-export function matchAssetName(asset, catalog) {
+function isPreferredOrWarrant(value) {
+  if (isExchangeTraded(value)) return false;
+  const text = String(value || '');
+  if (/\bwarrants?\b/i.test(text)) return true;
+  if (/\bdepositary\s+shares?\b/i.test(text)) return true;
+  if (/\bpreferred\s+(?:stock|shares|series)\b/i.test(text)) return true;
+  if (/\bperp(?:etual)?\b/i.test(text)) return true;
+  return false;
+}
+
+function blockedMatch(asset) {
   const described = classifyDescribedAsset(asset);
   if (described === 'bond') return { ticker: null, assetClass: 'bond', confidence: null, reason: 'debt' };
   if (described === 'option') return { ticker: null, assetClass: 'option', confidence: null, reason: 'option' };
   if (described === 'crypto') return { ticker: null, assetClass: 'crypto', confidence: null, reason: 'crypto' };
   if (isPrivateFund(asset)) return { ticker: null, assetClass: 'other', confidence: null, reason: 'private' };
+  if (isPreferredOrWarrant(asset)) return { ticker: null, assetClass: 'other', confidence: null, reason: 'preferred' };
+  return null;
+}
+
+function resolveNormalized(asset, catalog) {
+  const described = classifyDescribedAsset(asset);
   const norm = normalizeAssetName(asset);
   if (!catalog || !norm.stem) {
     return { ticker: null, assetClass: described, confidence: null, reason: 'none' };
@@ -412,6 +673,35 @@ export function matchAssetName(asset, catalog) {
     confidence: Math.round(fuzzy.score * 100),
     reason: 'fuzzy',
   };
+}
+
+function exactAlternate(asset, catalog) {
+  const blocked = blockedMatch(asset);
+  if (blocked) return null;
+  const hit = resolveNormalized(asset, catalog);
+  if (hit.ticker && (hit.reason === 'exact' || hit.reason === 'curated')) return hit;
+  return null;
+}
+
+export function matchAssetName(asset, catalog) {
+  const blocked = blockedMatch(asset);
+  if (blocked) return blocked;
+  const primary = resolveNormalized(asset, catalog);
+  if (primary.ticker) return primary;
+  const alternates = [];
+  const repaired = repairJoinedSuffix(asset);
+  if (repaired !== asset) alternates.push(repaired);
+  const foreign = String(asset || '').replace(/\s+F$/i, '');
+  if (foreign !== asset) alternates.push(foreign);
+  const reit = String(asset || '')
+    .replace(/(?:\s+REIT)+$/i, '')
+    .replace(/\s+RE\s+IT$/i, '');
+  if (reit !== asset) alternates.push(reit);
+  for (const alt of alternates) {
+    const hit = exactAlternate(alt, catalog);
+    if (hit) return hit;
+  }
+  return primary;
 }
 
 export function annotateTrade(trade, catalog) {
@@ -477,6 +767,7 @@ export function planNameMatchUpdate(row, catalog) {
     tickerSource: next.tickerSource === 'name_match' ? 'name_match' : null,
     tickerMatchConfidence: next.tickerSource === 'name_match' ? next.tickerMatchConfidence : null,
     nameMatchAt: next.nameMatchAt || catalog?.fetchedAt || null,
+    nameMatchVersion: MATCHER_VERSION,
   };
 }
 
@@ -556,6 +847,7 @@ export async function backfillNullTickers({
   for (let batch = 0; batch < maxBatches; batch += 1) {
     const rows = await store.listUnmatchedPoliticianTrades({
       checkedBefore: catalog.fetchedAt,
+      matcherVersion: MATCHER_VERSION,
       limit,
     });
     if (!rows?.length) break;

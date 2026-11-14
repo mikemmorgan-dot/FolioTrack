@@ -233,6 +233,7 @@ CREATE INDEX IF NOT EXISTS politician_trades_digest_pending
 ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS ticker_source text;
 ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS ticker_match_confidence int;
 ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS name_match_at timestamptz;
+ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS name_match_version int;
 CREATE INDEX IF NOT EXISTS politician_trades_unnamed
   ON politician_trades (id)
   WHERE ticker_norm IS NULL;
@@ -247,6 +248,7 @@ CREATE INDEX IF NOT EXISTS politician_trades_digest_pending
 ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS ticker_source text;
 ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS ticker_match_confidence int;
 ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS name_match_at timestamptz;
+ALTER TABLE politician_trades ADD COLUMN IF NOT EXISTS name_match_version int;
 CREATE INDEX IF NOT EXISTS politician_trades_unnamed
   ON politician_trades (id)
   WHERE ticker_norm IS NULL;
