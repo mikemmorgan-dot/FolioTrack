@@ -224,6 +224,72 @@ describe('history cache', () => {
     expect(calls).toBe(2);
   });
 
+  it('refetches a fresh one-day quote when backfill asks', async () => {
+    const store = memoryStore({
+      'ATZ.TO': {
+        symbol: 'ATZ.TO',
+        series: [{ date: '2026-09-04', close: 128.67 }],
+        provider: 'yahoo',
+        range: 'max',
+        fetchedAt: '2026-09-04T11:00:00.000Z',
+      },
+    });
+    let calls = 0;
+    const full = [
+      { date: '2024-01-31', close: 30 },
+      { date: '2024-02-29', close: 31 },
+      { date: '2026-09-04', close: 128.67 },
+    ];
+    const cache = createHistoryCache({
+      ...store,
+      now: () => Date.parse('2026-09-04T12:00:00.000Z'),
+      today: () => '2026-09-04',
+      fetchLive: async () => {
+        calls += 1;
+        return { symbol: 'ATZ.TO', series: full, provider: 'tmx', range: 'max' };
+      },
+      fetchQuote: async () => { throw new Error('no quote'); },
+    });
+    const cached = await cache.getHistory('ATZ.TO', 'max');
+    expect(cached.fromCache).toBe(true);
+    expect(cached.series).toHaveLength(1);
+    expect(calls).toBe(0);
+    const filled = await cache.getHistory('ATZ.TO', 'max', { bypassFresh: true });
+    expect(filled.fromCache).toBe(false);
+    expect(filled.series.map((p) => p.date)).toEqual(full.map((p) => p.date));
+    expect(calls).toBe(1);
+  });
+
+  it('does not let a backfill skip a recent total miss', async () => {
+    const store = memoryStore({
+      'ATZ.TO': {
+        symbol: 'ATZ.TO',
+        series: [{ date: '2026-09-04', close: 10 }],
+        provider: 'yahoo',
+        range: 'max',
+        fetchedAt: '2026-09-04T11:00:00.000Z',
+      },
+    });
+    let calls = 0;
+    const cache = createHistoryCache({
+      ...store,
+      now: () => Date.parse('2026-09-04T12:00:00.000Z'),
+      today: () => '2026-09-04',
+      fetchLive: async () => {
+        calls += 1;
+        throw new Error('All providers failed for ATZ.TO: yahoo (HTTP 429)');
+      },
+      fetchQuote: async () => { throw new Error('no quote'); },
+    });
+    const first = await cache.getHistory('ATZ.TO', 'max', { bypassFresh: true });
+    expect(first.stale).toBe(true);
+    expect(first.fromCache).toBe(true);
+    expect(calls).toBe(1);
+    const second = await cache.getHistory('ATZ.TO', 'max', { bypassFresh: true });
+    expect(second.fromCache).toBe(true);
+    expect(calls).toBe(1);
+  });
+
   it('loads a bounded window from meta and skips the series when asked', async () => {
     const calls = [];
     const cache = createHistoryCache({

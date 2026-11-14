@@ -1,18 +1,21 @@
 // compareRisk.js — side-by-side risk for every model's current version.
 //
-// All books are scored on one shared run of months: the latest stretch where
-// every model that has continuous monthly history can mark a real
-// month-to-month return. A holding counts toward that stretch only when it
-// has a close of its own in that month and the month before. A manual NAV
-// with gaps does not invent the missing months, and it does not shrink the
-// window if the rest of the book is continuous — it is left out of the
-// figure and reported as coverage, the same idea as blended MER ignoring
-// holdings with no MER.
+// All books are scored on one shared run of months: the longest stretch where
+// every priced holding of every compared model, and each benchmark sleeve,
+// has its own month-end close in that month and the month before. Max common
+// starts at the latest of those first months. A name that cannot be priced
+// monthly (manual fund, private/alt, cash) does not move that start. It is
+// left out of the figure and reported as coverage, the same idea as blended
+// MER ignoring holdings with no MER. A priced name with no cached months is
+// left out the same way. It does not collapse the window to empty.
 //
-// Prices come from the stored cache (month-end rows only). This module does
-// not call a quote provider.
+// Prices come from the stored cache (month-end rows only). A listed stock or
+// ETF uses the cache when that series has more monthly support than its NAV
+// points, so one typed price does not hide a backfilled history. This module
+// does not call a quote provider.
 
 import { decidePricePath } from './navPrice.js';
+import { isMonthlyPriceableInstrument } from './listing.js';
 import { monthEndCloses, monthEndDate } from './perf.js';
 import { shortName } from './compare.js';
 import { riskMetrics, staticPortfolioMonthly } from './risk.js';
@@ -86,6 +89,10 @@ export function supportMonths(byYm) {
   return set;
 }
 
+export function monthlySupportCount(series, lastYm) {
+  return supportMonths(toYmMap(series, lastYm)).size;
+}
+
 function returnOn(byYm, ym) {
   const prev = byYm.get(addMonths(ym, -1));
   const cur = byYm.get(ym);
@@ -108,6 +115,22 @@ function latestRun(sorted) {
     else { latest = cur; cur = [sorted[i]]; }
   }
   return cur.length ? cur : latest;
+}
+
+// Longest contiguous run where every set has a real month-to-month return.
+// Empty sets are ignored so a name with no cache does not wipe the window.
+function intersectRun(sets) {
+  let acc = null;
+  for (const set of sets) {
+    if (!set || !set.size) continue;
+    if (!acc) {
+      acc = new Set(set);
+      continue;
+    }
+    for (const ym of [...acc]) if (!set.has(ym)) acc.delete(ym);
+  }
+  if (!acc || !acc.size) return [];
+  return latestRun([...acc].sort());
 }
 
 export function availablePeriods(monthCount) {
@@ -265,14 +288,25 @@ export function buildCompareRisk(books, seriesByRef, seriesBySymbol, { period, r
     return { book, holdings, support, participate: true, status: 'ok', reason: null };
   });
 
-  const participating = prepared.filter((p) => p.participate);
-  let commonSorted = [];
-  if (participating.length) {
-    const sets = participating.map((p) => p.support);
-    const [first, ...rest] = sets;
-    commonSorted = [...first].filter((ym) => rest.every((s) => s.has(ym))).sort();
+  const windowSets = [];
+  const seenBench = new Set();
+  for (const p of prepared) {
+    if (!p.participate) continue;
+    for (const h of p.holdings) {
+      if (h.monthlyPriceable === false) continue;
+      const support = supportMonths(byRef.get(h.instrumentId) || new Map());
+      if (support.size) windowSets.push(support);
+    }
+    for (const b of p.book.benchmark || []) {
+      if (!b?.symbol || !(Number(b.weight) > 0)) continue;
+      const symbol = String(b.symbol).toUpperCase();
+      if (seenBench.has(symbol)) continue;
+      seenBench.add(symbol);
+      const support = supportMonths(bySymbol.get(symbol) || new Map());
+      if (support.size) windowSets.push(support);
+    }
   }
-  const run = latestRun(commonSorted);
+  const run = intersectRun(windowSets);
   const available = availablePeriods(run.length);
   const resolved = resolvePeriod(period, available);
   if (resolved.error) return { error: resolved.error, status: resolved.status || 400 };
@@ -480,7 +514,8 @@ export async function loadCompareRisk(store, { period, rf = 0.04, asOf } = {}) {
       );
       h.symbol = inst?.symbol || null;
       h.path = decision.path;
-      if (decision.path === 'auto' && h.symbol) priceSymbols.add(String(h.symbol).trim().toUpperCase());
+      h.monthlyPriceable = isMonthlyPriceableInstrument(inst);
+      if (h.monthlyPriceable && h.symbol) priceSymbols.add(String(h.symbol).trim().toUpperCase());
     }
   }
 
@@ -488,12 +523,22 @@ export async function loadCompareRisk(store, { period, rf = 0.04, asOf } = {}) {
   for (const symbol of priceSymbols) {
     seriesBySymbol[symbol] = await readPrices(store, symbol);
   }
+  const lastYm = lastCompleteMonth(day);
   const seriesByRef = {};
   for (const book of drafts) {
     for (const h of book.holdings) {
       if (seriesByRef[h.instrumentId]) continue;
-      if (h.path === 'nav_series') seriesByRef[h.instrumentId] = navById.get(h.instrumentId) || [];
-      else seriesByRef[h.instrumentId] = seriesBySymbol[String(h.symbol || '').toUpperCase()] || [];
+      const navSeries = navById.get(h.instrumentId) || [];
+      const priceSeries = seriesBySymbol[String(h.symbol || '').toUpperCase()] || [];
+      if (!h.monthlyPriceable) {
+        seriesByRef[h.instrumentId] = navSeries;
+        continue;
+      }
+      // One typed NAV must not hide a backfilled month-end cache. A real
+      // uploaded NAV still wins when it has the longer monthly run.
+      const priceN = monthlySupportCount(priceSeries, lastYm);
+      const navN = monthlySupportCount(navSeries, lastYm);
+      seriesByRef[h.instrumentId] = priceN >= navN ? priceSeries : navSeries;
     }
   }
   return buildCompareRisk(drafts, seriesByRef, seriesBySymbol, { period, rf, asOf });

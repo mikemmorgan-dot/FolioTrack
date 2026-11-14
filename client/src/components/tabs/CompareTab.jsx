@@ -198,7 +198,7 @@ const RISK_ROWS = [
   { key: 'informationRatio', label: 'Info ratio' },
 ];
 
-const PERIOD_LABEL = { '1y': '1y', '3y': '3y', '5y': '5y', max: 'Max' };
+const PERIOD_LABEL = { '1y': '1y', '3y': '3y', '5y': '5y', max: 'Max common' };
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 function ymLabel(ym) {
@@ -296,12 +296,13 @@ function RiskMetrics() {
 
       {data?.range && (
         <p className="risk-range">
-          {ymLabel(data.range.start)} – {ymLabel(data.range.end)} · {data.range.months} month{data.range.months === 1 ? '' : 's'}
-          {data.period !== 'max' && data.common?.months ? ` · ${data.common.months} in common` : ''}
+          {data.period === 'max'
+            ? `Max common starts ${ymLabel(data.range.start)} to ${ymLabel(data.range.end)} · ${data.range.months} month${data.range.months === 1 ? '' : 's'}`
+            : `${ymLabel(data.range.start)} to ${ymLabel(data.range.end)} · ${data.range.months} month${data.range.months === 1 ? '' : 's'}${data.common?.start ? ` · Max common starts ${ymLabel(data.common.start)}` : ''}`}
         </p>
       )}
       {data?.staleEnd && data?.range && (
-        <p className="compare-note">Ends {ymLabel(data.range.end)} — later months are not in every model’s cached history.</p>
+        <p className="compare-note">Ends {ymLabel(data.range.end)}. Later months are not in every model's cached history.</p>
       )}
       {data?.unavailableReason && !data.period && (
         <p className="compare-note">{data.unavailableReason}</p>
@@ -324,12 +325,12 @@ function RiskMetrics() {
       </div>
 
       {loading && !data && <div className="loading risk-loading">Computing risk…</div>}
-      {err && <div className="banner">Couldn’t compute risk — {err}</div>}
+      {err && <div className="banner">Couldn’t compute risk. {err}</div>}
 
       {data?.period && models.length > 0 && (
         <div className={`compare-table-wrap${loading ? ' is-loading' : ''}`} aria-busy={loading}>
           <table className="compare-table risk-table">
-            <caption className="sr">Risk metrics by model for {active === 'max' ? 'the common history' : active}</caption>
+            <caption className="sr">Risk metrics by model for {active === 'max' ? 'Max common' : active}</caption>
             <thead>
               <tr>
                 <th className="sticky">Metric</th>
@@ -354,7 +355,7 @@ function RiskMetrics() {
                     const value = m.metrics?.[row.key];
                     const reason = m.metricReasons?.[row.key] || (value == null ? m.reason : null);
                     const rank = ranks[row.key]?.[m.key];
-                    const title = [rankTitle(row.key, rank), m.partial && value != null ? 'Partial — weight without a full monthly series is left out' : '', value == null ? reason : '']
+                    const title = [rankTitle(row.key, rank), m.partial && value != null ? 'Partial. Weight without a full monthly series is left out' : '', value == null ? reason : '']
                       .filter(Boolean).join('. ');
                     return (
                       <td key={m.key} className={rank || (value == null ? 'muted' : '')} title={title || undefined}>
@@ -412,7 +413,7 @@ function RiskMetrics() {
       )}
 
       <p className="note">
-        Each column holds that model’s current weights flat over the months above. A dagger means the figure uses only the weight with its own month-end price in every one of those months — a manual NAV or a short cache is left out and the rest is reweighted, the same way blended MER skips a holding with no MER. A dash is a missing input, not a zero. The underline marks the best and worst figure in that row. Beta, tracking error, and info ratio use that model’s own benchmark. Prices are the month-end closes already in the cache; this screen does not call a quote provider.
+        Each column holds that model's current weights flat over the months above. Max common starts at the latest month where every priced holding and the benchmark already have a close. A dagger means the figure uses only the weight with its own month-end price in every one of those months. A manual fund, a private holding, cash, or a listed name with no cached months is left out and the rest is reweighted, the same way blended MER skips a holding with no MER. A dash is a missing input, not a zero. The underline marks the best and worst figure in that row. Beta, tracking error, and info ratio use that model's own benchmark. Prices are the month-end closes already in the cache. This screen does not call a quote provider.
       </p>
     </>
   );
