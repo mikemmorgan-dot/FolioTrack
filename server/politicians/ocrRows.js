@@ -7,6 +7,7 @@
 // Amounts and dates are never rewritten into a nearby bucket or day.
 // Anything else is counted as unreadable and left for manual review.
 
+import { classifyDescribedAsset } from './nameMatch.js';
 import { canonicalAmountRange, canonicalTicker, normalizeOwner, parseUsDate } from './normalize.js';
 
 const TYPE_WORDS = ['purchase', 'sale', 'exchange'];
@@ -166,14 +167,7 @@ export function rowsFromOcrWords(rawWords, { now = new Date() } = {}) {
 }
 
 function assetClass(asset, ticker) {
-  const s = String(asset || '');
-  if (/\b(call|put|option)s?\b/i.test(s)) return 'option';
-  if (/\b(bitcoin|ethereum|crypto)\b/i.test(s)) return 'crypto';
-  if (/\b(bond|note|municipal|debenture)\b/i.test(s) || /\bdue\b/i.test(s)) return 'bond';
-  if (ticker && /\b(etf|exchange traded fund)\b/i.test(s)) return 'etf';
-  if (ticker && /\bfund\b/i.test(s)) return 'fund';
-  if (ticker) return 'stock';
-  return 'other';
+  return classifyDescribedAsset(asset, { ticker });
 }
 
 export const OCR_MIN_CONFIDENCE = MIN_CONFIDENCE;

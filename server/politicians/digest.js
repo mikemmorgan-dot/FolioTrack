@@ -22,7 +22,9 @@ function lineFor(trade) {
   const party = partyLabel(trade.party);
   const candidate = candidateTag(trade);
   const side = txLabel(trade.txType, trade.partial);
-  const ticker = trade.ticker || '—';
+  const ticker = trade.ticker
+    ? (trade.tickerSource === 'name_match' ? `${trade.ticker} (matched from name)` : trade.ticker)
+    : '—';
   const when = trade.txDate || '—';
   const disclosed = trade.disclosedDate || '—';
   const lag = trade.lagDays == null ? '—' : `${trade.lagDays}d`;
@@ -95,7 +97,7 @@ export function buildPoliticianDigest({
 
   const itemHtml = (trade) => `<li style="margin:0 0 12px">
     <div><strong>${escapeHtml(trade.personName || 'Unknown')}</strong> · ${escapeHtml(officeLabel(trade.office))}${candidateTag(trade) ? ` · ${escapeHtml(candidateTag(trade))}` : ''}${partyLabel(trade.party) ? ` · ${escapeHtml(partyLabel(trade.party))}` : ''}</div>
-    <div>${escapeHtml(txLabel(trade.txType, trade.partial))} ${escapeHtml(trade.ticker || '—')}${trade.heldModels.length ? ` · <strong>In your models: ${escapeHtml(trade.heldModels.map((m) => m.name || m.key).join(', '))}</strong>` : ''}</div>
+    <div>${escapeHtml(txLabel(trade.txType, trade.partial))} ${escapeHtml(trade.ticker || '—')}${trade.tickerSource === 'name_match' ? ' <span>(matched from name)</span>' : ''}${trade.heldModels.length ? ` · <strong>In your models: ${escapeHtml(trade.heldModels.map((m) => m.name || m.key).join(', '))}</strong>` : ''}</div>
     <div>${escapeHtml(trade.asset || '')}</div>
     <div>${escapeHtml(ownerLabel(trade.owner))} · ${escapeHtml(trade.amountRange || '—')}</div>
     <div>Traded ${escapeHtml(trade.txDate || '—')} · disclosed ${escapeHtml(trade.disclosedDate || '—')} · lag ${escapeHtml(trade.lagDays == null ? '—' : `${trade.lagDays} days`)}</div>

@@ -1,6 +1,7 @@
 // Turn a parsed filing into the row the stores insert. Trade ids are the
 // filing id plus the row number, which is what makes a re-poll a no-op.
 
+import { annotateTrade } from './nameMatch.js';
 import { canonicalTicker, displayName, lagDays, personKey } from './normalize.js';
 
 export function splitStateDst(stateDst) {
@@ -45,11 +46,17 @@ export function buildFilingRecord({
   };
 }
 
-export function buildTradeRows(filing, parsed) {
+function matchConfidence(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+export function buildTradeRows(filing, parsed, catalog = null) {
   if (!parsed?.trades?.length) return [];
   return parsed.trades.map((trade, index) => {
     const rowIndex = index + 1;
-    return {
+    const row = {
       id: `${filing.id}:${rowIndex}`,
       filingId: filing.id,
       rowIndex,
@@ -76,7 +83,11 @@ export function buildTradeRows(filing, parsed) {
         ? Math.round(Number(trade.ocrConfidence))
         : null,
       digestPending: trade.digestPending === true,
+      tickerSource: trade.tickerSource || (trade.ticker ? 'filing' : null),
+      tickerMatchConfidence: matchConfidence(trade.tickerMatchConfidence),
+      nameMatchAt: trade.nameMatchAt || null,
     };
+    return catalog ? annotateTrade(row, catalog) : row;
   });
 }
 

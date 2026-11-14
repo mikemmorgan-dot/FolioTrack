@@ -22,6 +22,7 @@ import { buildFilingRecord, buildTradeRows, heldIndex, splitStateDst } from './r
 import { classifyHouseFiler, matchHouseParty, matchSenateParty, parseHouseRoster, parseSenateRoster } from './roster.js';
 import { readZipEntries, zipText } from './zip.js';
 import { buildPoliticianDigest } from './digest.js';
+import { backfillNullTickers, loadTickerCatalog } from './nameMatch.js';
 
 export const POLITICIAN_UA = 'FolioTrack/1.0 (model-portfolio research; +https://foliotrack.onrender.com)';
 
@@ -135,7 +136,7 @@ function reviewOf(status, record) {
   return null;
 }
 
-export async function saveBundle(store, filing, parsed, { protectClaim = false } = {}) {
+export async function saveBundle(store, filing, parsed, { protectClaim = false, catalog = null } = {}) {
   const record = {
     ...filing,
     parseStatus: parsed.status,
@@ -144,7 +145,7 @@ export async function saveBundle(store, filing, parsed, { protectClaim = false }
     ocrPage: parsed.ocrPage ?? filing.ocrPage ?? null,
     pageCount: parsed.pageCount ?? filing.pageCount ?? null,
   };
-  const trades = buildTradeRows(record, parsed);
+  const trades = buildTradeRows(record, parsed, catalog);
   const result = await store.insertPoliticianBundle(record, trades);
   if (!result.created) {
     const updated = await store.updatePoliticianFiling(record, { protectClaim });
@@ -223,7 +224,7 @@ async function loadRoster(store, fetchImpl, nowMs, logger) {
   }
 }
 
-async function ingestHouse({ fetchImpl, store, roster, years, cap, delayMs, sleep, deadline, logger }) {
+async function ingestHouse({ fetchImpl, store, roster, years, cap, delayMs, sleep, deadline, logger, catalog = null }) {
   const candidates = [];
   let indexDone = true;
   for (const year of years) {
@@ -305,7 +306,7 @@ async function ingestHouse({ fetchImpl, store, roster, years, cap, delayMs, slee
       sourceUrl: candidate.sourceUrl,
       parsed,
     });
-    const saved = await saveBundle(store, filing, parsed);
+    const saved = await saveBundle(store, filing, parsed, { catalog });
     fresh.push(...saved.trades);
     if (saved.review) reviews.push(saved.review);
   }
@@ -316,6 +317,7 @@ async function ingestHouse({ fetchImpl, store, roster, years, cap, delayMs, slee
 
 async function ingestSenate({
   fetchImpl, store, roster, windowStart, today, cap, delayMs, sleep, deadline, logger, cursor = 0,
+  catalog = null,
 }) {
   const jar = await acceptSenate(fetchImpl);
   const candidates = [];
@@ -402,7 +404,7 @@ async function ingestSenate({
         sourceUrl: candidate.sourceUrl,
         parsed,
       });
-      const saved = await saveBundle(store, filing, parsed);
+      const saved = await saveBundle(store, filing, parsed, { catalog });
       if (saved.review) reviews.push(saved.review);
       continue;
     }
@@ -434,7 +436,7 @@ async function ingestSenate({
       sourceUrl: candidate.sourceUrl,
       parsed,
     });
-    const saved = await saveBundle(store, filing, parsed);
+    const saved = await saveBundle(store, filing, parsed, { catalog });
     fresh.push(...saved.trades);
     if (saved.review) reviews.push(saved.review);
   }
@@ -586,6 +588,7 @@ async function ingestOge({
   logger,
   tools,
   readPdf,
+  catalog = null,
 }) {
   const haveTools = typeof tools === 'boolean' ? tools : await ocrToolsAvailable();
   const readPdfFn = readPdf || readOgePdf;
@@ -609,7 +612,7 @@ async function ingestOge({
       sourceUrl: candidate.sourceUrl,
       parsed,
     });
-    const saved = await saveBundle(store, filing, parsed, { protectClaim });
+    const saved = await saveBundle(store, filing, parsed, { protectClaim, catalog });
     if (saved.skipped) return;
     fresh.push(...saved.trades);
     if (saved.review) reviews.push(saved.review);
@@ -731,6 +734,12 @@ export async function runPoliticianPoll({
   const today = todayIso(clock);
   const years = backfillYearList(clock, cfg.backfillYears);
   const roster = await loadRoster(store, fetchImpl, nowMs, logger);
+  let catalog = null;
+  try {
+    catalog = await loadTickerCatalog({ store, fetchImpl, now: clock, logger });
+  } catch (err) {
+    logger.warn(`[politicians] name catalog failed: ${err.message}`);
+  }
   const summary = {};
   const newTrades = [];
   const newReviews = [];
@@ -738,16 +747,16 @@ export async function runPoliticianPoll({
 
   const jobs = [
     ['house', () => ingestHouse({
-      fetchImpl, store, roster, years, cap, delayMs: cfg.delayMs, sleep, deadline: stopAt, logger,
+      fetchImpl, store, roster, years, cap, delayMs: cfg.delayMs, sleep, deadline: stopAt, logger, catalog,
     })],
     ['senate', () => ingestSenate({
       fetchImpl, store, roster, windowStart, today, cap, delayMs: cfg.delayMs, sleep, deadline: stopAt, logger,
-      cursor: Number(sources.senate?.cursor) || 0,
+      cursor: Number(sources.senate?.cursor) || 0, catalog,
     })],
     ['oge', () => ingestOge({
       fetchImpl, store, windowStart, cap, maxPdfBytes: cfg.maxPdfBytes,
       delayMs: cfg.delayMs, sleep, deadline: stopAt, logger,
-      tools: haveTools, readPdf,
+      tools: haveTools, readPdf, catalog,
     })],
   ];
 
@@ -788,6 +797,15 @@ export async function runPoliticianPoll({
       summary[name] = { error: err.message, until: sources[name].until };
       allCaughtUp = false;
       logger.error(`[politicians] ${name} failed: ${err.message}`);
+    }
+  }
+
+  if (catalog) {
+    try {
+      summary.nameMatch = await backfillNullTickers({ store, catalog, logger });
+    } catch (err) {
+      summary.nameMatch = { examined: 0, matched: 0, updated: 0 };
+      logger.error(`[politicians] name backfill failed: ${err.message}`);
     }
   }
 

@@ -378,6 +378,65 @@ export const memoryMethods = {
     }
     return [...acc.entries()].map(([tickerNorm, row]) => ({ tickerNorm, ...row }));
   },
+  async getTickerNameCatalog() {
+    return this.db.tickerNameCatalog || null;
+  },
+  async saveTickerNameCatalog(doc) {
+    Object.defineProperty(this.db, 'tickerNameCatalog', {
+      value: doc,
+      writable: true,
+      configurable: true,
+      enumerable: false,
+    });
+    return doc;
+  },
+  async listUnmatchedPoliticianTrades({ checkedBefore = null, limit = 500 } = {}) {
+    const cap = Math.min(2000, Math.max(1, Number(limit) || 500));
+    return (this.db.politicianTrades || [])
+      .filter((trade) => {
+        if (trade.ticker || trade.tickerNorm) return false;
+        if (trade.tickerSource === 'filing') return false;
+        if (checkedBefore && trade.nameMatchAt && String(trade.nameMatchAt) >= String(checkedBefore)) return false;
+        return true;
+      })
+      .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+      .slice(0, cap)
+      .map((trade) => ({
+        id: trade.id,
+        asset: trade.asset,
+        assetClass: trade.assetClass,
+        ticker: null,
+        tickerNorm: null,
+        tickerSource: trade.tickerSource || null,
+      }));
+  },
+  async applyPoliticianNameMatches(updates = []) {
+    const byId = new Map((this.db.politicianTrades || []).map((trade) => [trade.id, trade]));
+    let updated = 0;
+    let matched = 0;
+    for (const update of updates || []) {
+      const trade = byId.get(update?.id);
+      if (!trade) continue;
+      if (trade.ticker || trade.tickerNorm) continue;
+      if (trade.tickerSource === 'filing') continue;
+      const pending = trade.digestPending === true;
+      trade.assetClass = update.assetClass || trade.assetClass;
+      trade.nameMatchAt = update.nameMatchAt || trade.nameMatchAt || null;
+      trade.tickerMatchConfidence = null;
+      trade.tickerSource = null;
+      if (update.ticker) {
+        trade.ticker = update.ticker;
+        trade.tickerNorm = update.tickerNorm || update.ticker;
+        trade.tickerSource = 'name_match';
+        trade.tickerMatchConfidence = update.tickerMatchConfidence ?? null;
+        matched += 1;
+      }
+      trade.digestPending = pending;
+      updated += 1;
+    }
+    if (updated) this.persist();
+    return { updated, matched };
+  },
 };
 
 export function installMemoryPolitician(Store) {

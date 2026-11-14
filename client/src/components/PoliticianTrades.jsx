@@ -115,6 +115,9 @@ function TradeCard({ item, onPerson }) {
         {item.filerStatus === 'candidate' && <span className="pill amber">Candidate</span>}
         {held.length > 0 && <span className="pill green">In your models</span>}
         {item.ocr && <span className="pill neutral">OCR{item.ocrConfidence != null ? ` ${item.ocrConfidence}` : ''}</span>}
+        {item.tickerSource === 'name_match' && (
+          <span className="pill neutral" title={item.tickerMatchConfidence != null ? `Name match confidence ${item.tickerMatchConfidence}` : 'Matched from the asset name'}>matched from name</span>
+        )}
       </div>
       {held.length > 0 && <div className="ptr-meta">{held.map((m) => m.name || m.key).join(', ')}</div>}
       <p className="ptr-asset">{item.asset}</p>

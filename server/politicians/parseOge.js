@@ -13,6 +13,7 @@
 // date, and a statutory amount range, and almost every dollar-amount line
 // meets that bar.
 
+import { classifyDescribedAsset } from './nameMatch.js';
 import { canonicalAmountRange, canonicalTicker, normalizeOwner, parseUsDate } from './normalize.js';
 
 export const OGE_API = 'https://extapps2.oge.gov/201/Presiden.nsf/API.xsp/v3/rest';
@@ -68,14 +69,7 @@ const TYPE_WORD = /\b(purchase|sale|exchange)\b/i;
 const DATE_WORD = /\b(\d{1,2}\/\d{1,2}\/\d{4})\b/;
 
 function ogeAssetClass(asset, ticker) {
-  const s = String(asset || '');
-  if (/\b(call|put|option)s?\b/i.test(s)) return 'option';
-  if (/\b(bitcoin|ethereum|crypto)\b/i.test(s)) return 'crypto';
-  if (/\b(bond|note|municipal|debenture)\b/i.test(s) || /\bdue\b/i.test(s)) return 'bond';
-  if (ticker && /\b(etf|exchange traded fund)\b/i.test(s)) return 'etf';
-  if (ticker && /\b(mutual fund|fund)\b/i.test(s)) return 'fund';
-  if (ticker) return 'stock';
-  return 'other';
+  return classifyDescribedAsset(asset, { ticker });
 }
 
 function parseOgeLine(line) {
