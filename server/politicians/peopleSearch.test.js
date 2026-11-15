@@ -187,6 +187,18 @@ describe('people search SQL', () => {
     expect(dbSrc).toMatch(/CREATE INDEX IF NOT EXISTS politician_trades_person_key_fts/);
     expect(dbSrc).toMatch(/CREATE INDEX IF NOT EXISTS politician_filings_person_key_fts/);
   });
+
+  it('qualifies person_key after the identity join so Postgres can plan it', () => {
+    const { sql } = buildPeopleSearchSql('pelosi:*');
+    const identity = sql.slice(sql.indexOf('identity AS ('), sql.indexOf('SELECT i.person_key'));
+    // names and keys both have person_key. An unqualified reference is the
+    // live 500: column reference "person_key" is ambiguous.
+    expect(identity).toMatch(/JOIN keys k ON k\.person_key = names\.person_key/);
+    expect(identity).toMatch(/DISTINCT ON \(names\.person_key\)/);
+    expect(identity).toMatch(/ORDER BY names\.person_key,/);
+    expect(identity).not.toMatch(/DISTINCT ON \(person_key\)/);
+    expect(identity).not.toMatch(/ORDER BY person_key,/);
+  });
 });
 
 async function withServer(app, fn) {

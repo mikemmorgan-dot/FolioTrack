@@ -58,8 +58,9 @@ counts AS (
   GROUP BY t.person_key
 ),
 identity AS (
-  SELECT DISTINCT ON (person_key)
-         person_key, person_name, office, party, state, filer_status
+  SELECT DISTINCT ON (names.person_key)
+         names.person_key, names.person_name, names.office, names.party,
+         names.state, names.filer_status
   FROM (
     SELECT f.person_key, f.person_name, f.office, f.party, f.state, f.filer_status,
            f.filed_date, f.id, 0 AS src
@@ -70,7 +71,7 @@ identity AS (
     FROM politician_annual_filings a
   ) names
   JOIN keys k ON k.person_key = names.person_key
-  ORDER BY person_key, src ASC, filed_date DESC NULLS LAST, id DESC
+  ORDER BY names.person_key, names.src ASC, names.filed_date DESC NULLS LAST, names.id DESC
 )
 SELECT i.person_key, i.person_name, i.office, i.party, i.state, i.filer_status,
        COALESCE(c.trade_count, 0)::int AS trade_count,
