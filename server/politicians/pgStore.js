@@ -15,6 +15,7 @@ import {
   rollupFromRows,
   summaryFromSql,
 } from './summary.js';
+import { buildPeopleSearchSql, peopleFromRows, peopleSearchQuery, personFeedQuery } from './peopleSearch.js';
 
 function day(value) {
   if (value == null || value === '') return null;
@@ -674,6 +675,14 @@ export function installPgPolitician(Store) {
       hasMore: q.offset + rows.length < total,
     };
   };
+  Store.prototype.searchPoliticianPeople = async function searchPoliticianPeople(query = {}) {
+    const raw = String(query.q || '').trim().slice(0, 80);
+    const parsed = peopleSearchQuery(raw);
+    if (!parsed) return { q: raw, people: [] };
+    const { sql, params } = buildPeopleSearchSql(parsed.tsquery);
+    const { rows } = await this.q(sql, params);
+    return { q: raw, people: peopleFromRows(rows) };
+  };
   Store.prototype.getPolitician = async function getPolitician(personKey, query = {}) {
     const { rows } = await this.q(
       `SELECT person_name, office, party, state, filer_status
@@ -689,7 +698,8 @@ export function installPgPolitician(Store) {
          count(*) FILTER (WHERE tx_type = 'buy')::int AS buys,
          count(*) FILTER (WHERE tx_type = 'sell')::int AS sells,
          count(*) FILTER (WHERE tx_type = 'exchange')::int AS exchanges,
-         count(*)::int AS trades
+         count(*)::int AS trades,
+         max(disclosed_date) AS latest
        FROM politician_trades
        WHERE person_key = $1`,
       [personKey],
@@ -704,8 +714,9 @@ export function installPgPolitician(Store) {
       [personKey],
     );
     const windowQuery = normalizeSummaryQuery(query);
+    const { bounds, feedQuery } = personFeedQuery(query, personKey);
     const rollup = await this.q(PERSON_ROLLUP_SQL, [personKey, windowQuery.from, windowQuery.to]);
-    const feed = await this.listPoliticianFeed({ ...query, personKey });
+    const feed = await this.listPoliticianFeed(feedQuery);
     const c = counts.rows[0] || {};
     return {
       person: {
@@ -723,6 +734,8 @@ export function installPgPolitician(Store) {
         trades: Number(c.trades) || 0,
       },
       topTickers: top.rows.map((r) => ({ ticker: r.ticker, count: Number(r.n) || 0 })),
+      latestDisclosure: day(c.latest),
+      window: bounds ? { days: bounds.windowDays, from: bounds.from, to: bounds.to } : null,
       tickerRollup: rollupFromRows(rollup.rows, query),
       ...feed,
     };

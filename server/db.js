@@ -214,6 +214,15 @@ CREATE TABLE IF NOT EXISTS politician_trades (
 CREATE INDEX IF NOT EXISTS politician_trades_disclosed ON politician_trades (disclosed_date DESC, id DESC);
 CREATE INDEX IF NOT EXISTS politician_trades_person ON politician_trades (person_key, disclosed_date DESC);
 CREATE INDEX IF NOT EXISTS politician_trades_ticker ON politician_trades (ticker_norm) WHERE ticker_norm IS NOT NULL;
+-- Name typeahead. simple does not stem, so "pelo:*" matches Pelosi. No extension.
+CREATE INDEX IF NOT EXISTS politician_trades_person_name_fts
+  ON politician_trades USING gin (to_tsvector('simple', person_name));
+CREATE INDEX IF NOT EXISTS politician_trades_person_key_fts
+  ON politician_trades USING gin (to_tsvector('simple', replace(person_key, ':', ' ')));
+CREATE INDEX IF NOT EXISTS politician_filings_person_name_fts
+  ON politician_filings USING gin (to_tsvector('simple', person_name));
+CREATE INDEX IF NOT EXISTS politician_filings_person_key_fts
+  ON politician_filings USING gin (to_tsvector('simple', replace(person_key, ':', ' ')));
 -- Summary rankings and cluster buys filter this date range and side, then GROUP BY ticker.
 CREATE INDEX IF NOT EXISTS politician_trades_window
   ON politician_trades (disclosed_date, tx_type)
