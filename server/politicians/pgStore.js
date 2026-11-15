@@ -18,6 +18,7 @@ import {
   rollupFromRows,
   summaryFromSql,
 } from './summary.js';
+import { buildPeopleSearchSql, peopleFromRows, peopleSearchQuery, personFeedQuery, reviewItemsForPerson } from './peopleSearch.js';
 
 function day(value) {
   if (value == null || value === '') return null;
@@ -137,6 +138,7 @@ export function buildFeedFilter(query, heldNorms) {
   if (query.to) add('disclosed_date <= $?::date', query.to);
   if (query.side) add('tx_type = $?', query.side);
   if (query.ticker) add('ticker_norm = $?', query.ticker);
+  if (query.tradesOnly) where.push(`kind = 'trade'`);
   if (query.heldOnly) {
     where.push(`kind = 'trade' AND asset_class IN ('stock', 'etf', 'fund')`);
     add('ticker_norm = ANY($?::text[])', heldNorms || []);
@@ -677,6 +679,14 @@ export function installPgPolitician(Store) {
       hasMore: q.offset + rows.length < total,
     };
   };
+  Store.prototype.searchPoliticianPeople = async function searchPoliticianPeople(query = {}) {
+    const raw = String(query.q || '').trim().slice(0, 80);
+    const parsed = peopleSearchQuery(raw);
+    if (!parsed) return { q: raw, people: [] };
+    const { sql, params } = buildPeopleSearchSql(parsed.tsquery);
+    const { rows } = await this.q(sql, params);
+    return { q: raw, people: peopleFromRows(rows) };
+  };
   Store.prototype.getPolitician = async function getPolitician(personKey, query = {}) {
     const { rows } = await this.q(
       `SELECT person_name, office, party, state, filer_status
@@ -701,9 +711,18 @@ export function installPgPolitician(Store) {
          count(*) FILTER (WHERE tx_type = 'buy')::int AS buys,
          count(*) FILTER (WHERE tx_type = 'sell')::int AS sells,
          count(*) FILTER (WHERE tx_type = 'exchange')::int AS exchanges,
-         count(*)::int AS trades
+         count(*)::int AS trades,
+         max(disclosed_date) AS latest
        FROM politician_trades
        WHERE person_key = $1`,
+      [personKey],
+    );
+    const reviewRows = await this.q(
+      `SELECT id, person_key, person_name, office, party, filer_status, state,
+              filed_date, source_url, parse_note, parse_status
+       FROM politician_filings
+       WHERE person_key = $1
+         AND parse_status IN ('needs_manual_review', 'partial')`,
       [personKey],
     );
     const top = await this.q(
@@ -716,10 +735,24 @@ export function installPgPolitician(Store) {
       [personKey],
     );
     const windowQuery = normalizeSummaryQuery(query);
+    const { bounds, feedQuery } = personFeedQuery(query, personKey);
     const rollup = await this.q(PERSON_ROLLUP_SQL, [personKey, windowQuery.from, windowQuery.to]);
-    const feed = await this.listPoliticianFeed({ ...query, personKey });
+    const feed = await this.listPoliticianFeed(feedQuery);
     const c = counts.rows[0] || {};
     const holdings = await this.getPoliticianHoldings(personKey);
+    const reviews = reviewItemsForPerson(reviewRows.rows.map((r) => ({
+      id: r.id,
+      personKey: r.person_key,
+      personName: r.person_name,
+      office: r.office,
+      party: r.party,
+      filerStatus: r.filer_status,
+      state: r.state,
+      filedDate: day(r.filed_date),
+      sourceUrl: r.source_url,
+      parseNote: r.parse_note,
+      parseStatus: r.parse_status,
+    })), { from: feedQuery.from || '', to: feedQuery.to || '' });
     return {
       person: {
         personKey,
@@ -734,10 +767,14 @@ export function installPgPolitician(Store) {
         sell: Number(c.sells) || 0,
         exchange: Number(c.exchanges) || 0,
         trades: Number(c.trades) || 0,
+        review: reviewRows.rows.length,
       },
       topTickers: top.rows.map((r) => ({ ticker: r.ticker, count: Number(r.n) || 0 })),
+      latestDisclosure: day(c.latest),
+      window: bounds ? { days: bounds.windowDays, from: bounds.from, to: bounds.to } : null,
       tickerRollup: rollupFromRows(rollup.rows, query),
       holdings,
+      reviews,
       ...feed,
     };
   };

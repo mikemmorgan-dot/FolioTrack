@@ -10,6 +10,19 @@ export function isFundservCode(symbol) {
   return /^[A-Z]{2,4}\d{3,5}$/.test(s);
 }
 
+// Listed stocks and ETFs can be priced month by month from the provider
+// chain. A one-point NAV does not change that. Cash, private/alt sleeves,
+// mutual funds, and Fundserv codes cannot, and must not set the compare window.
+export function isMonthlyPriceableInstrument(inst) {
+  if (!inst) return false;
+  const type = inst.type;
+  const symbol = String(inst.symbol || '').trim().toUpperCase();
+  if (!symbol || symbol === 'CASH' || type === 'cash') return false;
+  if (type === 'alt' || type === 'mutualfund') return false;
+  if (isFundservCode(symbol)) return false;
+  return type === 'stock' || type === 'etf';
+}
+
 export function inferListing(symbol) {
   const raw = String(symbol || '').trim().toUpperCase();
   if (!raw) return { currency: null, exchange: null, region: null };

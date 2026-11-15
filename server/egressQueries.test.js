@@ -3,6 +3,8 @@ import {
   PRICE_SNAPSHOT_SQL,
   NAV_SNAPSHOT_SQL,
   PRICE_WINDOW_SQL,
+  PRICE_MONTH_END_SQL,
+  NAV_MONTH_END_SQL,
   NAV_WINDOW_SQL,
   PRICE_META_SQL,
   PRICE_META_UPSERT_SQL,
@@ -35,6 +37,8 @@ describe('history queries do not ship the price blob', () => {
     PRICE_SNAPSHOT_SQL,
     NAV_SNAPSHOT_SQL,
     PRICE_WINDOW_SQL,
+    PRICE_MONTH_END_SQL,
+    NAV_MONTH_END_SQL,
     NAV_WINDOW_SQL,
     PRICE_POINTS_UPSERT_SQL,
     NAV_UPSERT_SQL,
@@ -62,6 +66,15 @@ describe('history queries do not ship the price blob', () => {
     expect(WEEKS_52_DAYS).toBe(364);
     expect(NAV_SNAPSHOT_SQL).toMatch(/ORDER BY nav DESC, date DESC\s+LIMIT 1/);
     expect(NAV_SNAPSHOT_SQL).toMatch(/ORDER BY date DESC\s+LIMIT 1/);
+  });
+
+  it('samples month-end closes in the database for compare risk', () => {
+    expect(PRICE_MONTH_END_SQL).toMatch(/DISTINCT ON \(date_trunc\('month', date\)\)/);
+    expect(PRICE_MONTH_END_SQL).toMatch(/date >= \$2::date/);
+    expect(PRICE_MONTH_END_SQL).toMatch(/ORDER BY date_trunc\('month', date\), date DESC/);
+    expect(PRICE_MONTH_END_SQL).not.toMatch(/jsonb_array_elements/);
+    expect(NAV_MONTH_END_SQL).toMatch(/DISTINCT ON \(date_trunc\('month', date\)\)/);
+    expect(NAV_MONTH_END_SQL).toMatch(/\$2::date IS NULL OR date >= \$2::date/);
   });
 
   it('bounds a chart or return window and leaves max unbounded', () => {

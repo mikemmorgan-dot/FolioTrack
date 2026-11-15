@@ -10,6 +10,7 @@ import { normalizePublishedReturns } from './factsheet/publishedReturns.js';
 import { coerceAlertSettings, applyAlertSettingsPatch } from './alerts/settings.js';
 import { installMemoryPolitician } from './politicians/memoryStore.js';
 import { snapshotFromSeries } from './alerts/drawdown.js';
+import { monthEndCloses } from './perf.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data', 'store.json');
@@ -172,6 +173,11 @@ export class JsonStore {
       return true;
     });
   }
+  async getMonthEndNav(instrumentId, opts = {}) {
+    const rows = await this.getNavSeries(instrumentId, opts);
+    return monthEndCloses(rows.map((p) => ({ date: p.date, close: p.nav })))
+      .map((p) => ({ date: p.date, nav: p.close }));
+  }
   async latestNav(instrumentId) {
     const s = this.db.navSeries[instrumentId] || [];
     return s.length ? s[s.length - 1] : null;
@@ -196,6 +202,11 @@ export class JsonStore {
         return true;
       }),
     };
+  }
+  async getMonthEndPrices(symbol, opts = {}) {
+    const rec = await this.getPriceHistory(symbol, opts);
+    if (!rec) return null;
+    return { symbol: rec.symbol, series: monthEndCloses(rec.series) };
   }
   async getPriceHistoryMeta(symbol) {
     const rec = await this.getPriceHistory(symbol);

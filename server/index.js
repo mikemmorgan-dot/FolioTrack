@@ -34,6 +34,7 @@ import { periodReturnsFromSeries } from './periodReturns.js';
 import { createPriceUploadRouter } from './historyUpload.js';
 import { publishedToPeriodRow } from './factsheet/publishedReturns.js';
 import { buildCompare } from './compare.js';
+import { createCompareRiskHandler } from './compareRisk.js';
 import { createEmailSender } from './alerts/email.js';
 import { createAlertService } from './alerts/check.js';
 import { createAlertRouter } from './alerts/http.js';
@@ -45,7 +46,8 @@ import { runPoliticianPoll } from './politicians/ingest.js';
 import { createPoliticianCoordinator } from './politicians/runner.js';
 import { startPoliticianScheduler } from './politicians/schedule.js';
 import { listenThenStart } from './boot.js';
-import { egressMiddleware, openEgressScope } from './egress.js';
+import { egressMiddleware, logEgress, openEgressScope } from './egress.js';
+import { createHistoryBackfill, startHistoryBackfill } from './historyBackfill.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -121,6 +123,11 @@ app.get('/api/compare', async (_req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// Current-version risk for every model on one shared month range.
+// Registered before /api/models/:key/risk so "compare" is not captured as a key.
+// Reads month-end rows from the price cache only — no live provider calls.
+app.get('/api/models/compare/risk', createCompareRiskHandler(store));
 
 app.get('/api/models/:key', async (req, res) => {
   const m = await store.getModel(req.params.key);
@@ -778,6 +785,18 @@ void (async () => {
   startAlertScheduler({
     run: () => openEgressScope('scheduler alert-check', () => alertRuns.start({ refresh: true, kind: 'check' })),
     lastRunAt: alertRuns.status().lastRunAt,
+    logger: console,
+  });
+  const historyBackfill = createHistoryBackfill({
+    store,
+    getHistory: (symbol, range, opts) => cachedHistory(symbol, range || 'max', opts),
+  });
+  startHistoryBackfill({
+    run: () => openEgressScope('scheduler history-backfill', async () => {
+      const summary = await historyBackfill.run();
+      logEgress('scheduler history-backfill');
+      return summary;
+    }),
     logger: console,
   });
   startPoliticianScheduler({

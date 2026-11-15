@@ -24,6 +24,13 @@ async function j(url, opts) {
 export const api = {
   models: () => j('/api/models'),
   compare: () => j('/api/compare'),
+  compareRisk: ({ period, rf = 4 } = {}) => {
+    const p = new URLSearchParams();
+    if (period) p.set('period', period);
+    if (rf != null && rf !== '') p.set('rf', String(rf));
+    const qs = p.toString();
+    return j(`/api/models/compare/risk${qs ? `?${qs}` : ''}`);
+  },
   model: (key) => j(`/api/models/${key}`),
   modelQuotes: (key) => j(`/api/models/${key}/quotes`),
   performance: (key) => j(`/api/models/${key}/performance`),
@@ -117,6 +124,7 @@ export const api = {
     const qs = p.toString();
     return j(`/api/politician-trades${qs ? `?${qs}` : ''}`);
   },
+  politicianPeople: (q) => j(`/api/politician-trades/people?q=${encodeURIComponent(q || '')}`),
   politician: (personKey, query = {}) => {
     const p = new URLSearchParams();
     for (const [key, value] of Object.entries(query)) {

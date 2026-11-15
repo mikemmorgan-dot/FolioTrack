@@ -161,6 +161,27 @@ WHERE symbol = $1
 ORDER BY date
 `;
 
+// One row per calendar month — the last close in that month. A 5-year
+// compare is about 60 rows per symbol, not ~1,260 daily closes. $2 null
+// means the full stored history (still month-ends only).
+export const PRICE_MONTH_END_SQL = `
+SELECT DISTINCT ON (date_trunc('month', date))
+  date, close
+FROM price_points
+WHERE symbol = $1
+  AND ($2::date IS NULL OR date >= $2::date)
+ORDER BY date_trunc('month', date), date DESC
+`;
+
+export const NAV_MONTH_END_SQL = `
+SELECT DISTINCT ON (date_trunc('month', date))
+  date, nav
+FROM nav_series
+WHERE instrument_id = $1
+  AND ($2::date IS NULL OR date >= $2::date)
+ORDER BY date_trunc('month', date), date DESC
+`;
+
 export const NAV_WINDOW_SQL = `
 SELECT date, nav
 FROM nav_series

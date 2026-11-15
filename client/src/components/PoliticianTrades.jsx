@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import HoldingsChart from './HoldingsChart.jsx';
+import PoliticianSearch from './PoliticianSearch.jsx';
 import PoliticianSummary, { NetLine, NET_TIP, signClass } from './PoliticianSummary.jsx';
 
 const OFFICES = [
@@ -144,24 +145,51 @@ function PersonView({ personKey, initialWindow = 30, onBack }) {
   const [offset, setOffset] = useState(0);
   const [items, setItems] = useState([]);
   const [windowDays, setWindowDays] = useState(initialWindow);
+  const [scope, setScope] = useState('window');
+  const [widened, setWidened] = useState(false);
+  const [seenKey, setSeenKey] = useState(personKey);
+  if (seenKey !== personKey) {
+    setSeenKey(personKey);
+    setData(null);
+    setErr(null);
+    setOffset(0);
+    setItems([]);
+    setWindowDays(initialWindow);
+    setScope('window');
+    setWidened(false);
+  }
 
   useEffect(() => {
     let cancel = false;
     setErr(null);
-    api.politician(personKey, { offset, limit: 40, window: windowDays })
+    const query = { offset, limit: 40, window: windowDays };
+    if (scope === 'all') query.feed = 'all';
+    api.politician(personKey, query)
       .then((body) => {
         if (cancel) return;
+        const outsideWindow = scope === 'window'
+          && offset === 0
+          && (body.total === 0)
+          && ((body.counts?.trades || 0) > 0);
+        if (outsideWindow) {
+          setWidened(true);
+          setScope('all');
+          return;
+        }
         setData(body);
         setItems((prev) => (offset === 0 ? body.items : prev.concat(body.items)));
       })
       .catch((e) => { if (!cancel) setErr(e.message); });
     return () => { cancel = true; };
-  }, [personKey, offset, windowDays]);
+  }, [personKey, offset, scope, windowDays]);
 
   function changeWindow(days) {
     if (days === windowDays) return;
     setOffset(0);
     setItems([]);
+    setData(null);
+    setScope('window');
+    setWidened(false);
     setWindowDays(days);
   }
 
@@ -178,12 +206,33 @@ function PersonView({ personKey, initialWindow = 30, onBack }) {
       </header>
       <div className="editor-body">
         {err && <div className="banner">{err}</div>}
+        {!data && !err && <p className="ed-hint">Loading…</p>}
         {person && (
           <>
             <p className="ed-hint">
               {officeName(person.office)}{party ? ` · ${party}` : ''}{person.state ? ` · ${person.state}` : ''}{person.filerStatus === 'candidate' ? ' · Candidate' : ''}
             </p>
             <HoldingsChart holdings={data.holdings} />
+            {widened && (
+              <p className="ptr-note" role="status">
+                No disclosures in the last {windowDays} days.
+                {data.latestDisclosure ? ` Latest disclosure was ${pretty(data.latestDisclosure)}.` : ''}
+                {' '}Showing every filing.
+              </p>
+            )}
+            {!widened && scope === 'window' && (
+              <p className="ptr-note">
+                Last {windowDays} days
+                {data.window?.from ? ` (${pretty(data.window.from)} – ${pretty(data.window.to)})` : ''}.
+                {' '}Counts below are every filing.
+                {' '}
+                <button
+                  type="button"
+                  className="ptr-text-btn"
+                  onClick={() => { setOffset(0); setItems([]); setScope('all'); }}
+                >Show every filing</button>
+              </p>
+            )}
             <div className="ptr-stats">
               <div><span className="ptr-stat-n">{data.counts?.buy ?? 0}</span><span>Buys</span></div>
               <div><span className="ptr-stat-n">{data.counts?.sell ?? 0}</span><span>Sells</span></div>
@@ -225,10 +274,22 @@ function PersonView({ personKey, initialWindow = 30, onBack }) {
           </>
         )}
         <div className="ed-section">Trades</div>
-        <p className="ptr-note">Rows without a ticker, including bonds, stay in this list.</p>
+        <p className="ptr-note">Rows without a ticker, including bonds, stay in this list. The count is trades only.</p>
         {items.map((item) => <TradeCard key={item.id} item={item} onPerson={() => {}} />)}
         {data?.hasMore && (
           <button type="button" className="rp-run alert-secondary" onClick={() => setOffset((n) => n + 40)}>Load more</button>
+        )}
+        {(data?.reviews || []).length > 0 && (
+          <>
+            <div className="ed-section">Needs review</div>
+            <p className="ptr-note">
+              {data.reviews.length === 1
+                ? 'This filing is not an extra trade.'
+                : `These ${data.reviews.length} filings are not extra trades.`}
+              {' '}A partly read filing&apos;s validated rows are already in the trade list. A filing with no validated row is listed only here.
+            </p>
+            {data.reviews.map((item) => <TradeCard key={item.id} item={item} onPerson={() => {}} />)}
+          </>
         )}
       </div>
     </>
@@ -390,6 +451,7 @@ export default function PoliticianTrades({ onClose, initialTicker = '' }) {
         </button>
       </header>
       <div className="editor-body">
+        <PoliticianSearch onPerson={setPersonKey} onTicker={openTicker} />
         <p className="ed-hint">
           Public stock trades from House members and House candidates, senators, the President, and the Vice President. House candidates stay in the feed and are labeled Candidate.
           Amounts stay the reported range. Scanned presidential filings are OCR’d one page at a time; a row that does not validate stays linked for review. An OCR label marks rows read from a scan.
