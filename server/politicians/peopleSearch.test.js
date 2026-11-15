@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { createPoliticianRouter } from './http.js';
 import { memoryMethods, politicianBucket } from './memoryStore.js';
 import { buildPeopleSearchSql, peopleSearchQuery, personNameMatches } from './peopleSearch.js';
+import { buildAnnualFiling, buildHoldingRows } from './annualRecords.js';
 import { buildFilingRecord, buildTradeRows } from './records.js';
 
 function memoryStore() {
@@ -228,6 +229,80 @@ describe('GET /api/politician-trades/people', () => {
       expect(page.person.personName).toBe('Nancy Pelosi');
       expect(page.counts.trades).toBe(3);
       expect(page.latestDisclosure).toBe('2026-11-06');
+      expect(page.holdings.status).toBe('none');
     });
+  });
+
+  it('finds a filer who has an annual disclosure and no periodic trades', async () => {
+    const store = memoryStore();
+    const filing = buildAnnualFiling({
+      source: 'house',
+      filingKey: '2025:1',
+      first: 'Nancy',
+      last: 'Pelosi',
+      office: 'house',
+      party: 'D',
+      state: 'CA',
+      reportYear: 2025,
+      filedDate: '2026-05-15',
+      sourceUrl: 'https://example.test/annual',
+      parsed: { status: 'parsed' },
+    });
+    await store.insertAnnualBundle(filing, buildHoldingRows(filing, {
+      holdings: [{
+        asset: 'Apple Inc.',
+        ticker: 'AAPL',
+        assetClass: 'stock',
+        owner: 'spouse',
+        valueRange: '$1,001 - $15,000',
+        valueMin: 1001,
+        valueMax: 15000,
+        valueMid: 8001,
+        valueBound: 'range',
+      }],
+    }));
+    const found = await store.searchPoliticianPeople({ q: 'pelosi' });
+    expect(found.people).toHaveLength(1);
+    expect(found.people[0]).toMatchObject({ personName: 'Nancy Pelosi', tradeCount: 0 });
+    const person = await store.getPolitician(found.people[0].personKey);
+    expect(person.counts.trades).toBe(0);
+    expect(person.holdings.status).toBe('parsed');
+    expect(person.holdings.positions[0].ticker).toBe('AAPL');
+  });
+
+  it('does not count a partly read filing as another trade', async () => {
+    const store = memoryStore();
+    const partial = buildFilingRecord({
+      source: 'oge',
+      filingKey: 'partial-1',
+      first: 'Donald',
+      last: 'Trump',
+      office: 'president',
+      filedDate: '2026-10-08',
+      sourceUrl: 'https://example.test/partial',
+      parsed: { status: 'partial', note: 'OCR read 1 row (2 unreadable rows were not guessed).' },
+    });
+    await store.insertPoliticianBundle(partial, buildTradeRows(partial, { trades: [trade('AAPL')] }));
+    const unread = buildFilingRecord({
+      source: 'oge',
+      filingKey: 'unread-1',
+      first: 'Donald',
+      last: 'Trump',
+      office: 'president',
+      filedDate: '2026-03-04',
+      sourceUrl: 'https://example.test/unread',
+      parsed: { status: 'needs_manual_review', note: 'OCR could not validate any transaction row. Open the filing to review it.' },
+    });
+    await store.insertPoliticianBundle(unread, []);
+    const person = await store.getPolitician(partial.personKey);
+    expect(person.counts.trades).toBe(1);
+    expect(person.counts.review).toBe(2);
+    expect(person.total).toBe(1);
+    expect(person.items.map((item) => item.kind)).toEqual(['trade']);
+    expect(person.reviews).toHaveLength(2);
+    expect(person.reviews.map((item) => item.parseNote)).toEqual([
+      'OCR read 1 row (2 unreadable rows were not guessed).',
+      'OCR could not validate any transaction row. Open the filing to review it.',
+    ]);
   });
 });

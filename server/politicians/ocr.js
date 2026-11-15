@@ -163,6 +163,40 @@ export async function ocrPdfFile(pdfPath, {
   };
 }
 
+// One page at a time, words with positions. Used for scanned 278e asset
+// tables. The 278-T trade reader stays on ocrPdfFile.
+export async function ocrPdfWords(pdfPath, {
+  startPage = 1,
+  maxPages = 25,
+  onPage,
+} = {}) {
+  const total = await pageCount(pdfPath);
+  const last = Math.min(total || startPage, startPage + maxPages - 1);
+  let pagesRead = 0;
+  const dir = await mkdtemp(join(tmpdir(), 'folio-ocr-'));
+  try {
+    for (let page = startPage; page <= last; page += 1) {
+      const png = await renderPage(pdfPath, page, dir);
+      let words = [];
+      try {
+        const tsv = await run('tesseract', [png, 'stdout', 'tsv'], { timeoutMs: 90_000 });
+        words = wordsFromTsv(tsv);
+      } finally {
+        await rm(png, { force: true });
+      }
+      pagesRead += 1;
+      if (onPage) await onPage({ page, pageCount: total, words });
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+  return {
+    pageCount: total,
+    pagesRead,
+    finished: pagesRead > 0 && startPage + pagesRead - 1 >= (total || 0),
+  };
+}
+
 export async function writePdfTemp(bytes) {
   const dir = await mkdtemp(join(tmpdir(), 'folio-pdf-'));
   const pdfPath = join(dir, 'filing.pdf');

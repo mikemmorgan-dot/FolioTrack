@@ -45,6 +45,9 @@ WITH keys AS (
   UNION
   SELECT person_key FROM politician_filings
   WHERE ${where}
+  UNION
+  SELECT person_key FROM politician_annual_filings
+  WHERE ${where}
 ),
 counts AS (
   SELECT t.person_key,
@@ -55,11 +58,19 @@ counts AS (
   GROUP BY t.person_key
 ),
 identity AS (
-  SELECT DISTINCT ON (f.person_key)
-         f.person_key, f.person_name, f.office, f.party, f.state, f.filer_status
-  FROM politician_filings f
-  JOIN keys k ON k.person_key = f.person_key
-  ORDER BY f.person_key, f.filed_date DESC NULLS LAST, f.id DESC
+  SELECT DISTINCT ON (person_key)
+         person_key, person_name, office, party, state, filer_status
+  FROM (
+    SELECT f.person_key, f.person_name, f.office, f.party, f.state, f.filer_status,
+           f.filed_date, f.id, 0 AS src
+    FROM politician_filings f
+    UNION ALL
+    SELECT a.person_key, a.person_name, a.office, a.party, a.state, a.filer_status,
+           a.filed_date, a.id, 1 AS src
+    FROM politician_annual_filings a
+  ) names
+  JOIN keys k ON k.person_key = names.person_key
+  ORDER BY person_key, src ASC, filed_date DESC NULLS LAST, id DESC
 )
 SELECT i.person_key, i.person_name, i.office, i.party, i.state, i.filer_status,
        COALESCE(c.trade_count, 0)::int AS trade_count,
@@ -92,7 +103,47 @@ export function personFeedQuery(query = {}, personKey) {
     feedQuery.from = bounds.from;
     feedQuery.to = bounds.to;
   }
+  // The person list total is trades. Partly read filings already contributed
+  // those trades; a filing with no validated row is returned separately.
+  feedQuery.tradesOnly = true;
   return { bounds, feedQuery, all };
+}
+
+export function reviewItemsForPerson(filings, { from = '', to = '' } = {}) {
+  return (filings || [])
+    .filter((filing) => filing.parseStatus === 'needs_manual_review' || filing.parseStatus === 'partial')
+    .filter((filing) => {
+      const day = filing.filedDate || '';
+      if (from && (!day || day < from)) return false;
+      if (to && (!day || day > to)) return false;
+      return true;
+    })
+    .sort((a, b) => String(b.filedDate || '').localeCompare(String(a.filedDate || ''))
+      || String(b.id).localeCompare(String(a.id)))
+    .map((filing) => ({
+      kind: 'review',
+      id: filing.id,
+      personKey: filing.personKey,
+      personName: filing.personName,
+      office: filing.office,
+      party: filing.party || null,
+      filerStatus: filing.filerStatus || null,
+      state: filing.state || null,
+      owner: null,
+      ticker: null,
+      asset: null,
+      assetClass: null,
+      txType: null,
+      partial: filing.parseStatus === 'partial',
+      txDate: null,
+      disclosedDate: filing.filedDate || null,
+      lagDays: null,
+      amountRange: null,
+      sourceUrl: filing.sourceUrl,
+      parseNote: filing.parseNote || null,
+      ocr: false,
+      ocrConfidence: null,
+    }));
 }
 
 function isoDay(value) {

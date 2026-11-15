@@ -4,6 +4,9 @@
 
 import { currentVersionOf } from '../util.js';
 import { canonicalTicker, matchableAssetClass } from './normalize.js';
+import { isReadableAnnual, selectCurrentAnnual } from './annualRecords.js';
+import { presentHoldings } from './holdingsView.js';
+import { heldIndex } from './records.js';
 import {
   OCR_CLAIM_MS,
   OCR_FAILED_NOTE,
@@ -19,6 +22,7 @@ import {
   peopleSearchQuery,
   personFeedQuery,
   personNameMatches,
+  reviewItemsForPerson,
 } from './peopleSearch.js';
 
 export const FEED_LIMIT_DEFAULT = 40;
@@ -29,7 +33,23 @@ export function politicianBucket(db) {
   if (!db.politicianFilings) db.politicianFilings = {};
   if (!Array.isArray(db.politicianTrades)) db.politicianTrades = [];
   if (!db.politicianPoll || typeof db.politicianPoll !== 'object') db.politicianPoll = {};
+  if (!db.politicianAnnualFilings) db.politicianAnnualFilings = {};
+  if (!Array.isArray(db.politicianHoldings)) db.politicianHoldings = [];
+  if (!db.politicianAnnual || typeof db.politicianAnnual !== 'object') db.politicianAnnual = {};
   return db;
+}
+
+function holdingsForPerson(db, personKey) {
+  const filings = Object.values(db.politicianAnnualFilings || {}).filter((row) => row.personKey === personKey);
+  const { current } = selectCurrentAnnual(filings);
+  const holdings = current && isReadableAnnual(current)
+    ? (db.politicianHoldings || []).filter((row) => row.filingId === current.id)
+    : [];
+  return presentHoldings({
+    filings,
+    holdings,
+    held: heldIndex(heldSymbolsFromDb(db)),
+  });
 }
 
 export function filingId(source, filingKey) {
@@ -59,7 +79,8 @@ export function normalizeFeedQuery(query = {}) {
   const personKey = String(query.personKey || '').trim().slice(0, 120);
   const heldOnly = query.heldOnly === true || query.heldOnly === '1';
   const filer = query.filer === 'member' || query.filer === 'candidate' ? query.filer : '';
-  return { limit, offset, office, party, side, q, ticker, from, to, personKey, heldOnly, filer };
+  const tradesOnly = query.tradesOnly === true || query.tradesOnly === '1';
+  return { limit, offset, office, party, side, q, ticker, from, to, personKey, heldOnly, filer, tradesOnly };
 }
 
 function officeOk(rowOffice, filter) {
@@ -81,6 +102,7 @@ export function filterFeedRows(rows, query, heldNorms = null) {
     if (query.to && (!row.disclosedDate || row.disclosedDate > query.to)) return false;
     if (query.side && row.txType !== query.side) return false;
     if (query.ticker && row.tickerNorm !== query.ticker) return false;
+    if (query.tradesOnly && row.kind !== 'trade') return false;
     if (query.heldOnly || held) {
       if (row.kind !== 'trade') return false;
       if (!matchableAssetClass(row.assetClass)) return false;
@@ -380,6 +402,9 @@ export const memoryMethods = {
     for (const trade of db.politicianTrades) {
       touch(trade, trade.disclosedDate || '', true);
     }
+    for (const filing of Object.values(db.politicianAnnualFilings || {})) {
+      touch(filing, filing.filedDate || '', false);
+    }
     const people = [...byKey.values()]
       .map(({ stamp, ...person }) => person)
       .sort((a, b) => b.tradeCount - a.tradeCount || a.personName.localeCompare(b.personName) || a.personKey.localeCompare(b.personKey))
@@ -393,14 +418,21 @@ export const memoryMethods = {
       .filter((f) => f.personKey === personKey)
       .sort((a, b) => ((a.filedDate || '') < (b.filedDate || '') ? 1 : (a.filedDate || '') > (b.filedDate || '') ? -1 : 0));
     const filing = filings[0];
-    if (!trades.length && !filing) return null;
-    const sample = filing || trades[0];
+    const annuals = Object.values(db.politicianAnnualFilings || {}).filter((row) => row.personKey === personKey);
+    if (!trades.length && !filing && !annuals.length) return null;
+    const sample = filing || trades[0] || annuals[0];
     const dated = [
       ...trades.map((t) => ({ status: t.filerStatus, date: t.disclosedDate || '' })),
       ...filings.map((f) => ({ status: f.filerStatus, date: f.filedDate || '' })),
     ].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
     const filerStatus = dated.find((row) => row.status)?.status || null;
-    const counts = { buy: 0, sell: 0, exchange: 0, trades: trades.length };
+    const counts = {
+      buy: 0,
+      sell: 0,
+      exchange: 0,
+      trades: trades.length,
+      review: filings.filter((f) => f.parseStatus === 'needs_manual_review' || f.parseStatus === 'partial').length,
+    };
     const byTicker = new Map();
     let latestDisclosure = null;
     for (const trade of trades) {
@@ -425,6 +457,8 @@ export const memoryMethods = {
       ? new Set(heldSymbolsFromDb(this.db).map((h) => h.tickerNorm).filter(Boolean))
       : null;
     const feed = pageFeed(filterFeedRows(feedRows(db), q, held), q);
+    const reviews = reviewItemsForPerson(filings, { from: q.from, to: q.to });
+    const holdings = holdingsForPerson(db, personKey);
     return {
       person: {
         personKey,
@@ -439,8 +473,85 @@ export const memoryMethods = {
       latestDisclosure,
       window: bounds ? { days: bounds.windowDays, from: bounds.from, to: bounds.to } : null,
       tickerRollup,
+      holdings,
+      reviews,
       ...feed,
     };
+  },
+  async getAnnualState() {
+    return this.db.politicianAnnual || {};
+  },
+  async setAnnualState(state) {
+    this.db.politicianAnnual = state || {};
+    this.persist();
+    return this.db.politicianAnnual;
+  },
+  async existingAnnualKeys(source, keys) {
+    const want = new Set(keys || []);
+    const found = [];
+    for (const filing of Object.values(this.db.politicianAnnualFilings || {})) {
+      if (filing.source === source && want.has(filing.filingKey)) found.push(filing.filingKey);
+    }
+    return found;
+  },
+  async insertAnnualBundle(filing, holdings = []) {
+    politicianBucket(this.db);
+    const id = filing.id;
+    const existing = this.db.politicianAnnualFilings[id];
+    if (existing && existing.parseStatus !== 'pending_ocr' && existing.parseStatus !== 'ocr_running') {
+      return { created: false, holdings: 0 };
+    }
+    if (existing) {
+      this.db.politicianHoldings = this.db.politicianHoldings.filter((row) => row.filingId !== id);
+    }
+    this.db.politicianAnnualFilings[id] = { ...filing, id };
+    for (const holding of holdings) this.db.politicianHoldings.push(holding);
+    this.persist();
+    return { created: !existing, holdings: holdings.length };
+  },
+  async listAnnualFilingsForPerson(personKey) {
+    return Object.values(this.db.politicianAnnualFilings || {}).filter((row) => row.personKey === personKey);
+  },
+  async listAnnualFilingSummaries() {
+    return Object.values(this.db.politicianAnnualFilings || {}).map((row) => ({ ...row }));
+  },
+  async listHoldingsForFiling(filingId) {
+    return (this.db.politicianHoldings || []).filter((row) => row.filingId === filingId).map((row) => ({ ...row }));
+  },
+  async getPoliticianHoldings(personKey) {
+    return holdingsForPerson(this.db, personKey);
+  },
+  async touchAnnualFiling(id, patch) {
+    const row = this.db.politicianAnnualFilings[id];
+    if (!row) return null;
+    Object.assign(row, patch);
+    this.persist();
+    return row;
+  },
+  async appendAnnualHoldings(filingId, rows = []) {
+    const have = (this.db.politicianHoldings || []).filter((row) => row.filingId === filingId);
+    let n = have.reduce((max, row) => Math.max(max, row.rowIndex || 0), 0);
+    for (const row of rows) {
+      n += 1;
+      this.db.politicianHoldings.push({
+        ...row,
+        filingId,
+        rowIndex: n,
+        id: `${filingId}:${n}`,
+      });
+    }
+    if (rows.length) this.persist();
+    return { inserted: rows.length };
+  },
+  async listPendingAnnualOcr({ limit = 5, now = new Date() } = {}) {
+    const nowMs = now instanceof Date ? now.getTime() : Date.parse(now);
+    return Object.values(this.db.politicianAnnualFilings || {})
+      .filter((row) => row.source === 'oge' && (
+        row.parseStatus === 'pending_ocr'
+        || (row.parseStatus === 'ocr_running' && !claimFresh(row, nowMs))
+      ))
+      .sort((a, b) => String(b.filedDate || '').localeCompare(String(a.filedDate || '')))
+      .slice(0, limit);
   },
   async listHeldPoliticianSymbols() {
     return heldSymbolsFromDb(this.db);

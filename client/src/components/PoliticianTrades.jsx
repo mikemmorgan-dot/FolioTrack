@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
+import HoldingsChart from './HoldingsChart.jsx';
 import PoliticianSearch from './PoliticianSearch.jsx';
 import PoliticianSummary, { NetLine, NET_TIP, signClass } from './PoliticianSummary.jsx';
 
@@ -211,6 +212,7 @@ function PersonView({ personKey, initialWindow = 30, onBack }) {
             <p className="ed-hint">
               {officeName(person.office)}{party ? ` · ${party}` : ''}{person.state ? ` · ${person.state}` : ''}{person.filerStatus === 'candidate' ? ' · Candidate' : ''}
             </p>
+            <HoldingsChart holdings={data.holdings} />
             {widened && (
               <p className="ptr-note" role="status">
                 No disclosures in the last {windowDays} days.
@@ -272,10 +274,22 @@ function PersonView({ personKey, initialWindow = 30, onBack }) {
           </>
         )}
         <div className="ed-section">Trades</div>
-        <p className="ptr-note">Rows without a ticker, including bonds, stay in this list.</p>
+        <p className="ptr-note">Rows without a ticker, including bonds, stay in this list. The count is trades only.</p>
         {items.map((item) => <TradeCard key={item.id} item={item} onPerson={() => {}} />)}
         {data?.hasMore && (
           <button type="button" className="rp-run alert-secondary" onClick={() => setOffset((n) => n + 40)}>Load more</button>
+        )}
+        {(data?.reviews || []).length > 0 && (
+          <>
+            <div className="ed-section">Needs review</div>
+            <p className="ptr-note">
+              {data.reviews.length === 1
+                ? 'This filing is not an extra trade.'
+                : `These ${data.reviews.length} filings are not extra trades.`}
+              {' '}A partly read filing&apos;s validated rows are already in the trade list. A filing with no validated row is listed only here.
+            </p>
+            {data.reviews.map((item) => <TradeCard key={item.id} item={item} onPerson={() => {}} />)}
+          </>
         )}
       </div>
     </>
