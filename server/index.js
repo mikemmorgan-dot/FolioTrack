@@ -45,6 +45,13 @@ import { createPoliticianRouter } from './politicians/http.js';
 import { runPoliticianPoll } from './politicians/ingest.js';
 import { createPoliticianCoordinator } from './politicians/runner.js';
 import { startPoliticianScheduler } from './politicians/schedule.js';
+import { startAnnualIngest } from './politicians/annualSchedule.js';
+import {
+  ANNUAL_BACKFILL_BUDGET_MS,
+  ANNUAL_BACKFILL_INITIAL_DELAY_MS,
+  ANNUAL_BACKFILL_INTERVAL_MS,
+  runAnnualSlice,
+} from './politicians/annualIngest.js';
 import { listenThenStart } from './boot.js';
 import { egressMiddleware, logEgress, openEgressScope } from './egress.js';
 import { createHistoryBackfill, startHistoryBackfill } from './historyBackfill.js';
@@ -808,6 +815,20 @@ void (async () => {
     getState: () => store.getPoliticianPollState().catch(() => ({})),
     intervalMs: politicianCfg.intervalMs,
     initialDelayMs: politicianCfg.initialDelayMs,
+    logger: console,
+  });
+  startAnnualIngest({
+    run: () => openEgressScope('scheduler annual-ingest', () => runAnnualSlice({
+      store,
+      delayMs: politicianCfg.delayMs,
+      deadline: Date.now() + ANNUAL_BACKFILL_BUDGET_MS,
+      maxPdfBytes: politicianCfg.maxPdfBytes,
+      pace: 'backfill',
+      logger: console,
+    })),
+    getState: () => store.getAnnualState().catch(() => ({})),
+    intervalMs: ANNUAL_BACKFILL_INTERVAL_MS,
+    initialDelayMs: ANNUAL_BACKFILL_INITIAL_DELAY_MS,
     logger: console,
   });
   try {
