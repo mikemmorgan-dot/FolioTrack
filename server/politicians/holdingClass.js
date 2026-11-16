@@ -2,7 +2,7 @@
 // https://fd.house.gov/reference/asset-type-codes.aspx. A code that is not
 // in that list stays "other" rather than being folded into a nearby class.
 
-import { isDebtDescription, isExchangeTraded } from './nameMatch.js';
+import { isDebtDescription, isExchangeTraded, isPrivateFund } from './nameMatch.js';
 
 export const HOLDING_CLASSES = [
   'stock',
@@ -99,18 +99,158 @@ export function classFromSenateType(type, subtype, name) {
   return textClass(`${type || ''} ${subtype || ''} ${name || ''}`);
 }
 
+// A percent that is ownership ("25% equity interest"), not a coupon.
+function ownershipStake(text) {
+  return /\d+(?:\.\d+)?\s*%\s*(?:equity|ownership|stake)\b/i.test(text)
+    || /\b(?:equity|ownership|percentage)\s+interest\b/i.test(text)
+    || /\b\d+(?:\.\d+)?\s*%\s+interest\s+in\b/i.test(text);
+}
+
+// Coupons, due dates, and the abbreviations 278e brokerage lines use for
+// munis and debentures ("DEBS", "BDS", "NTS", "DTD", "BE/R/").
+function explicitDebt(text) {
+  if (/\b(?:bonds?|notes?|debentures?|debs?|bds|nts|munis?|municipals?)\b/i.test(text)) return true;
+  if (/\bcallable\b/i.test(text)) return true;
+  if (/\btreasur/i.test(text)) return true;
+  if (/\bdue\b/i.test(text)) return true;
+  if (/\bDTD\b/.test(text) || /BE\/R\//.test(text) || /\bB\/E\b/.test(text)) return true;
+  if (/\b(?:CNTY|COUNTY|PARISH|INDPT|ISD)\b/i.test(text)) return true;
+  if (/\bSCH\s+(?:DIST|BRD|BD)\b/i.test(text)) return true;
+  if (/\b(?:AUTH|AGENCY)\b/i.test(text) && /\b(?:REV|FACS|HLTH|HEALTH|HSG|WTR|SWR|ELEC|UTIL|IMP)\b/i.test(text)) return true;
+  if (/\b(?:WTR|SWR|ELEC|UTIL|PWR)\b/i.test(text) && /\bREV\b/i.test(text)) return true;
+  if (/\bFING\s+AGY\b/i.test(text) || /\bGO\s+BDS\b/i.test(text)) return true;
+  if (/\bST\b/i.test(text) && /\b(?:HLTH|HEALTH|EDL|EDUC|HWY|TPK)\b/i.test(text)) return true;
+  return false;
+}
+
+function describedDebt(text) {
+  if (explicitDebt(text)) return true;
+  if (ownershipStake(text)) return false;
+  return isDebtDescription(text);
+}
+
+// "ETF" as its own token or glued on the end ("BONDETF"). A substring match
+// would treat NETFLIX as a fund.
+function mentionsEtf(text) {
+  if (isExchangeTraded(text)) return true;
+  const tokens = String(text || '').toUpperCase().match(/[A-Z0-9]+/g) || [];
+  return tokens.some((token) => token === 'ETF' || token === 'ETFS' || (token.endsWith('ETF') && token.length > 3));
+}
+
+function fundHolding(text) {
+  if (isPrivateFund(text)) return 'private';
+  if (mentionsEtf(text) || /\bmutual funds?\b/i.test(text) || /\bfunds?\b/i.test(text)) {
+    return 'etf_fund';
+  }
+  if (/\b(?:ishares|spdr)\b/i.test(text)) return 'etf_fund';
+  if (/\bINST\b/i.test(text) && /\b(?:GOVT|GOVERNMENT)\b/i.test(text)) return 'etf_fund';
+  return null;
+}
+
+const CORPORATE_SUFFIX = new Set([
+  'INC', 'INCORPORATED', 'CORP', 'CORPORATION', 'PLC', 'LTD', 'CO', 'COMPANY',
+  'HOLDINGS', 'HOLDING', 'HLDGS', 'NV', 'SA', 'AG', 'SE',
+  'N.V', 'N.V.', 'S.A', 'S.A.', 'LIMITED',
+]);
+
+const GLUED_SUFFIX = /(?:INC(?:CL(?:ASS)?)?|INCORPORATED|CORPORATION|CORP|LTD|PLC|COMPANY|CO)$/;
+
+// Bare issuer names: "APPLE INC", "NVIDIA CORP", "NVIDIACORP", "ELILILLYANDCO".
+// "Limited" spelled out counts only when the line is not an operating company.
+export function hasCorporateSuffix(text) {
+  if (/\bpublic limited\b/i.test(text)) return true;
+  if (/\bN\.V\b\.?|\bS\.A\b\.?/i.test(text)) return true;
+  const tokens = String(text || '').toUpperCase().match(/[A-Z0-9.]+/g) || [];
+  for (const raw of tokens) {
+    const token = raw.replace(/\.+$/g, '');
+    if (CORPORATE_SUFFIX.has(token) || CORPORATE_SUFFIX.has(raw)) return true;
+    const glued = token.match(GLUED_SUFFIX);
+    if (glued && token.length > glued[0].length) return true;
+  }
+  return false;
+}
+
+function cryptoHolding(text) {
+  return /\b(?:bitcoin|ethereum|etherium|crypto(?:currency)?)\b/i.test(text);
+}
+
+function realEstatePhrase(text) {
+  return /\b(?:real estate|real property|unimproved|residence|commercial building|vineyard)\b/i.test(text);
+}
+
+function operatingCompany(text) {
+  if (/\b(?:llc|l\.l\.c\.?|limited partnership|llp)\b/i.test(text)) return true;
+  if (/\blimited\b/i.test(text) && !/\bpublic limited\b/i.test(text)
+    && /\b(?:location|underlying|golf|club|resort)\b/i.test(text)) {
+    return true;
+  }
+  return false;
+}
+
+function propertyWords(text) {
+  return /\b(?:tower|apartments?|propert(?:y|ies)|residential)\b/i.test(text);
+}
+
+function businessAsideFromCash(text) {
+  return /\bgolf\b/i.test(text)
+    || /\bresorts?\b/i.test(text)
+    || /\bclub\b/i.test(text)
+    || propertyWords(text)
+    || realEstatePhrase(text)
+    || /\b(?:trademark|payroll)\b/i.test(text);
+}
+
+// An LLC whose only described asset is a bank account is cash. A golf club
+// or tower that also mentions a bank account is not.
+function bankAccountOnly(text) {
+  if (!/\b(?:bank account|checking|savings|money market|certificate of deposit)\b/i.test(text)) return false;
+  return !businessAsideFromCash(text);
+}
+
+function cashHolding(text) {
+  return /\b(?:checking|savings|money market|bank account|certificate of deposit|banksweep|bank sweep)\b/i.test(text);
+}
+
+function stockSignals(text) {
+  if (/\b(?:common stock|stocks?|cap stk)\b/i.test(text)) return true;
+  if (/\bCOM\b/i.test(text) || /\bCLASS\b/i.test(text) || /\bCL\s*[A-C]\b/i.test(text)) return true;
+  if (/\bREIT\b/i.test(text)) return true;
+  return hasCorporateSuffix(text);
+}
+
+// Capitalized security lines with no suffix ("JOHNSON & JOHNSON").
+function bareIssuer(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (t.length < 3 || t.length > 80) return false;
+  if (/\b(?:location|underlying|see line|gold|silver|artwork|wallet)\b/i.test(t)) return false;
+  const upper = (t.match(/[A-Z]/g) || []).length;
+  const lower = (t.match(/[a-z]/g) || []).length;
+  if (upper + lower < 3) return false;
+  if (lower > 0 && upper / (upper + lower) < 0.85) return false;
+  return true;
+}
+
+// 278e prints a description, not a House asset-type code. Order matters:
+// a coupon or due date beats INC, and a golf club or tower beats an
+// incidental "U.S. bank account" in the underlying-assets text.
 export function classFromDescribedHolding(name) {
   const text = String(name || '');
-  if (isExchangeTraded(text) || /\bmutual fund\b/i.test(text) || /\betf\b/i.test(text)) return 'etf_fund';
-  if (isDebtDescription(text)) return 'bond';
-  if (/\b(bitcoin|ethereum|crypto)\b/i.test(text)) return 'crypto';
-  if (/\b(real estate|real property|unimproved|residence|commercial building|vineyard)\b/i.test(text)) {
-    return 'real_estate';
-  }
-  if (/\b(checking|savings|money market|bank account|certificate of deposit)\b/i.test(text)) return 'cash';
-  if (/\b(401\(k\)|403\(b\)|ira|pension|retirement)\b/i.test(text)) return 'retirement';
-  if (/\b(llc|l\.l\.c|limited partnership|llp)\b/i.test(text)) return 'private';
-  if (/\bcommon stock\b/i.test(text) || /\bstocks?\b/i.test(text)) return 'stock';
+  if (!text.trim()) return 'other';
+  if (/\bmoney market\b|banksweep|bank sweep/i.test(text) && !mentionsEtf(text)) return 'cash';
+  const fund = fundHolding(text);
+  if (fund) return fund;
+  if (describedDebt(text)) return 'bond';
+  if (cryptoHolding(text)) return 'crypto';
+  if (realEstatePhrase(text)) return 'real_estate';
+  if (operatingCompany(text) && propertyWords(text)) return 'real_estate';
+  if (/\bgolf\s+(?:club|course)\b/i.test(text)) return 'private';
+  if (/\bresorts?\b/i.test(text) && operatingCompany(text)) return 'private';
+  // COM on a short brokerage line is common stock, including "X LLC COM".
+  if (/\bCOM\b/i.test(text) && !/\b(?:location|underlying)\b/i.test(text)) return 'stock';
+  if (operatingCompany(text)) return bankAccountOnly(text) ? 'cash' : 'private';
+  if (cashHolding(text)) return 'cash';
+  if (/\b(?:401\(k\)|403\(b\)|ira|pension|retirement)\b/i.test(text)) return 'retirement';
+  if (stockSignals(text) || bareIssuer(text)) return 'stock';
   return 'other';
 }
 

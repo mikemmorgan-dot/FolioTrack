@@ -7,6 +7,9 @@ import { holdingClassLabel, holdingMatchable } from './holdingClass.js';
 import { isReadableAnnual, selectCurrentAnnual } from './annualRecords.js';
 
 const TOP_N = 12;
+// A tie a little past the top 12 can still be named one by one. A larger tie
+// becomes one slice so the legend stays readable and the bucket is not split.
+const NAMED_CAP = 16;
 
 function pctOf(part, total) {
   if (!total) return 0;
@@ -53,13 +56,64 @@ function positionSlice(row, index) {
   };
 }
 
-function otherSlice(rows) {
+function compactUsd(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '';
+  const abs = Math.abs(n);
+  const sign = n < 0 ? '-' : '';
+  if (abs >= 1_000_000) {
+    const millions = abs / 1_000_000;
+    const shown = Math.abs(millions - Math.round(millions)) < 0.05
+      ? String(Math.round(millions))
+      : millions.toFixed(1);
+    return `${sign}$${shown}M`;
+  }
+  if (abs >= 1_000) {
+    const thousands = abs / 1_000;
+    const shown = Math.abs(thousands - Math.round(thousands)) < 0.05
+      ? String(Math.round(thousands))
+      : thousands.toFixed(1);
+    return `${sign}$${shown}K`;
+  }
+  return formatUsd(n) || '';
+}
+
+function bucketKey(row) {
+  return [
+    row.valueRange || '',
+    row.valueBound || '',
+    row.valueMin ?? '',
+    row.valueMax ?? '',
+    Number(row.valueMid) || 0,
+  ].join('|');
+}
+
+function shortHoldingName(asset) {
+  const text = String(asset || '').replace(/\s+/g, ' ').trim();
+  const cut = text.split(/\s+(?:Location|Underlying|See [Ll]ine|U\.?S\.?\s*bank account)\b/i)[0].replace(/[*,.:]+$/g, '').trim();
+  const base = cut || text || 'Holding';
+  if (base.length <= 72) return base;
+  return `${base.slice(0, 69).trim()}...`;
+}
+
+function bucketLabel(rows) {
+  const sample = rows[0] || {};
+  const n = rows.length;
+  const noun = n === 1 ? 'holding' : 'holdings';
+  const open = sample.valueBound === 'at_least' || sample.valueMax == null;
+  const band = open
+    ? `Over ${compactUsd(sample.valueMin)}`
+    : `${compactUsd(sample.valueMin)}-${compactUsd(sample.valueMax)}`;
+  return `${band} each (${n} ${noun})`;
+}
+
+function groupedSlice(rows, kind, label) {
   const totals = sumHoldingValues(rows);
   return {
-    id: 'other',
-    kind: 'other',
-    label: 'Other',
-    asset: `${rows.length} other position${rows.length === 1 ? '' : 's'}`,
+    id: kind === 'other' ? 'other' : `bucket-${bucketKey(rows[0] || {})}`,
+    kind,
+    label,
+    asset: label,
     ticker: null,
     tickerNorm: null,
     tickerSource: null,
@@ -71,17 +125,52 @@ function otherSlice(rows) {
     max: totals.max,
     midpoint: totals.midpoint,
     count: rows.length,
+    names: kind === 'bucket' && rows.length <= 40 ? rows.map((row) => shortHoldingName(row.asset || row.ticker)) : [],
   };
 }
 
+function otherSlice(rows) {
+  const n = rows.length;
+  return groupedSlice(rows, 'other', `All other holdings (${n})`);
+}
+
+function bucketSlice(rows) {
+  return groupedSlice(rows, 'bucket', bucketLabel(rows));
+}
+
+// Named slices are the largest positions. A statutory value bucket is never
+// split between a named slice and Other: a short tie is named in full, and a
+// long tie (the 25 "Over $50,000,000" rows) is one labeled slice.
 export function positionSlices(rows, limit = TOP_N) {
   const sorted = (rows || []).slice().sort((a, b) => (
     (b.valueMid || 0) - (a.valueMid || 0)
     || String(a.asset || '').localeCompare(String(b.asset || ''))
   ));
-  const top = sorted.slice(0, limit).map(positionSlice);
-  const rest = sorted.slice(limit);
-  const slices = rest.length ? [...top, otherSlice(rest)] : top;
+  const groups = [];
+  for (const row of sorted) {
+    const key = bucketKey(row);
+    const last = groups[groups.length - 1];
+    if (last && last.key === key) last.rows.push(row);
+    else groups.push({ key, rows: [row] });
+  }
+  const slices = [];
+  let index = 0;
+  for (; index < groups.length; index += 1) {
+    if (slices.length >= limit) break;
+    const group = groups[index].rows;
+    const room = limit - slices.length;
+    if (group.length <= room || slices.length + group.length <= NAMED_CAP) {
+      for (const row of group) slices.push(positionSlice(row, slices.length));
+      if (slices.length > limit) {
+        index += 1;
+        break;
+      }
+      continue;
+    }
+    slices.push(bucketSlice(group));
+  }
+  const rest = groups.slice(index).flatMap((group) => group.rows);
+  if (rest.length) slices.push(otherSlice(rest));
   const totalMid = (rows || []).reduce((sum, row) => sum + (Number(row.valueMid) || 0), 0);
   return withPercents(slices, totalMid);
 }

@@ -885,8 +885,14 @@ a.ext { color: var(--green); text-decoration: none; }
   border-radius: 12px; padding: 8px 10px; color: var(--text);
 }
 .hold-legend button.on { border-color: var(--green); }
-.hold-legend-name { flex: 1; font-size: 14px; font-weight: 650; }
+.hold-legend-name { flex: 1; min-width: 0; font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
 .hold-legend-pct { font-variant-numeric: tabular-nums; color: var(--text-2); font-size: 14px; }
+.hold-members {
+  list-style: none; margin: 8px 0 0; padding: 0; max-height: 240px; overflow: auto;
+}
+.hold-members li {
+  font-size: 13px; line-height: 1.35; color: var(--text-2); padding: 3px 0 3px 20px;
+}
 .ptr-text-btn {
   background: none; border: none; padding: 0; color: var(--green);
   font-size: inherit; font-weight: 700; text-decoration: underline;
