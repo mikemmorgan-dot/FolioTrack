@@ -486,6 +486,13 @@ export const memoryMethods = {
     this.persist();
     return this.db.politicianAnnual;
   },
+  async mergeAnnualState(mutator) {
+    const current = this.db.politicianAnnual || {};
+    const next = await mutator(current);
+    this.db.politicianAnnual = next || {};
+    this.persist();
+    return this.db.politicianAnnual;
+  },
   async existingAnnualKeys(source, keys) {
     const want = new Set(keys || []);
     const found = [];
