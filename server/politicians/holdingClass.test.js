@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classFromDescribedHolding, classFromHouseCode, classFromSenateType } from './holdingClass.js';
+import { classFromDescribedHolding, classFromHouseCode, classFromSenateType, classifyHolding } from './holdingClass.js';
 
 describe('described holdings from a 278e', () => {
   it('treats a bare issuer with a corporate suffix as stock', () => {
@@ -96,5 +96,32 @@ describe('House codes and Senate asset types stay on their own paths', () => {
     expect(classFromSenateType('Bank Deposit', '', 'Bank of Monroe')).toBe('cash');
     expect(classFromSenateType('Business Entity', 'Limited Liability Company (LLC)', 'Family LLC')).toBe('private');
     expect(classFromSenateType('', '', 'APPLE INC')).toBe('other');
+  });
+});
+
+describe('classifyHolding', () => {
+  it('uses the description when a stored class is stale', () => {
+    expect(classifyHolding({ asset: 'APPLE INC', assetClass: 'other' }, 'oge')).toBe('stock');
+    expect(classifyHolding({ asset: '   ', assetClass: 'bond' }, 'oge')).toBe('bond');
+    expect(classifyHolding({ asset: '', assetClass: '' }, 'oge')).toBe('other');
+  });
+
+  it('lets a House code and a Senate type win over the description', () => {
+    expect(classifyHolding({
+      asset: 'APPLE INC', assetCode: 'RP', assetClass: 'other',
+    }, 'house')).toBe('real_estate');
+    expect(classifyHolding({
+      asset: 'Apple Inc. - Common Stock (AAPL)', assetCode: 'OP', assetClass: 'stock',
+    }, 'house')).toBe('other');
+    expect(classifyHolding({
+      asset: '25 Point Lobos - Commercial Property', assetClass: 'real_estate',
+    }, 'house')).toBe('real_estate');
+    expect(classifyHolding({
+      asset: 'APPLE INC', assetType: 'Bank Deposit', assetSubtype: '', assetClass: 'stock',
+    }, 'senate')).toBe('cash');
+    expect(classifyHolding({ asset: 'Komatsu', assetClass: 'stock' }, 'senate')).toBe('stock');
+    expect(classifyHolding({
+      asset: 'APPLE INC', assetType: '', assetSubtype: '',
+    }, 'senate')).toBe('other');
   });
 });

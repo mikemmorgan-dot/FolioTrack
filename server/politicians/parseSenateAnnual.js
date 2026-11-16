@@ -10,7 +10,7 @@
 import { load } from 'cheerio';
 import { canonicalTicker, normalizeOwner, parseUsDate } from './normalize.js';
 import { parseAssetValue } from './assetValue.js';
-import { classFromSenateType } from './holdingClass.js';
+import { classifyHolding } from './holdingClass.js';
 import { SENATE_BASE } from './parseSenate.js';
 
 export function parseSenateAnnualSearchRow(row) {
@@ -119,7 +119,9 @@ export function parseSenateAnnualHtml(html) {
     holdings.push({
       asset,
       ticker,
-      assetClass: classFromSenateType(type, subtype, asset),
+      assetType: type,
+      assetSubtype: subtype,
+      assetClass: classifyHolding({ asset, assetType: type, assetSubtype: subtype }, 'senate'),
       owner: mappedOwner,
       valueRange: value.label,
       valueMin: value.min,
