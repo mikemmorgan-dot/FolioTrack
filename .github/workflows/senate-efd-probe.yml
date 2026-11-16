@@ -1,0 +1,40 @@
+# Temporary reachability check. Push to the working branch starts it.
+# workflow_dispatch is kept so the check can be repeated by hand.
+# The job logs HTTP status codes and a short body snippet. It does not print secrets.
+name: Senate eFD probe
+
+on:
+  push:
+    branches:
+      - cursor/senate-efd-actions-144e
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install server dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Probe Senate eFD home, agreement, and one annual search
+        working-directory: server
+        run: node politicians/senateProbeCli.js
+
+      - name: Read Pelosi annual queue position
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: node politicians/pelosiAnnualCheck.js
