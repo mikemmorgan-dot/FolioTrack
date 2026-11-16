@@ -12,7 +12,7 @@
 
 import { canonicalTicker, parseUsDate } from './normalize.js';
 import { parseAssetValue } from './assetValue.js';
-import { classFromHouseCode, classFromDescribedHolding } from './holdingClass.js';
+import { classifyHolding } from './holdingClass.js';
 import { bandText, forEachPdfPage, itemsToRows, rowText } from './pdfItems.js';
 import { HOUSE_BASE } from './parseHouse.js';
 
@@ -164,7 +164,7 @@ function finishAsset(draft) {
   if (value.kind === 'excluded') return { kind: 'excluded', reason: value.reason };
   if (value.kind !== 'range' && value.kind !== 'at_least') return { kind: 'unreadable' };
   const code = codeFromAsset(asset);
-  const assetClass = code ? classFromHouseCode(code) : classFromDescribedHolding(asset);
+  const assetClass = classifyHolding({ asset, assetCode: code }, 'house');
   const name = asset.replace(/\s*\[[A-Z0-9]{2}\]\s*/g, ' ').replace(/\s+/g, ' ').trim();
   return {
     kind: 'holding',

@@ -3,7 +3,7 @@
 // estimates because the filing printed a range.
 
 import { formatUsd, sumHoldingValues, totalValueLabel } from './assetValue.js';
-import { holdingClassLabel, holdingMatchable } from './holdingClass.js';
+import { classifyHolding, holdingClassLabel, holdingMatchable } from './holdingClass.js';
 import { isReadableAnnual, selectCurrentAnnual } from './annualRecords.js';
 
 const TOP_N = 12;
@@ -175,7 +175,34 @@ export function positionSlices(rows, limit = TOP_N) {
   return withPercents(slices, totalMid);
 }
 
-export function classSlices(rows) {
+function classKey(row, source) {
+  return [
+    source || '',
+    row?.assetCode || row?.asset_code || '',
+    row?.assetType ?? row?.asset_type ?? '',
+    row?.assetSubtype ?? row?.asset_subtype ?? '',
+    row?.assetClass || '',
+    row?.asset || row?.description || '',
+  ].join('\0');
+}
+
+// Classification is regex on the asset text. A filing can be a few thousand
+// rows, and many lines repeat, so one request memoizes identical inputs.
+function classifyRows(rows, source) {
+  const cache = new Map();
+  return (rows || []).map((row) => {
+    const key = classKey(row, source);
+    let assetClass = cache.get(key);
+    if (assetClass === undefined) {
+      assetClass = classifyHolding(row, source);
+      cache.set(key, assetClass);
+    }
+    if (assetClass === row.assetClass) return row;
+    return { ...row, assetClass };
+  });
+}
+
+function groupByClass(rows) {
   const groups = new Map();
   for (const row of rows || []) {
     const key = row.assetClass || 'other';
@@ -209,6 +236,10 @@ export function classSlices(rows) {
     .sort((a, b) => b.midpoint - a.midpoint || a.label.localeCompare(b.label));
   const totalMid = slices.reduce((sum, slice) => sum + slice.midpoint, 0);
   return withPercents(slices, totalMid);
+}
+
+export function classSlices(rows, source) {
+  return groupByClass(classifyRows(rows, source));
 }
 
 function filingMeta(filing) {
@@ -262,7 +293,8 @@ export function presentHoldings({ filings = [], holdings = [], held = null } = {
       classes: [],
     };
   }
-  const rows = withHeld(holdings.filter((row) => row.filingId === current.id), held);
+  const source = current.source || '';
+  const rows = withHeld(classifyRows(holdings.filter((row) => row.filingId === current.id), source), held);
   const totals = sumHoldingValues(rows);
   const noteBits = [];
   if (current.parseNote) noteBits.push(current.parseNote);
@@ -280,6 +312,6 @@ export function presentHoldings({ filings = [], holdings = [], held = null } = {
       midpointLabel: formatUsd(totals.midpoint),
     },
     positions: positionSlices(rows),
-    classes: classSlices(rows),
+    classes: groupByClass(rows),
   };
 }

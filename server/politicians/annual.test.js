@@ -211,7 +211,7 @@ describe('versioning and the chart', () => {
     const rows = Array.from({ length: 14 }, (_, i) => ({
       id: `h${i}`,
       filingId: 'f',
-      asset: `Asset ${String(i).padStart(2, '0')}`,
+      asset: i === 0 || i % 2 ? `ISSUER ${String(i).padStart(2, '0')} INC` : `CITY ${String(i).padStart(2, '0')} MUNI BOND`,
       ticker: i === 0 ? 'AAPL' : null,
       tickerNorm: i === 0 ? 'AAPL' : null,
       assetClass: i === 0 || i % 2 ? 'stock' : 'bond',
@@ -229,7 +229,7 @@ describe('versioning and the chart', () => {
     expect(slices.some((slice) => slice.label.includes('\u2014'))).toBe(false);
     const view = presentHoldings({
       filings: [{
-        id: 'f', reportYear: 2025, filedDate: '2026-05-15', filingKind: 'original',
+        id: 'f', source: 'oge', reportYear: 2025, filedDate: '2026-05-15', filingKind: 'original',
         parseStatus: 'parsed', sourceUrl: 'https://example.test/fd', excludedCount: 3,
       }],
       holdings: rows,
@@ -239,6 +239,74 @@ describe('versioning and the chart', () => {
     expect(view.totals.label).toBe('$14,014 – $210,000');
     expect(view.positions[0].heldModels).toEqual([{ key: 'growth', name: 'Growth' }]);
     expect(view.classes.length).toBeGreaterThan(1);
+  });
+
+  function chartFiling(source) {
+    return {
+      id: 'f',
+      source,
+      reportYear: 2025,
+      filedDate: '2026-05-15',
+      filingKind: 'original',
+      parseStatus: 'parsed',
+      sourceUrl: 'https://example.test/fd',
+    };
+  }
+
+  function chartRow(extra) {
+    return {
+      id: 'h1',
+      filingId: 'f',
+      owner: 'self',
+      valueRange: '$1,001 - $15,000',
+      valueMin: 1001,
+      valueMax: 15000,
+      valueMid: 8001,
+      valueBound: 'range',
+      ...extra,
+    };
+  }
+
+  it('renders a stale other row named APPLE INC as Stock', () => {
+    const view = presentHoldings({
+      filings: [chartFiling('oge')],
+      holdings: [chartRow({ asset: 'APPLE INC', assetClass: 'other' })],
+    });
+    expect(view.classes).toHaveLength(1);
+    expect(view.classes[0]).toMatchObject({ assetClass: 'stock', label: 'Stock' });
+    expect(view.positions[0].assetClass).toBe('stock');
+  });
+
+  it('keeps a House type code ahead of the asset name and the stored class', () => {
+    const view = presentHoldings({
+      filings: [chartFiling('house')],
+      holdings: [chartRow({ asset: 'APPLE INC', assetCode: 'RP', assetClass: 'other' })],
+    });
+    expect(view.classes).toHaveLength(1);
+    expect(view.classes[0]).toMatchObject({ assetClass: 'real_estate', label: 'Real estate' });
+    expect(view.positions[0].assetClass).toBe('real_estate');
+    const stored = presentHoldings({
+      filings: [chartFiling('house')],
+      holdings: [chartRow({
+        asset: '25 Point Lobos - Commercial Property',
+        assetClass: 'real_estate',
+      })],
+    });
+    expect(stored.classes[0]).toMatchObject({ assetClass: 'real_estate', label: 'Real estate' });
+  });
+
+  it('classifies a few thousand descriptions once per request', () => {
+    const holdings = Array.from({ length: 4706 }, (_, i) => chartRow({
+      id: `h${i}`,
+      asset: i === 4705 ? 'INVESTMENT IN GOLD BARS' : `APPLE INC LINE ${i}`,
+      assetClass: 'other',
+      valueMid: i === 4705 ? 1000 : 8001,
+    }));
+    const started = performance.now();
+    const view = presentHoldings({ filings: [chartFiling('oge')], holdings });
+    expect(performance.now() - started).toBeLessThan(2000);
+    expect(view.classes.find((slice) => slice.assetClass === 'stock').count).toBe(4705);
+    expect(view.classes.find((slice) => slice.assetClass === 'other').count).toBe(1);
   });
 
   it('does not split a value bucket across the named and other boundary', () => {

@@ -254,6 +254,52 @@ export function classFromDescribedHolding(name) {
   return 'other';
 }
 
+function holdingName(row) {
+  return String(row?.asset ?? row?.description ?? '').trim();
+}
+
+function storedClass(row) {
+  const value = String(row?.assetClass || '').trim();
+  return value || 'other';
+}
+
+// A House code on the row, or still printed in the asset text as [ST].
+function houseCode(row, source) {
+  const explicit = row?.assetCode ?? row?.asset_code;
+  if (explicit != null && String(explicit).trim()) return String(explicit).trim().toUpperCase();
+  if (source !== 'house') return null;
+  const codes = [...String(row?.asset || '').matchAll(/\[([A-Z0-9]{2})\]/g)];
+  return codes.length ? codes[codes.length - 1][1].toUpperCase() : null;
+}
+
+// Present when ingest passed the Senate columns, including an empty type.
+function senateFields(row) {
+  if (!row) return null;
+  const type = row.assetType ?? row.asset_type;
+  const subtype = row.assetSubtype ?? row.asset_subtype;
+  if (type == null && subtype == null) return null;
+  return { type: type || '', subtype: subtype || '' };
+}
+
+// One classifier for ingest and for the person-page chart.
+// House asset-type codes win, then Senate asset types, then the description.
+// The stored class is the fallback when that raw text is missing. The holding
+// table keeps the asset name, not the House code or the Senate type. A House
+// or Senate row that no longer carries the code or type keeps the class
+// ingest saved from it. The description is not a substitute: options coded
+// OP, and a Senate line whose type says Stock, both disagree with the name.
+export function classifyHolding(row, source) {
+  const src = String(source || row?.source || '').toLowerCase();
+  const code = houseCode(row, src);
+  if (code) return classFromHouseCode(code) || 'other';
+  const senate = senateFields(row);
+  if (senate) return classFromSenateType(senate.type, senate.subtype, holdingName(row));
+  const name = holdingName(row);
+  if ((src === 'house' || src === 'senate') && row?.assetClass) return row.assetClass;
+  if (name) return classFromDescribedHolding(name);
+  return storedClass(row);
+}
+
 export function mapMatchedClass(assetClass) {
   if (assetClass === 'etf' || assetClass === 'fund') return 'etf_fund';
   if (assetClass === 'bond') return 'bond';

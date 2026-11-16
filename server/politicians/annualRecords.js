@@ -4,7 +4,7 @@
 
 import { annotateTrade } from './nameMatch.js';
 import { canonicalTicker, displayName, personKey } from './normalize.js';
-import { mapMatchedClass } from './holdingClass.js';
+import { classifyHolding, mapMatchedClass } from './holdingClass.js';
 
 export function annualFilingId(source, filingKey) {
   return `annual:${source}:${filingKey}`;
@@ -88,7 +88,10 @@ export function annotateHolding(holding, catalog = null) {
 export function buildHoldingRows(filing, parsed, catalog = null) {
   const holdings = parsed?.holdings || [];
   return holdings.map((holding, index) => {
-    const row = annotateHolding(holding, catalog);
+    const row = annotateHolding({
+      ...holding,
+      assetClass: classifyHolding(holding, filing?.source),
+    }, catalog);
     const rowIndex = index + 1;
     return {
       id: `${filing.id}:${rowIndex}`,

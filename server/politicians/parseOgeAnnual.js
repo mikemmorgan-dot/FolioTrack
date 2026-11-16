@@ -6,7 +6,7 @@
 
 import { canonicalTicker } from './normalize.js';
 import { parseAssetValue } from './assetValue.js';
-import { classFromDescribedHolding } from './holdingClass.js';
+import { classifyHolding } from './holdingClass.js';
 import { ogeOffice } from './parseOge.js';
 import { bandText, forEachPdfPage, itemsToRows, rowText } from './pdfItems.js';
 
@@ -124,7 +124,7 @@ function flush(state) {
   state.holdings.push({
     asset,
     ticker: tickerFromAsset(asset),
-    assetClass: classFromDescribedHolding(asset),
+    assetClass: classifyHolding({ asset }, 'oge'),
     owner: state.openOwner || 'unknown',
     valueRange: value.label,
     valueMin: value.min,
