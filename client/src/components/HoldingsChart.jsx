@@ -107,14 +107,23 @@ function Detail({ slice, color }) {
         <span className="hold-swatch" style={{ background: color }} />
         <strong>{slice.asset || slice.label}</strong>
       </div>
-      <div className="ptr-meta">
-        {slice.ticker ? slice.ticker : 'No ticker'}
-        {slice.tickerSource === 'name_match' ? ' · matched from name' : ''}
-        {slice.assetClass ? ` · ${CLASS_LABELS[slice.assetClass] || slice.assetClass}` : ''}
-      </div>
+      {(slice.ticker || slice.assetClass) && (
+        <div className="ptr-meta">
+          {slice.ticker ? slice.ticker : (CLASS_LABELS[slice.assetClass] || slice.assetClass)}
+          {slice.ticker && slice.tickerSource === 'name_match' ? ' · matched from name' : ''}
+          {slice.ticker && slice.assetClass ? ` · ${CLASS_LABELS[slice.assetClass] || slice.assetClass}` : ''}
+        </div>
+      )}
       {slice.owner && <div className="ptr-meta">{ownerName(slice.owner)}</div>}
       <div className="ptr-meta">{range} · about {slice.pct}% of the estimate</div>
-      {slice.count > 1 && <div className="ptr-meta">{slice.count} positions in this slice</div>}
+      {slice.count > 1 && slice.kind !== 'bucket' && slice.kind !== 'other' && (
+        <div className="ptr-meta">{slice.count} positions in this slice</div>
+      )}
+      {slice.names?.length > 0 && (
+        <ul className="hold-members">
+          {slice.names.map((name, index) => <li key={`${name}-${index}`}>{name}</li>)}
+        </ul>
+      )}
       {held.length > 0 && (
         <>
           <div className="ptr-tags"><span className="pill green">In your models</span></div>
@@ -129,7 +138,7 @@ function Detail({ slice, color }) {
 }
 
 export default function HoldingsChart({ holdings }) {
-  const [mode, setMode] = useState('position');
+  const [mode, setMode] = useState('class');
   const [selected, setSelected] = useState(0);
   if (!holdings || holdings.status === 'none') {
     return (
@@ -185,8 +194,8 @@ export default function HoldingsChart({ holdings }) {
         </div>
       )}
       <div className="segmented ptr-chips" role="group" aria-label="Group holdings">
-        <button type="button" className={mode === 'position' ? 'on' : ''} aria-pressed={mode === 'position'} onClick={() => { setMode('position'); setSelected(0); }}>Positions</button>
         <button type="button" className={mode === 'class' ? 'on' : ''} aria-pressed={mode === 'class'} onClick={() => { setMode('class'); setSelected(0); }}>Asset class</button>
+        <button type="button" className={mode === 'position' ? 'on' : ''} aria-pressed={mode === 'position'} onClick={() => { setMode('position'); setSelected(0); }}>Positions</button>
       </div>
       {slices.length === 0 ? (
         <p className="ptr-note">This filing has no valued holdings after exclusions.</p>

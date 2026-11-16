@@ -188,7 +188,7 @@ describe('Senate and OGE annual holdings', () => {
     expect(parsed.reportYear).toBe(2025);
     expect(parsed.excludedCount).toBe(1);
     expect(parsed.holdings).toHaveLength(2);
-    expect(parsed.holdings[0]).toMatchObject({ owner: 'unknown', assetClass: 'other', valueRange: '$1,000,001 - $5,000,000' });
+    expect(parsed.holdings[0]).toMatchObject({ owner: 'unknown', assetClass: 'stock', valueRange: '$1,000,001 - $5,000,000' });
     expect(parsed.holdings[1]).toMatchObject({ assetClass: 'bond', ticker: null });
   });
 });
@@ -211,22 +211,22 @@ describe('versioning and the chart', () => {
     const rows = Array.from({ length: 14 }, (_, i) => ({
       id: `h${i}`,
       filingId: 'f',
-      asset: `Asset ${i}`,
+      asset: `Asset ${String(i).padStart(2, '0')}`,
       ticker: i === 0 ? 'AAPL' : null,
       tickerNorm: i === 0 ? 'AAPL' : null,
       assetClass: i === 0 || i % 2 ? 'stock' : 'bond',
       owner: 'self',
-      valueRange: '$1,001 - $15,000',
+      valueRange: `band-${i}`,
       valueMin: 1001,
       valueMax: 15000,
-      valueMid: i === 0 ? 90000 : 8001,
+      valueMid: 100000 - i,
       valueBound: 'range',
     }));
     const slices = positionSlices(rows, 12);
     expect(slices).toHaveLength(13);
-    expect(slices.at(-1).kind).toBe('other');
-    expect(slices.at(-1).count).toBe(2);
+    expect(slices.at(-1)).toMatchObject({ kind: 'other', count: 2, label: 'All other holdings (2)' });
     expect(slices.reduce((sum, slice) => sum + slice.pct, 0)).toBeCloseTo(100, 5);
+    expect(slices.some((slice) => slice.label.includes('\u2014'))).toBe(false);
     const view = presentHoldings({
       filings: [{
         id: 'f', reportYear: 2025, filedDate: '2026-05-15', filingKind: 'original',
@@ -239,6 +239,59 @@ describe('versioning and the chart', () => {
     expect(view.totals.label).toBe('$14,014 – $210,000');
     expect(view.positions[0].heldModels).toEqual([{ key: 'growth', name: 'Growth' }]);
     expect(view.classes.length).toBeGreaterThan(1);
+  });
+
+  it('does not split a value bucket across the named and other boundary', () => {
+    const tied = Array.from({ length: 25 }, (_, i) => ({
+      id: `t${i}`,
+      asset: `Golf ${String.fromCharCode(65 + (i % 26))}${i}`,
+      valueRange: 'Over $50,000,000',
+      valueMin: 50000000,
+      valueMax: null,
+      valueMid: 50000000,
+      valueBound: 'at_least',
+    }));
+    const smaller = [15000001, 8001, 3001].map((mid, i) => ({
+      id: `s${i}`,
+      asset: `Listed ${i}`,
+      valueRange: `band-${mid}`,
+      valueMin: mid,
+      valueMax: mid,
+      valueMid: mid,
+      valueBound: 'range',
+    }));
+    const slices = positionSlices([...tied].reverse().concat(smaller), 12);
+    expect(slices[0]).toMatchObject({
+      kind: 'bucket',
+      count: 25,
+      label: 'Over $50M each (25 holdings)',
+    });
+    expect(slices[0].names).toHaveLength(25);
+    expect(slices[0].names[0] < slices[0].names[1]).toBe(true);
+    expect(slices.filter((slice) => slice.kind === 'position').map((slice) => slice.asset)).toEqual([
+      'Listed 0', 'Listed 1', 'Listed 2',
+    ]);
+    expect(slices.some((slice) => slice.kind === 'other')).toBe(false);
+    const boundary = Array.from({ length: 11 }, (_, i) => ({
+      id: `u${i}`,
+      asset: `Unique ${i}`,
+      valueRange: `u-${i}`,
+      valueMin: 100 - i,
+      valueMax: 100 - i,
+      valueMid: 100 - i,
+      valueBound: 'range',
+    })).concat([
+      { id: 'a', asset: 'Tie A', valueRange: 'same', valueMin: 50, valueMax: 50, valueMid: 50, valueBound: 'range' },
+      { id: 'b', asset: 'Tie B', valueRange: 'same', valueMin: 50, valueMax: 50, valueMid: 50, valueBound: 'range' },
+      { id: 'c', asset: 'Tie C', valueRange: 'same', valueMin: 50, valueMax: 50, valueMid: 50, valueBound: 'range' },
+      { id: 'z', asset: 'Tail', valueRange: 'tail', valueMin: 1, valueMax: 1, valueMid: 1, valueBound: 'range' },
+    ]);
+    const kept = positionSlices(boundary, 12);
+    expect(kept.filter((slice) => slice.kind === 'position')).toHaveLength(14);
+    expect(kept.at(-1)).toMatchObject({ kind: 'other', count: 1, label: 'All other holdings (1)' });
+    expect(kept.some((slice) => slice.asset === 'Tie A')).toBe(true);
+    expect(kept.some((slice) => slice.asset === 'Tie B')).toBe(true);
+    expect(kept.some((slice) => slice.asset === 'Tie C')).toBe(true);
   });
 
   it('matches a missing ticker from the name and does not replace a printed one', () => {
