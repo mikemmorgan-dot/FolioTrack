@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { BLOCK_BACKOFF_MS, nextSourceBackoff } from './backoff.js';
+import { memoryMethods, politicianBucket } from './memoryStore.js';
+import { runPoliticianPoll } from './ingest.js';
+import { runAnnualSlice } from './annualIngest.js';
 import {
   bodySnippet,
   classifySenateResponse,
@@ -100,6 +104,101 @@ describe('Senate probe', () => {
     expect(calls).toHaveLength(1);
     expect(probeResult([{ step: 'search', status: 200, kind: 'ok' }])).toBe('reachable');
     expect(probeResult([{ step: 'entry', status: 403, kind: 'blocked' }])).toBe('blocked');
+  });
+});
+
+function memoryStore(state = {}) {
+  const db = politicianBucket({});
+  db.politicianAnnual = state;
+  const store = { db };
+  for (const [name, fn] of Object.entries(memoryMethods)) {
+    store[name] = (...args) => fn.apply({ db, persist() {} }, args);
+  }
+  return store;
+}
+
+const quiet = { log() {}, warn() {}, error() {} };
+
+describe('block backoff', () => {
+  it('does not count a block as an outage strike', () => {
+    const prev = { strikes: 2, cursor: 1200, status: 503, kind: 'transient' };
+    const blocked = nextSourceBackoff(prev, Date.parse('2026-11-16T12:00:00Z'), 403, {
+      kind: 'blocked',
+      snippet: 'Access Denied',
+    });
+    expect(blocked.strikes).toBe(0);
+    expect(blocked.kind).toBe('blocked');
+    expect(blocked.status).toBe(403);
+    expect(Date.parse(blocked.until) - Date.parse('2026-11-16T12:00:00Z')).toBe(BLOCK_BACKOFF_MS);
+    const outage = nextSourceBackoff(prev, Date.parse('2026-11-16T12:00:00Z'), 503, {
+      kind: 'transient',
+      snippet: 'maintenance',
+    });
+    expect(outage.strikes).toBe(3);
+    expect(outage.kind).toBe('transient');
+  });
+
+  it('records a Senate block on the poll and a long annual backoff', async () => {
+    const akamai = respond(403, AKAMAI);
+    const empty = respond(200, JSON.stringify({ recordsFiltered: 0, data: [] }));
+    const fetchImpl = async (url) => {
+      const u = String(url);
+      if (u.includes('efdsearch.senate.gov')) return akamai;
+      if (u.includes('API.xsp')) return empty;
+      return respond(404, '');
+    };
+    const store = memoryStore();
+    const lines = [];
+    await runPoliticianPoll({
+      store,
+      fetchImpl,
+      now: () => new Date('2026-11-16T15:00:00Z'),
+      sleep: async () => {},
+      logger: { log(line) { lines.push(line); }, warn(line) { lines.push(line); }, error(line) { lines.push(line); } },
+      env: { ...process.env, POLITICIAN_FETCH_DELAY_MS: '0', POLITICIAN_BACKFILL_YEARS: '1' },
+      ocrTools: async () => false,
+      force: true,
+    });
+    expect(store.db.politicianPoll.sources.senate).toMatchObject({
+      strikes: 0,
+      kind: 'blocked',
+      status: 403,
+      cursor: 0,
+    });
+    expect(lines.some((line) => line.includes('[senate] entry HTTP 403 blocked') && line.includes('Access Denied'))).toBe(true);
+    const until = Date.parse(store.db.politicianPoll.sources.senate.until);
+    expect(until - Date.now()).toBeGreaterThan(11 * 60 * 60 * 1000);
+    expect(until - Date.now()).toBeLessThan(BLOCK_BACKOFF_MS + 5000);
+
+    const annual = memoryStore();
+    const maintenance = respond(503, 'WEBSITE TEMPORARILY UNAVAILABLE DUE TO MAINTENANCE');
+    await runAnnualSlice({
+      store: annual,
+      delayMs: 0,
+      sleep: async () => {},
+      deadline: Date.now() + 5000,
+      logger: quiet,
+      fetchImpl: async (url) => (String(url).includes('efdsearch.senate.gov') ? maintenance : respond(404, '')),
+    });
+    expect(annual.db.politicianAnnual.backoff.senate.kind).toBe('transient');
+    expect(annual.db.politicianAnnual.backoff.senate.status).toBe(503);
+    const shortWait = Date.parse(annual.db.politicianAnnual.backoff.senate.until) - Date.now();
+    expect(shortWait).toBeLessThan(6 * 60 * 1000);
+    expect(shortWait).toBeGreaterThan(4 * 60 * 1000);
+
+    const blockedAnnual = memoryStore();
+    await runAnnualSlice({
+      store: blockedAnnual,
+      delayMs: 0,
+      sleep: async () => {},
+      deadline: Date.now() + 5000,
+      logger: quiet,
+      fetchImpl: async (url) => (String(url).includes('efdsearch.senate.gov') ? akamai : respond(404, '')),
+    });
+    expect(blockedAnnual.db.politicianAnnual.backoff.senate).toMatchObject({ kind: 'blocked', status: 403 });
+    expect(blockedAnnual.db.politicianAnnual.lastSummary.senate.kind).toBe('blocked');
+    const longWait = Date.parse(blockedAnnual.db.politicianAnnual.backoff.senate.until) - Date.now();
+    expect(longWait).toBeGreaterThan(11 * 60 * 60 * 1000);
   });
 });
 

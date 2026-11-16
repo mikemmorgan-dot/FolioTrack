@@ -1,0 +1,56 @@
+# Senate annual holdings. Render's shared IPs are often refused by
+# efdsearch.senate.gov, so this job does the fetch and writes the same
+# holdings tables. It is idempotent: a filing key that is already stored
+# is not downloaded again. While the search is in maintenance the run
+# logs the HTTP status and waits for the next schedule.
+#
+# Every three hours walks the backlog (at most 20 filings, 1.2s apart).
+# Once the queue is stored and the index is fresh, a run does not call
+# the Senate site. The index is refreshed when it is a day old, which is
+# the daily check for a new filing.
+#
+# GitHub may start the cron a few minutes late, and it turns scheduled
+# workflows off after 60 days without repository activity.
+name: Senate annual holdings
+
+on:
+  schedule:
+    - cron: '15 */3 * * *'
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: 'Filings to download this run. Blank uses 20.'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: senate-annual
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install server dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Ingest Senate annual holdings
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          POLITICIAN_FETCH_DELAY_MS: '1200'
+          SENATE_ANNUAL_CAP: ${{ github.event.inputs.cap }}
+        run: node politicians/senateAnnualCli.js

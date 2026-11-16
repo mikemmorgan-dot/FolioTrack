@@ -15,18 +15,35 @@ import {
   parseSenateAnnualSearchRow,
   reviewPaperAnnual,
 } from './parseSenateAnnual.js';
-import { SENATE_BASE } from './parseSenate.js';
+import { annualBackoffActive, annualFailureBackoff } from './backoff.js';
+import {
+  fetchSenatePage,
+  logSenateResponse,
+  openSenateSession,
+  POLITICIAN_UA,
+  postSenateSearch,
+} from './senateFetch.js';
 import { readZipEntries, zipText } from './zip.js';
 import { buildAnnualFiling, buildHoldingRows, selectCurrentAnnual } from './annualRecords.js';
 import { classifyHouseFiler, matchHouseParty, matchSenateParty } from './roster.js';
 import { personKey } from './normalize.js';
 import { splitStateDst } from './records.js';
 
-const POLITICIAN_UA = 'FolioTrack/1.0 (model-portfolio research; +https://foliotrack.onrender.com)';
-
 const INDEX_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const SENATE_PAGE = 100;
 const DOC_FAIL_STREAK = 2;
+export const SENATE_ANNUAL_CAP = 20;
+
+export function senateAnnualHandledElsewhere(env = process.env) {
+  const value = String(env.SENATE_ANNUAL_SOURCE || env.POLITICIAN_SENATE_ANNUAL || '').trim().toLowerCase();
+  return value === 'actions' || value === 'github' || value === 'external';
+}
+
+export function senateAnnualCap(env = process.env) {
+  const n = Number(env.SENATE_ANNUAL_CAP);
+  if (Number.isFinite(n) && n >= 1 && n <= 40) return Math.round(n);
+  return SENATE_ANNUAL_CAP;
+}
 
 // Backlog pace for the free Render instance. One document at a time, at most
 // 5 House + 2 Senate + 1 OGE filing, and a 45s wall clock. About 520 current
@@ -63,6 +80,32 @@ export function annualProgress({ queues = [], storedKeys = [], docBackoff = {}, 
     failed,
     remaining: unique.length - done - failed,
   };
+}
+
+export function mergeAnnualSlice(current, local, touched = {}) {
+  const next = { ...(current || {}) };
+  const backoff = { ...(current?.backoff || {}) };
+  for (const name of ['house', 'senate', 'oge']) {
+    const mark = touched[name];
+    if (mark === true) {
+      if (local?.[name]) next[name] = local[name];
+      backoff[name] = local?.backoff?.[name] ?? null;
+    } else if (mark === 'backoff') {
+      backoff[name] = local?.backoff?.[name] ?? null;
+    }
+  }
+  next.backoff = backoff;
+  const doc = { ...(current?.docBackoff || {}), ...(local?.docBackoff || {}) };
+  const pruned = {};
+  for (const [key, until] of Object.entries(doc)) {
+    if (Date.parse(until) > Date.now()) pruned[key] = until;
+  }
+  next.docBackoff = pruned;
+  if (local?.lastRunAt) next.lastRunAt = local.lastRunAt;
+  next.lastSummary = { ...(current?.lastSummary || {}), ...(local?.lastSummary || {}) };
+  if (local?.coverage) next.coverage = local.coverage;
+  if (local?.backfillComplete === true) next.backfillComplete = true;
+  return next;
 }
 
 export function formatAnnualProgress(progress, extra = {}) {
@@ -146,19 +189,22 @@ async function readBytes(res) {
   return Buffer.alloc(0);
 }
 
-function storeCookies(jar, res) {
-  const list = typeof res.headers?.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
-  const single = res.headers?.get?.('set-cookie');
-  const all = list.length ? list : (single ? [single] : []);
-  for (const cookie of all) {
-    const pair = String(cookie).split(';')[0];
-    const eq = pair.indexOf('=');
-    if (eq > 0) jar[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
-  }
+function senateFailure(failure) {
+  const kind = failure.kind === 'blocked' ? 'blocked' : 'transient';
+  const snippet = String(failure.snippet || '').trim();
+  const err = new Error(`senate ${kind === 'blocked' ? 'blocked' : 'returned'} HTTP ${failure.status}${snippet ? `: ${snippet}` : ''}`);
+  err.status = failure.status;
+  err.kind = kind;
+  err.snippet = snippet;
+  return err;
 }
 
-function cookieHeader(jar) {
-  return Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; ');
+async function acceptSenate(fetchImpl, logger) {
+  const session = await openSenateSession(fetchImpl, {
+    onResponse: (row) => logSenateResponse(logger, row.step, row),
+  });
+  if (session.failure) throw senateFailure(session.failure);
+  return session.jar;
 }
 
 function fresher(a, b) {
@@ -188,47 +234,6 @@ async function saveAnnual(store, filing, parsed, catalog) {
   const record = buildAnnualFiling({ ...filing, parsed });
   const rows = buildHoldingRows(record, parsed, catalog);
   return store.insertAnnualBundle(record, rows);
-}
-
-async function acceptSenate(fetchImpl) {
-  const jar = {};
-  let res = await http(fetchImpl, `${SENATE_BASE}/search/`, { redirect: 'manual' });
-  storeCookies(jar, res);
-  if (res.status >= 300 && res.status < 400) {
-    const loc = new URL(res.headers.get('location'), SENATE_BASE).href;
-    res = await http(fetchImpl, loc, { redirect: 'manual', headers: { Cookie: cookieHeader(jar) } });
-    storeCookies(jar, res);
-  }
-  if (res.status === 429 || res.status >= 500) {
-    const err = new Error(`senate returned HTTP ${res.status}`);
-    err.status = res.status;
-    throw err;
-  }
-  const html = typeof res.text === 'function' ? await res.text() : '';
-  const token = /name="csrfmiddlewaretoken"\s+value="([^"]+)"/i.exec(html);
-  if (!token) throw new Error('Senate eFD did not return the agreement form');
-  const agreed = await http(fetchImpl, `${SENATE_BASE}/search/home/`, {
-    method: 'POST',
-    redirect: 'manual',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Cookie: cookieHeader(jar),
-      Referer: `${SENATE_BASE}/search/home/`,
-      Origin: SENATE_BASE,
-    },
-    body: new URLSearchParams({
-      prohibition_agreement: '1',
-      csrfmiddlewaretoken: token[1],
-    }).toString(),
-  });
-  storeCookies(jar, agreed);
-  if (agreed.status === 429 || agreed.status >= 500) {
-    const err = new Error(`senate returned HTTP ${agreed.status}`);
-    err.status = agreed.status;
-    throw err;
-  }
-  if (!jar.csrftoken) throw new Error('Senate eFD did not set a session cookie');
-  return jar;
 }
 
 function houseMember(candidate, roster) {
@@ -371,36 +376,26 @@ async function downloadHouse({
 async function ensureSenateQueue({ fetchImpl, state, roster, sleep, delayMs, deadline, logger }) {
   const senate = state.senate || {};
   if (senate.done && !stale(senate.indexedAt, Date.now()) && senate.queue) return senate;
-  const jar = await acceptSenate(fetchImpl);
+  const jar = await acceptSenate(fetchImpl, logger);
   const people = new Map((senate.queue || []).map((row) => [row.personKey, row]));
   let offset = senate.done ? 0 : (Number(senate.offset) || 0);
   if (stale(senate.indexedAt, Date.now())) offset = 0;
   let done = false;
   let pages = 0;
   while (pages < 3 && !past(deadline)) {
-    const body = new URLSearchParams({
+    const searched = await postSenateSearch(fetchImpl, jar, {
       start: String(offset),
       length: String(SENATE_PAGE),
       report_types: '[7]',
       filer_types: '[1]',
+    }, {
+      onResponse: (row) => logSenateResponse(logger, 'search', row),
     });
-    const res = await http(fetchImpl, `${SENATE_BASE}/search/report/data/`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'X-CSRFToken': jar.csrftoken,
-        Cookie: cookieHeader(jar),
-        Referer: `${SENATE_BASE}/search/`,
-      },
-      body: body.toString(),
-    });
-    if (res.status === 429 || res.status >= 500) {
-      const err = new Error(`senate returned HTTP ${res.status}`);
-      err.status = res.status;
-      throw err;
+    if (searched.verdict.kind === 'blocked' || searched.verdict.kind === 'transient') {
+      throw senateFailure(searched.verdict);
     }
-    if (res.status !== 200) break;
-    const payload = JSON.parse(await res.text());
+    if (searched.verdict.status !== 200) break;
+    const payload = JSON.parse(searched.text);
     const rows = Array.isArray(payload.data) ? payload.data : [];
     pages += 1;
     for (const row of rows) {
@@ -444,7 +439,7 @@ async function downloadSenate({
   const existing = new Set(await store.existingAnnualKeys('senate', queue.map((row) => row.filingKey)));
   const pending = queue.filter((row) => !existing.has(row.filingKey) && !docBlocked(state?.docBackoff, row.filingKey, Date.now()));
   if (!pending.length) return { downloaded: 0, failed: 0 };
-  const jar = await acceptSenate(fetchImpl);
+  const jar = await acceptSenate(fetchImpl, logger);
   let downloaded = 0;
   let failed = 0;
   let streak = 0;
@@ -458,10 +453,22 @@ async function downloadSenate({
     let res;
     try {
       await sleep(delayMs);
-      res = await http(fetchImpl, candidate.sourceUrl, {
-        headers: { Cookie: cookieHeader(jar), Referer: `${SENATE_BASE}/search/` },
+      const page = await fetchSenatePage(fetchImpl, candidate.sourceUrl, {
+        jar,
+        onResponse: (row) => logSenateResponse(logger, 'report', row),
       });
+      if (page.verdict.kind === 'blocked') throw senateFailure(page.verdict);
+      if (page.verdict.kind === 'transient') {
+        blockDoc(state, candidate.filingKey, page.verdict.status);
+        failed += 1;
+        streak += 1;
+        logger.warn(`[annual] senate ${candidate.filingKey} HTTP ${page.verdict.status} body=${JSON.stringify(page.verdict.snippet || '')}`);
+        if (streak >= DOC_FAIL_STREAK) break;
+        continue;
+      }
+      res = { status: page.verdict.status, text: page.text };
     } catch (err) {
+      if (err.kind === 'blocked') throw err;
       blockDoc(state, candidate.filingKey, err.status || 500);
       failed += 1;
       streak += 1;
@@ -469,18 +476,10 @@ async function downloadSenate({
       if (streak >= DOC_FAIL_STREAK) break;
       continue;
     }
-    if (res.status === 429 || res.status >= 500) {
-      blockDoc(state, candidate.filingKey, res.status);
-      failed += 1;
-      streak += 1;
-      logger.warn(`[annual] senate ${candidate.filingKey} HTTP ${res.status}`);
-      if (streak >= DOC_FAIL_STREAK) break;
-      continue;
-    }
     streak = 0;
     downloaded += 1;
     const parsed = res.status === 200
-      ? parseSenateAnnualHtml(await res.text())
+      ? parseSenateAnnualHtml(res.text)
       : reviewPaperAnnual(`The Senate returned HTTP ${res.status} for this annual report.`);
     await saveAnnual(store, candidate, parsed, catalog);
   }
@@ -642,6 +641,22 @@ export async function runAnnualSlice(options = {}) {
   }
 }
 
+async function commitAnnualState(store, local, touched, storedKeys) {
+  const produce = (current) => {
+    const next = mergeAnnualSlice(current, local, touched);
+    next.progress = annualProgress({
+      queues: [next.house?.queue, next.senate?.queue, next.oge?.queue],
+      storedKeys,
+      docBackoff: next.docBackoff,
+    });
+    return next;
+  };
+  if (typeof store.mergeAnnualState === 'function') return store.mergeAnnualState(produce);
+  const next = produce(await store.getAnnualState());
+  await store.setAnnualState(next);
+  return next;
+}
+
 async function runAnnualSliceBody({
   fetchImpl = globalThis.fetch,
   store,
@@ -655,12 +670,14 @@ async function runAnnualSliceBody({
   maxPdfBytes = 32 * 1024 * 1024,
   docsPerRun = 3,
   pace = 'daily',
+  env = process.env,
 } = {}) {
   const state = { ...(await store.getAnnualState()) };
   pruneDocBackoff(state);
   const years = annualYears(now);
   const summary = {};
   const caps = paceCaps(pace, docsPerRun);
+  const queueTouched = { house: false, senate: false, oge: false };
   let spare = 0;
   const jobs = [
     ['house', async (cap) => {
@@ -668,6 +685,7 @@ async function runAnnualSliceBody({
         fetchImpl, state, roster, years, sleep, delayMs, deadline, logger,
       });
       state.house = house;
+      queueTouched.house = true;
       const result = await downloadHouse({
         fetchImpl, store, queue: house.queue || [], cap, delayMs, sleep, deadline, logger, catalog, maxPdfBytes, state,
       });
@@ -678,6 +696,7 @@ async function runAnnualSliceBody({
         fetchImpl, state, roster, sleep, delayMs, deadline, logger,
       });
       state.senate = senate;
+      queueTouched.senate = true;
       const result = senate.done
         ? await downloadSenate({
           fetchImpl, store, queue: senate.queue || [], cap, delayMs, sleep, deadline, logger, catalog, state,
@@ -695,26 +714,40 @@ async function runAnnualSliceBody({
     }],
   ];
 
+  const touched = { house: false, senate: false, oge: false };
   for (const [name, run] of jobs) {
+    if (name === 'senate' && senateAnnualHandledElsewhere(env)) {
+      summary.senate = { skipped: 'actions', downloaded: 0, failed: 0 };
+      continue;
+    }
     if (past(deadline)) {
       summary[name] = { skipped: 'budget', downloaded: 0, failed: 0 };
       continue;
     }
-    const until = Date.parse(state.backoff?.[name] || '');
-    if (Number.isFinite(until) && until > Date.now()) {
-      summary[name] = { skipped: 'backoff', downloaded: 0, failed: 0 };
+    if (annualBackoffActive(state.backoff?.[name], Date.now())) {
+      const entry = state.backoff?.[name];
+      summary[name] = {
+        skipped: 'backoff',
+        downloaded: 0,
+        failed: 0,
+        kind: typeof entry === 'object' ? entry.kind : null,
+        until: typeof entry === 'object' ? entry.until : entry,
+      };
       continue;
     }
     const cap = name === 'oge' ? caps.oge : caps[name] + (pace === 'backfill' ? spare : 0);
     try {
       summary[name] = await run(cap);
       state.backoff = { ...(state.backoff || {}), [name]: null };
+      touched[name] = true;
       if (pace === 'backfill' && name !== 'oge') spare = Math.max(0, cap - (summary[name].downloaded || 0));
     } catch (err) {
       const status = Number(err.status) || 500;
-      const wait = (status === 429 ? 15 : 5) * 60 * 1000;
-      state.backoff = { ...(state.backoff || {}), [name]: new Date(Date.now() + wait).toISOString() };
-      summary[name] = { error: err.message, downloaded: 0, failed: 0 };
+      const kind = err.kind === 'blocked' ? 'blocked' : 'transient';
+      const backoff = annualFailureBackoff(Date.now(), { kind, status, snippet: err.snippet || '' });
+      state.backoff = { ...(state.backoff || {}), [name]: backoff };
+      summary[name] = { error: err.message, downloaded: 0, failed: 0, kind, status, until: backoff.until };
+      touched[name] = queueTouched[name] ? true : 'backoff';
       logger.error(`[annual] ${name} failed: ${err.message}`);
       if (pace === 'backfill' && name !== 'oge') spare = Math.max(0, cap);
     }
@@ -729,30 +762,96 @@ async function runAnnualSliceBody({
   } catch (err) {
     logger.warn(`[annual] coverage failed: ${err.message}`);
   }
-  const progress = annualProgress({
+  const downloaded = ['house', 'senate', 'oge'].reduce((sum, name) => sum + (summary[name]?.downloaded || 0), 0);
+  const progressNow = annualProgress({
     queues: [state.house?.queue, state.senate?.queue, state.oge?.queue],
     storedKeys,
     docBackoff: state.docBackoff,
   });
-  const downloaded = ['house', 'senate', 'oge'].reduce((sum, name) => sum + (summary[name]?.downloaded || 0), 0);
-  logger.log(formatAnnualProgress(progress, { downloaded }));
   const houseDone = summary.house && !summary.house.error && !summary.house.skipped;
-  const senateDone = state.senate?.done === true && summary.senate && !summary.senate.error;
+  const senateExternal = summary.senate?.skipped === 'actions';
+  const senateDone = senateExternal || (state.senate?.done === true && summary.senate && !summary.senate.error && !summary.senate.skipped);
   const ogeDone = summary.oge && !summary.oge.error && !summary.oge.skipped;
   const caughtUp = houseDone && senateDone && ogeDone
     && (summary.house.downloaded || 0) === 0
-    && (summary.senate.downloaded || 0) === 0
+    && (senateExternal || (summary.senate.downloaded || 0) === 0)
     && (summary.oge.downloaded || 0) === 0
-    && progress.failed === 0;
-  const next = {
+    && progressNow.failed === 0;
+  const saved = await commitAnnualState(store, {
     ...state,
     backfillComplete: caughtUp ? true : state.backfillComplete === true,
     lastRunAt: new Date().toISOString(),
     lastSummary: summary,
     coverage,
-    progress,
-  };
-  if (caughtUp) next.backfillComplete = true;
-  await store.setAnnualState(next);
-  return { ...summary, coverage, progress, downloaded, backfillComplete: next.backfillComplete === true };
+  }, touched, storedKeys);
+  const progress = saved.progress;
+  logger.log(formatAnnualProgress(progress, { downloaded }));
+  return { ...summary, coverage, progress, downloaded, backfillComplete: saved.backfillComplete === true };
+}
+
+export async function runSenateAnnualSlice({
+  fetchImpl = globalThis.fetch,
+  store,
+  roster = { house: [], senate: [] },
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  delayMs = 1200,
+  deadline = null,
+  logger = console,
+  catalog = null,
+  cap = SENATE_ANNUAL_CAP,
+} = {}) {
+  const state = { ...(await store.getAnnualState()) };
+  pruneDocBackoff(state);
+  const summary = {};
+  let queueTouched = false;
+  if (annualBackoffActive(state.backoff?.senate, Date.now())) {
+    const entry = state.backoff.senate;
+    summary.senate = {
+      skipped: 'backoff',
+      downloaded: 0,
+      failed: 0,
+      kind: typeof entry === 'object' ? entry.kind : null,
+      until: typeof entry === 'object' ? entry.until : entry,
+    };
+  } else {
+    try {
+      const senate = await ensureSenateQueue({
+        fetchImpl, state, roster, sleep, delayMs, deadline, logger,
+      });
+      state.senate = senate;
+      queueTouched = true;
+      const result = senate.done
+        ? await downloadSenate({
+          fetchImpl, store, queue: senate.queue || [], cap, delayMs, sleep, deadline, logger, catalog, state,
+        })
+        : { downloaded: 0, failed: 0 };
+      state.backoff = { ...(state.backoff || {}), senate: null };
+      summary.senate = { queued: (senate.queue || []).length, ...result, indexDone: senate.done === true };
+    } catch (err) {
+      const status = Number(err.status) || 500;
+      const kind = err.kind === 'blocked' ? 'blocked' : 'transient';
+      const backoff = annualFailureBackoff(Date.now(), { kind, status, snippet: err.snippet || '' });
+      state.backoff = { ...(state.backoff || {}), senate: backoff };
+      summary.senate = { error: err.message, downloaded: 0, failed: 0, kind, status, until: backoff.until };
+      logger.error(`[annual] senate failed: ${err.message}`);
+    }
+  }
+  let coverage = null;
+  let storedKeys = [];
+  try {
+    const summaries = await store.listAnnualFilingSummaries();
+    coverage = annualCoverage(summaries);
+    storedKeys = summaries.map((row) => row.filingKey);
+  } catch (err) {
+    logger.warn(`[annual] coverage failed: ${err.message}`);
+  }
+  const mark = summary.senate?.error ? (queueTouched ? true : 'backoff') : (queueTouched ? true : false);
+  const saved = await commitAnnualState(store, {
+    ...state,
+    lastRunAt: new Date().toISOString(),
+    lastSummary: summary,
+    coverage,
+  }, { senate: mark }, storedKeys);
+  logger.log(formatAnnualProgress(saved.progress, { downloaded: summary.senate?.downloaded || 0 }));
+  return { ...summary, coverage, progress: saved.progress };
 }

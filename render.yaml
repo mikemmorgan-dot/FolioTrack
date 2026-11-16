@@ -11,6 +11,11 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 20.18.0
+      # Senate annual filings are fetched by .github/workflows/senate-annual.yml.
+      # actions tells the web service to leave efdsearch.senate.gov alone.
+      # Periodic Senate trade reports still use the in-process poll.
+      - key: SENATE_ANNUAL_SOURCE
+        value: actions
       # Durable storage. Paste your Neon (or other Postgres) connection string here,
       # or set it in the Render dashboard. WITHOUT it the app falls back to an
       # ephemeral JSON file that is wiped on every restart — edits will not survive.

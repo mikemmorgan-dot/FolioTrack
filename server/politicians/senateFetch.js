@@ -173,6 +173,16 @@ export async function openSenateSession(fetchImpl = globalThis.fetch, { onRespon
   return { jar, failure: null };
 }
 
+export async function fetchSenatePage(fetchImpl, url, { jar, onResponse, step = 'report' } = {}) {
+  const headers = {};
+  if (jar) {
+    headers.Cookie = cookieHeader(jar);
+    headers.Referer = `${SENATE_BASE}/search/`;
+  }
+  const seen = await takeResponse(fetchImpl, step, url, { headers }, onResponse);
+  return { text: seen.body, verdict: seen.verdict };
+}
+
 export async function postSenateSearch(fetchImpl, jar, params, { onResponse } = {}) {
   const seen = await takeResponse(fetchImpl, 'search', `${SENATE_BASE}/search/report/data/`, {
     method: 'POST',

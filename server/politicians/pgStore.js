@@ -835,6 +835,32 @@ export function installPgPolitician(Store) {
     await writeSetting.call(this, 'politicianAnnual', state || {});
     return state || {};
   };
+  Store.prototype.mergeAnnualState = async function mergeAnnualState(mutator) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ('politicianAnnual', '{}'::jsonb, now())
+         ON CONFLICT (key) DO NOTHING`,
+      );
+      const { rows } = await client.query(
+        `SELECT value FROM app_settings WHERE key = 'politicianAnnual' FOR UPDATE`,
+      );
+      const next = await mutator(rows[0]?.value || {});
+      await client.query(
+        `UPDATE app_settings SET value = $1::jsonb, updated_at = now() WHERE key = 'politicianAnnual'`,
+        [JSON.stringify(next)],
+      );
+      await client.query('COMMIT');
+      return next;
+    } catch (err) {
+      try { await client.query('ROLLBACK'); } catch { /* already closed */ }
+      throw err;
+    } finally {
+      client.release();
+    }
+  };
   Store.prototype.existingAnnualKeys = async function existingAnnualKeys(source, keys) {
     if (!keys?.length) return [];
     const { rows } = await this.q(

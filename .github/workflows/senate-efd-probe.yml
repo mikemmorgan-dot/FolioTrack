@@ -1,12 +1,9 @@
-# Temporary reachability check. Push to the working branch starts it.
-# workflow_dispatch is kept so the check can be repeated by hand.
-# The job logs HTTP status codes and a short body snippet. It does not print secrets.
+# Manual reachability check. Logs HTTP status codes and a short body snippet.
+# It does not print secrets. The push trigger used to start the first run
+# has been removed.
 name: Senate eFD probe
 
 on:
-  push:
-    branches:
-      - cursor/senate-efd-actions-144e
   workflow_dispatch:
 
 permissions:

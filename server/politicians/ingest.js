@@ -7,6 +7,13 @@ import { pdfBufferToLayoutText } from '../historyPdf.js';
 import { ocrPdfFile, ocrToolsAvailable, writePdfTemp } from './ocr.js';
 import { backoffActive, nextSourceBackoff } from './backoff.js';
 import { politicianConfig } from './config.js';
+import {
+  fetchSenatePage,
+  logSenateResponse,
+  openSenateSession,
+  POLITICIAN_UA,
+  postSenateSearch,
+} from './senateFetch.js';
 import { politicianRunDelayMs } from './schedule.js';
 import { backfillYearList, isoDate, windowStartIso } from './normalize.js';
 import {
@@ -17,7 +24,7 @@ import {
 } from './parseHouse.js';
 import { OCR_FAILED_NOTE, claimFresh, ocrSettled, pendingOcrResult } from './ocrPending.js';
 import { OGE_API, parseOgeApiRow } from './parseOge.js';
-import { parseSenatePtrHtml, parseSenateSearchRow, reviewPaperFiling, SENATE_BASE } from './parseSenate.js';
+import { parseSenatePtrHtml, parseSenateSearchRow, reviewPaperFiling } from './parseSenate.js';
 import { buildFilingRecord, buildTradeRows, heldIndex, splitStateDst } from './records.js';
 import { classifyHouseFiler, matchHouseParty, matchSenateParty, parseHouseRoster, parseSenateRoster } from './roster.js';
 import { readZipEntries, zipText } from './zip.js';
@@ -25,18 +32,23 @@ import { buildPoliticianDigest } from './digest.js';
 import { backfillNullTickers, loadTickerCatalog } from './nameMatch.js';
 import { runAnnualSlice } from './annualIngest.js';
 
-export const POLITICIAN_UA = 'FolioTrack/1.0 (model-portfolio research; +https://foliotrack.onrender.com)';
+export { POLITICIAN_UA };
 
 const HOUSE_ROSTER_URL = 'https://clerk.house.gov/xml/lists/MemberData.xml';
 const SENATE_ROSTER_URL = 'https://www.senate.gov/general/contact_information/senators_cfm.xml';
 const ROSTER_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export class SourceHttpError extends Error {
-  constructor(source, status) {
-    super(`${source} returned HTTP ${status}`);
+  constructor(source, status, extra = {}) {
+    const kind = extra.kind === 'blocked' ? 'blocked' : 'transient';
+    const snippet = String(extra.snippet || '').trim();
+    const verb = kind === 'blocked' ? 'blocked' : 'returned';
+    super(snippet ? `${source} ${verb} HTTP ${status}: ${snippet}` : `${source} returned HTTP ${status}`);
     this.name = 'SourceHttpError';
     this.source = source;
     this.status = status;
+    this.kind = kind;
+    this.snippet = snippet;
   }
 }
 
@@ -68,54 +80,16 @@ async function readBytes(res) {
   return Buffer.alloc(0);
 }
 
-function storeCookies(jar, res) {
-  const list = typeof res.headers?.getSetCookie === 'function'
-    ? res.headers.getSetCookie()
-    : [];
-  const single = res.headers?.get?.('set-cookie');
-  const all = list.length ? list : (single ? [single] : []);
-  for (const cookie of all) {
-    const pair = String(cookie).split(';')[0];
-    const eq = pair.indexOf('=');
-    if (eq > 0) jar[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
-  }
+function throwSenate(failure) {
+  throw new SourceHttpError('senate', failure.status, failure);
 }
 
-function cookieHeader(jar) {
-  return Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; ');
-}
-
-async function acceptSenate(fetchImpl) {
-  const jar = {};
-  let res = await http(fetchImpl, `${SENATE_BASE}/search/`, { redirect: 'manual' });
-  storeCookies(jar, res);
-  if (res.status >= 300 && res.status < 400) {
-    const loc = new URL(res.headers.get('location'), SENATE_BASE).href;
-    res = await http(fetchImpl, loc, { redirect: 'manual', headers: { Cookie: cookieHeader(jar) } });
-    storeCookies(jar, res);
-  }
-  if (res.status === 429 || res.status >= 500) throw new SourceHttpError('senate', res.status);
-  const html = typeof res.text === 'function' ? await res.text() : '';
-  const token = /name="csrfmiddlewaretoken"\s+value="([^"]+)"/i.exec(html);
-  if (!token) throw new Error('Senate eFD did not return the agreement form');
-  const agreed = await http(fetchImpl, `${SENATE_BASE}/search/home/`, {
-    method: 'POST',
-    redirect: 'manual',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Cookie: cookieHeader(jar),
-      Referer: `${SENATE_BASE}/search/home/`,
-      Origin: SENATE_BASE,
-    },
-    body: new URLSearchParams({
-      prohibition_agreement: '1',
-      csrfmiddlewaretoken: token[1],
-    }).toString(),
+async function acceptSenate(fetchImpl, logger) {
+  const session = await openSenateSession(fetchImpl, {
+    onResponse: (row) => logSenateResponse(logger, row.step, row),
   });
-  storeCookies(jar, agreed);
-  if (agreed.status === 429 || agreed.status >= 500) throw new SourceHttpError('senate', agreed.status);
-  if (!jar.csrftoken) throw new Error('Senate eFD did not set a session cookie');
-  return jar;
+  if (session.failure) throwSenate(session.failure);
+  return session.jar;
 }
 
 function slashDate(iso) {
@@ -200,7 +174,7 @@ export async function readOgePdf(bytes, now) {
   }
 }
 
-async function loadRoster(store, fetchImpl, nowMs, logger) {
+export async function loadPoliticianRoster(store, fetchImpl, nowMs, logger) {
   const cached = await store.getPoliticianRoster();
   if (cached?.fetchedAt && nowMs - Date.parse(cached.fetchedAt) < ROSTER_MAX_AGE_MS) {
     return cached;
@@ -320,7 +294,7 @@ async function ingestSenate({
   fetchImpl, store, roster, windowStart, today, cap, delayMs, sleep, deadline, logger, cursor = 0,
   catalog = null,
 }) {
-  const jar = await acceptSenate(fetchImpl);
+  const jar = await acceptSenate(fetchImpl, logger);
   const candidates = [];
   const pageSize = 100;
   const pagesPerRun = 3;
@@ -335,27 +309,20 @@ async function ingestSenate({
   let furthest = cursor;
   for (const offset of uniqueOffsets) {
     if (past(deadline)) break;
-    const body = new URLSearchParams({
+    const searched = await postSenateSearch(fetchImpl, jar, {
       start: String(offset),
       length: String(pageSize),
       report_types: '[11]',
       filer_types: '[1]',
       submitted_start_date: slashDate(windowStart),
       submitted_end_date: slashDate(today),
+    }, {
+      onResponse: (row) => logSenateResponse(logger, 'search', row),
     });
-    const res = await http(fetchImpl, `${SENATE_BASE}/search/report/data/`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'X-CSRFToken': jar.csrftoken,
-        Cookie: cookieHeader(jar),
-        Referer: `${SENATE_BASE}/search/`,
-      },
-      body: body.toString(),
-    });
-    if (res.status === 429 || res.status >= 500) throw new SourceHttpError('senate', res.status);
-    if (res.status !== 200) throw new SourceHttpError('senate', res.status);
-    const payload = JSON.parse(await res.text());
+    if (searched.verdict.kind === 'blocked' || searched.verdict.kind === 'transient' || searched.verdict.status !== 200) {
+      throwSenate({ ...searched.verdict, kind: searched.verdict.kind === 'blocked' ? 'blocked' : 'transient' });
+    }
+    const payload = JSON.parse(searched.text);
     const rows = Array.isArray(payload.data) ? payload.data : [];
     pages += 1;
     for (const row of rows) {
@@ -415,15 +382,16 @@ async function ingestSenate({
     }
     downloaded += 1;
     await sleep(delayMs);
-    const res = await http(fetchImpl, candidate.sourceUrl, {
-      headers: { Cookie: cookieHeader(jar), Referer: `${SENATE_BASE}/search/` },
+    const page = await fetchSenatePage(fetchImpl, candidate.sourceUrl, {
+      jar,
+      onResponse: (row) => logSenateResponse(logger, 'report', row),
     });
-    if (res.status === 429 || res.status >= 500) throw new SourceHttpError('senate', res.status);
+    if (page.verdict.kind === 'blocked' || page.verdict.kind === 'transient') throwSenate(page.verdict);
     let parsed;
-    if (res.status !== 200) {
-      parsed = reviewPaperFiling(`The Senate returned HTTP ${res.status} for this report.`);
+    if (page.verdict.status !== 200) {
+      parsed = reviewPaperFiling(`The Senate returned HTTP ${page.verdict.status} for this report.`);
     } else {
-      parsed = parseSenatePtrHtml(await res.text());
+      parsed = parseSenatePtrHtml(page.text);
     }
     const filing = buildFilingRecord({
       source: 'senate',
@@ -752,7 +720,7 @@ export async function runPoliticianPoll({
   const windowStart = windowStartIso(clock, cfg.backfillYears);
   const today = todayIso(clock);
   const years = backfillYearList(clock, cfg.backfillYears);
-  const roster = await loadRoster(store, fetchImpl, nowMs, logger);
+  const roster = await loadPoliticianRoster(store, fetchImpl, nowMs, logger);
   let catalog = null;
   try {
     catalog = await loadTickerCatalog({ store, fetchImpl, now: clock, logger });
@@ -808,12 +776,20 @@ export async function runPoliticianPoll({
       newReviews.push(...result.newReviews);
       if (!result.caughtUp) allCaughtUp = false;
     } catch (err) {
-      const status = err instanceof SourceHttpError ? err.status : 500;
+      const status = err instanceof SourceHttpError
+        ? err.status
+        : (Number(err.status) >= 400 ? Number(err.status) : 500);
+      const kind = err.kind === 'blocked' ? 'blocked' : 'transient';
       sources[name] = {
-        ...nextSourceBackoff(sources[name], Date.now(), status),
+        ...nextSourceBackoff(sources[name], Date.now(), status, { kind, snippet: err.snippet || '' }),
         cursor: sources[name]?.cursor ?? 0,
       };
-      summary[name] = { error: err.message, until: sources[name].until };
+      summary[name] = {
+        error: err.message,
+        until: sources[name].until,
+        kind: sources[name].kind,
+        status: sources[name].status,
+      };
       allCaughtUp = false;
       logger.error(`[politicians] ${name} failed: ${err.message}`);
     }
