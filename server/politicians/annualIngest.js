@@ -17,6 +17,7 @@ import {
 } from './parseSenateAnnual.js';
 import { annualBackoffActive, annualFailureBackoff } from './backoff.js';
 import {
+  bodySnippet,
   fetchSenatePage,
   logSenateResponse,
   openSenateSession,
@@ -31,6 +32,13 @@ import { splitStateDst } from './records.js';
 
 const INDEX_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const SENATE_PAGE = 100;
+// Render's annual slice shares a 45s budget with House and OGE, so it reads
+// a few pages and saves the offset. Actions has its own 15 minute deadline
+// and walks far enough to finish. On 2026-11-18 the senator annual search
+// reported 1,619 rows, which is 17 pages.
+const SENATE_INDEX_PAGES = 3;
+const SENATE_INDEX_PAGES_ACTIONS = 40;
+const INDEX_STALL_DOWNLOADS = 2;
 const DOC_FAIL_STREAK = 2;
 export const SENATE_ANNUAL_CAP = 20;
 
@@ -189,14 +197,103 @@ async function readBytes(res) {
   return Buffer.alloc(0);
 }
 
+function failureKind(kind) {
+  if (kind === 'blocked' || kind === 'other' || kind === 'transient') return kind;
+  return 'transient';
+}
+
 function senateFailure(failure) {
-  const kind = failure.kind === 'blocked' ? 'blocked' : 'transient';
+  const kind = failureKind(failure.kind);
   const snippet = String(failure.snippet || '').trim();
-  const err = new Error(`senate ${kind === 'blocked' ? 'blocked' : 'returned'} HTTP ${failure.status}${snippet ? `: ${snippet}` : ''}`);
+  const verb = kind === 'blocked' ? 'blocked' : 'returned';
+  const err = new Error(`senate ${verb} HTTP ${failure.status}${snippet ? `: ${snippet}` : ''}`);
   err.status = failure.status;
   err.kind = kind;
   err.snippet = snippet;
   return err;
+}
+
+function finiteCount(value) {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function responseContentType(searched) {
+  const headers = searched?.res?.headers;
+  if (!headers || typeof headers.get !== 'function') return '';
+  return String(headers.get('content-type') || '').slice(0, 80);
+}
+
+function indexStop(fields) {
+  return {
+    at: new Date().toISOString(),
+    reason: fields.reason,
+    offset: fields.offset,
+    status: Number(fields.status) || 0,
+    kind: fields.kind || null,
+    contentType: fields.contentType || '',
+    recordsTotal: finiteCount(fields.recordsTotal),
+    recordsFiltered: finiteCount(fields.recordsFiltered),
+    rows: finiteCount(fields.rows),
+    snippet: bodySnippet(fields.snippet || ''),
+  };
+}
+
+function formatIndexStop(stop) {
+  const count = (n) => (Number.isFinite(n) ? String(n) : 'null');
+  return [
+    '[annual] senate index stopped:',
+    `reason=${stop.reason}`,
+    `offset=${stop.offset}`,
+    `status=${stop.status}`,
+    `kind=${stop.kind || ''}`,
+    `content-type=${JSON.stringify(stop.contentType || '')}`,
+    `recordsTotal=${count(stop.recordsTotal)}`,
+    `recordsFiltered=${count(stop.recordsFiltered)}`,
+    `rows=${count(stop.rows)}`,
+    `body=${JSON.stringify(stop.snippet || '')}`,
+  ].join(' ');
+}
+
+function logIndexStop(logger, stop) {
+  if (!stop || !logger) return;
+  const line = formatIndexStop(stop);
+  if (typeof logger.warn === 'function') logger.warn(line);
+  else if (typeof logger.log === 'function') logger.log(line);
+}
+
+function unfinishedSenate({ base, people, offset, stop, startOffset, blockDownloads }) {
+  const advanced = offset > startOffset;
+  const stalls = advanced ? 0 : (Number(base?.stalls) || 0) + 1;
+  const downloadIndexed = stalls >= INDEX_STALL_DOWNLOADS && people.size > 0 && !blockDownloads;
+  return {
+    indexedAt: base?.indexedAt || null,
+    offset,
+    done: false,
+    queue: [...people.values()],
+    stop,
+    stalls,
+    downloadIndexed,
+  };
+}
+
+function readSearchPayload(searched) {
+  if (Number(searched?.verdict?.status) !== 200) return { ok: false, payload: null };
+  try {
+    const payload = JSON.parse(searched.text);
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return { ok: false, payload: null };
+    return { ok: true, payload };
+  } catch {
+    return { ok: false, payload: null };
+  }
+}
+
+function shouldRefreshSession(searched, parsed) {
+  const kind = searched?.verdict?.kind;
+  if (kind === 'blocked' || kind === 'transient') return false;
+  if (Number(searched?.verdict?.status) !== 200) return true;
+  return !parsed?.ok;
 }
 
 async function acceptSenate(fetchImpl, logger) {
@@ -373,40 +470,145 @@ async function downloadHouse({
   return { downloaded, failed };
 }
 
-async function ensureSenateQueue({ fetchImpl, state, roster, sleep, delayMs, deadline, logger }) {
+async function ensureSenateQueue({
+  fetchImpl, state, roster, sleep, delayMs, deadline, logger, indexPages = SENATE_INDEX_PAGES,
+}) {
   const senate = state.senate || {};
+  // A finished index is reused for a day. An unfinished one keeps its offset.
+  // indexedAt is written only when the walk finishes, so a missing timestamp
+  // used to look stale and send every run back to offset 0. Three pages then
+  // stopped at 300 forever, and downloads never started.
   if (senate.done && !stale(senate.indexedAt, Date.now()) && senate.queue) return senate;
-  const jar = await acceptSenate(fetchImpl, logger);
+  const restart = senate.done === true;
   const people = new Map((senate.queue || []).map((row) => [row.personKey, row]));
-  let offset = senate.done ? 0 : (Number(senate.offset) || 0);
-  if (stale(senate.indexedAt, Date.now())) offset = 0;
+  let offset = restart ? 0 : (Number(senate.offset) || 0);
+  const startOffset = offset;
+  const pageLimit = Math.min(100, Math.max(1, Number(indexPages) || SENATE_INDEX_PAGES));
+  let jar = await acceptSenate(fetchImpl, logger);
   let done = false;
   let pages = 0;
-  while (pages < 3 && !past(deadline)) {
-    const searched = await postSenateSearch(fetchImpl, jar, {
+  let last = {
+    status: 0,
+    kind: null,
+    contentType: '',
+    recordsTotal: null,
+    recordsFiltered: null,
+    rows: null,
+    snippet: '',
+  };
+
+  function noteStall(partial) {
+    logger.log(`[annual] senate index people=${partial.queue.length} offset=${partial.offset} done=false`);
+    logIndexStop(logger, partial.stop);
+    if (partial.downloadIndexed) {
+      logger.warn(`[annual] senate index stalled at offset=${partial.offset} stalls=${partial.stalls}; downloading filings already indexed`);
+    }
+  }
+
+  function failIndex(err, stop, blockDownloads) {
+    const kind = failureKind(err.kind || stop?.kind);
+    err.kind = kind;
+    err.status = Number(err.status) || stop?.status || 500;
+    err.snippet = err.snippet || stop?.snippet || '';
+    const partial = unfinishedSenate({
+      base: senate,
+      people,
+      offset,
+      stop,
+      startOffset,
+      blockDownloads: blockDownloads || kind === 'blocked' || kind === 'transient',
+    });
+    err.partial = partial;
+    noteStall(partial);
+    throw err;
+  }
+
+  function failSearch(searched, kind, reason, counts = {}) {
+    const stop = indexStop({
+      reason,
+      offset,
+      status: searched?.verdict?.status || 0,
+      kind,
+      contentType: responseContentType(searched),
+      recordsTotal: counts.recordsTotal,
+      recordsFiltered: counts.recordsFiltered,
+      rows: counts.rows,
+      snippet: counts.snippet || searched?.verdict?.snippet || '',
+    });
+    const err = senateFailure({ kind, status: stop.status, snippet: stop.snippet });
+    failIndex(err, stop, kind === 'blocked' || kind === 'transient');
+  }
+
+  while (pages < pageLimit && !past(deadline)) {
+    const params = {
       start: String(offset),
       length: String(SENATE_PAGE),
       report_types: '[7]',
       filer_types: '[1]',
-    }, {
-      onResponse: (row) => logSenateResponse(logger, 'search', row),
-    });
-    if (searched.verdict.kind === 'blocked' || searched.verdict.kind === 'transient') {
-      throw senateFailure(searched.verdict);
+    };
+    const onResponse = (row) => logSenateResponse(logger, 'search', row);
+    let searched = await postSenateSearch(fetchImpl, jar, params, { onResponse });
+    let parsed = readSearchPayload(searched);
+    if (shouldRefreshSession(searched, parsed)) {
+      logger.warn(`[annual] senate index refreshing the agreement after HTTP ${searched.verdict.status} at offset=${offset}`);
+      try {
+        jar = await acceptSenate(fetchImpl, logger);
+      } catch (err) {
+        const stop = indexStop({
+          reason: 'http',
+          offset,
+          status: Number(err.status) || 0,
+          kind: failureKind(err.kind),
+          contentType: '',
+          snippet: err.snippet || err.message,
+        });
+        failIndex(err, stop);
+      }
+      searched = await postSenateSearch(fetchImpl, jar, params, { onResponse });
+      parsed = readSearchPayload(searched);
     }
-    if (searched.verdict.status !== 200) break;
-    const payload = JSON.parse(searched.text);
+    if (searched.verdict.kind === 'blocked' || searched.verdict.kind === 'transient') {
+      failSearch(searched, searched.verdict.kind, 'http');
+    }
+    if (searched.verdict.status !== 200) failSearch(searched, 'other', 'http');
+    if (!parsed.ok) failSearch(searched, 'other', 'unparseable', { snippet: bodySnippet(searched.text) });
+
+    const payload = parsed.payload;
     const rows = Array.isArray(payload.data) ? payload.data : [];
+    const recordsTotal = finiteCount(payload.recordsTotal);
+    const recordsFiltered = finiteCount(payload.recordsFiltered);
+    const total = recordsFiltered ?? recordsTotal;
+    last = {
+      status: 200,
+      kind: 'ok',
+      contentType: responseContentType(searched),
+      recordsTotal,
+      recordsFiltered,
+      rows: rows.length,
+      snippet: bodySnippet(searched.text),
+    };
+    if (!rows.length) {
+      if (total != null && offset >= total) {
+        done = true;
+        break;
+      }
+      failSearch(searched, 'other', 'empty-page', {
+        recordsTotal,
+        recordsFiltered,
+        rows: 0,
+        snippet: searched.text,
+      });
+    }
     pages += 1;
     for (const row of rows) {
-      const parsed = parseSenateAnnualSearchRow(row);
-      if (!parsed) continue;
-      const party = matchSenateParty(parsed, roster?.senate || []);
+      const parsedRow = parseSenateAnnualSearchRow(row);
+      if (!parsedRow) continue;
+      const party = matchSenateParty(parsedRow, roster?.senate || []);
       if (!party.state && !(roster?.senate || []).length) continue;
       if (!party.party && (roster?.senate || []).length) continue;
-      const key = personKey('senate', parsed.last, parsed.first);
+      const key = personKey('senate', parsedRow.last, parsedRow.first);
       const candidate = {
-        ...parsed,
+        ...parsedRow,
         personKey: key,
         office: 'senate',
         party: party.party,
@@ -416,20 +618,48 @@ async function ensureSenateQueue({ fetchImpl, state, roster, sleep, delayMs, dea
       const prev = people.get(key);
       if (!prev || fresher(candidate, prev) === candidate) people.set(key, candidate);
     }
-    const total = Number(payload.recordsFiltered ?? payload.recordsTotal ?? 0);
     offset += rows.length;
-    if (!rows.length || offset >= total) {
+    if (total != null && offset >= total) {
       done = true;
       break;
     }
+    if (pages >= pageLimit || past(deadline)) break;
     await sleep(delayMs);
   }
-  logger.log(`[annual] senate index people=${people.size} offset=${offset} done=${done}`);
+
+  if (!done) {
+    const stop = indexStop({
+      reason: past(deadline) ? 'deadline' : 'page-cap',
+      offset,
+      status: last.status,
+      kind: last.kind || 'ok',
+      contentType: last.contentType,
+      recordsTotal: last.recordsTotal,
+      recordsFiltered: last.recordsFiltered,
+      rows: last.rows,
+      snippet: last.snippet,
+    });
+    const partial = unfinishedSenate({
+      base: senate,
+      people,
+      offset,
+      stop,
+      startOffset,
+      blockDownloads: false,
+    });
+    noteStall(partial);
+    return partial;
+  }
+
+  logger.log(`[annual] senate index people=${people.size} offset=${offset} done=true`);
   return {
-    indexedAt: done ? new Date().toISOString() : (senate.indexedAt || null),
+    indexedAt: new Date().toISOString(),
     offset,
-    done,
+    done: true,
     queue: [...people.values()],
+    stop: null,
+    stalls: 0,
+    downloadIndexed: false,
   };
 }
 
@@ -694,15 +924,21 @@ async function runAnnualSliceBody({
     ['senate', async (cap) => {
       const senate = await ensureSenateQueue({
         fetchImpl, state, roster, sleep, delayMs, deadline, logger,
+        indexPages: SENATE_INDEX_PAGES,
       });
       state.senate = senate;
       queueTouched.senate = true;
-      const result = senate.done
+      const result = (senate.done || senate.downloadIndexed)
         ? await downloadSenate({
           fetchImpl, store, queue: senate.queue || [], cap, delayMs, sleep, deadline, logger, catalog, state,
         })
         : { downloaded: 0, failed: 0 };
-      return { queued: (senate.queue || []).length, ...result, indexDone: senate.done === true };
+      return {
+        queued: (senate.queue || []).length,
+        ...result,
+        indexDone: senate.done === true,
+        stop: senate.stop?.reason || null,
+      };
     }],
     ['oge', async (cap) => {
       const oge = await ensureOgeQueue({ fetchImpl, state, sleep, delayMs, deadline, logger });
@@ -742,11 +978,41 @@ async function runAnnualSliceBody({
       touched[name] = true;
       if (pace === 'backfill' && name !== 'oge') spare = Math.max(0, cap - (summary[name].downloaded || 0));
     } catch (err) {
+      if (name === 'senate' && err.partial) {
+        state.senate = err.partial;
+        queueTouched.senate = true;
+      }
+      let downloaded = 0;
+      let failed = 0;
+      if (name === 'senate' && err.partial?.downloadIndexed && err.kind !== 'blocked' && err.kind !== 'transient') {
+        try {
+          const result = await downloadSenate({
+            fetchImpl, store, queue: err.partial.queue || [], cap, delayMs, sleep, deadline, logger, catalog, state,
+          });
+          downloaded = result.downloaded || 0;
+          failed = result.failed || 0;
+        } catch (downloadErr) {
+          if (downloadErr.kind === 'blocked' || downloadErr.kind === 'transient') err = downloadErr;
+          else logger.warn(`[annual] senate indexed download failed: ${downloadErr.message}`);
+        }
+      }
       const status = Number(err.status) || 500;
-      const kind = err.kind === 'blocked' ? 'blocked' : 'transient';
+      const kind = failureKind(err.kind);
       const backoff = annualFailureBackoff(Date.now(), { kind, status, snippet: err.snippet || '' });
       state.backoff = { ...(state.backoff || {}), [name]: backoff };
-      summary[name] = { error: err.message, downloaded: 0, failed: 0, kind, status, until: backoff.until };
+      summary[name] = {
+        error: err.message,
+        downloaded,
+        failed,
+        kind,
+        status,
+        until: backoff.until,
+      };
+      if (name === 'senate') {
+        summary.senate.queued = (state.senate?.queue || []).length;
+        summary.senate.indexDone = false;
+        summary.senate.stop = state.senate?.stop?.reason || null;
+      }
       touched[name] = queueTouched[name] ? true : 'backoff';
       logger.error(`[annual] ${name} failed: ${err.message}`);
       if (pace === 'backfill' && name !== 'oge') spare = Math.max(0, cap);
@@ -799,6 +1065,7 @@ export async function runSenateAnnualSlice({
   logger = console,
   catalog = null,
   cap = SENATE_ANNUAL_CAP,
+  indexPages = SENATE_INDEX_PAGES_ACTIONS,
 } = {}) {
   const state = { ...(await store.getAnnualState()) };
   pruneDocBackoff(state);
@@ -816,23 +1083,56 @@ export async function runSenateAnnualSlice({
   } else {
     try {
       const senate = await ensureSenateQueue({
-        fetchImpl, state, roster, sleep, delayMs, deadline, logger,
+        fetchImpl, state, roster, sleep, delayMs, deadline, logger, indexPages,
       });
       state.senate = senate;
       queueTouched = true;
-      const result = senate.done
+      const result = (senate.done || senate.downloadIndexed)
         ? await downloadSenate({
           fetchImpl, store, queue: senate.queue || [], cap, delayMs, sleep, deadline, logger, catalog, state,
         })
         : { downloaded: 0, failed: 0 };
       state.backoff = { ...(state.backoff || {}), senate: null };
-      summary.senate = { queued: (senate.queue || []).length, ...result, indexDone: senate.done === true };
+      summary.senate = {
+        queued: (senate.queue || []).length,
+        ...result,
+        indexDone: senate.done === true,
+        stop: senate.stop?.reason || null,
+      };
     } catch (err) {
+      if (err.partial) {
+        state.senate = err.partial;
+        queueTouched = true;
+      }
+      let downloaded = 0;
+      let failed = 0;
+      if (err.partial?.downloadIndexed && err.kind !== 'blocked' && err.kind !== 'transient') {
+        try {
+          const result = await downloadSenate({
+            fetchImpl, store, queue: err.partial.queue || [], cap, delayMs, sleep, deadline, logger, catalog, state,
+          });
+          downloaded = result.downloaded || 0;
+          failed = result.failed || 0;
+        } catch (downloadErr) {
+          if (downloadErr.kind === 'blocked' || downloadErr.kind === 'transient') err = downloadErr;
+          else logger.warn(`[annual] senate indexed download failed: ${downloadErr.message}`);
+        }
+      }
       const status = Number(err.status) || 500;
-      const kind = err.kind === 'blocked' ? 'blocked' : 'transient';
+      const kind = failureKind(err.kind);
       const backoff = annualFailureBackoff(Date.now(), { kind, status, snippet: err.snippet || '' });
       state.backoff = { ...(state.backoff || {}), senate: backoff };
-      summary.senate = { error: err.message, downloaded: 0, failed: 0, kind, status, until: backoff.until };
+      summary.senate = {
+        error: err.message,
+        downloaded,
+        failed,
+        kind,
+        status,
+        until: backoff.until,
+        queued: (state.senate?.queue || []).length,
+        indexDone: false,
+        stop: state.senate?.stop?.reason || null,
+      };
       logger.error(`[annual] senate failed: ${err.message}`);
     }
   }

@@ -46,11 +46,11 @@ export function annualBackoffActive(entry, nowMs) {
 }
 
 export function annualFailureBackoff(nowMs, { kind, status, snippet } = {}) {
-  const blocked = kind === 'blocked';
-  const wait = blocked ? BLOCK_BACKOFF_MS : ((Number(status) === 429 ? 15 : 5) * 60 * 1000);
+  const resolved = kind === 'blocked' ? 'blocked' : kind === 'other' ? 'other' : 'transient';
+  const wait = resolved === 'blocked' ? BLOCK_BACKOFF_MS : ((Number(status) === 429 ? 15 : 5) * 60 * 1000);
   return {
     until: new Date(nowMs + wait).toISOString(),
-    kind: blocked ? 'blocked' : 'transient',
+    kind: resolved,
     status: Number(status) || null,
     snippet: snippet || null,
   };
