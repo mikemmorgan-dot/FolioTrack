@@ -5,6 +5,8 @@
 # logs the HTTP status and waits for the next schedule.
 #
 # Every three hours walks the backlog (at most 20 filings, 1.2s apart).
+# The annual search is longer than three pages. A run keeps the saved
+# offset and reads forward until the index is complete, then downloads.
 # Once the queue is stored and the index is fresh, a run does not call
 # the Senate site. The index is refreshed when it is a day old, which is
 # the daily check for a new filing.

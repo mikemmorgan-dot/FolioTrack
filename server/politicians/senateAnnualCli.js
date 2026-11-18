@@ -21,6 +21,7 @@ export function formatSenateAnnualSummary(result) {
   if (senate.skipped) bits.push(`skipped=${senate.skipped}`);
   if (senate.kind) bits.push(`kind=${senate.kind}`);
   if (senate.status) bits.push(`status=${senate.status}`);
+  if (senate.stop) bits.push(`stop=${senate.stop}`);
   if (senate.error) bits.push(`error=${senate.error}`);
   return `[senate-annual] ${bits.join(' ')}`;
 }
@@ -28,7 +29,7 @@ export function formatSenateAnnualSummary(result) {
 export function exitCodeForSenateAnnual(result) {
   const senate = result?.senate;
   if (!senate?.error) return 0;
-  if (senate.kind === 'blocked' || senate.kind === 'transient') return 0;
+  if (senate.kind === 'blocked' || senate.kind === 'transient' || senate.kind === 'other') return 0;
   return 1;
 }
 
