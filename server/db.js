@@ -276,8 +276,10 @@ CREATE TABLE IF NOT EXISTS politician_annual_filings (
   ocr_page int,
   page_count int,
   ocr_claimed_at timestamptz,
+  parser_version int,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE politician_annual_filings ADD COLUMN IF NOT EXISTS parser_version int;
 CREATE UNIQUE INDEX IF NOT EXISTS politician_annual_source_key
   ON politician_annual_filings (source, filing_key);
 CREATE INDEX IF NOT EXISTS politician_annual_person

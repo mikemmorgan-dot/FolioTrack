@@ -5,6 +5,7 @@
 import { currentVersionOf } from '../util.js';
 import { canonicalTicker, matchableAssetClass } from './normalize.js';
 import { isReadableAnnual, selectCurrentAnnual } from './annualRecords.js';
+import { ANNUAL_PARSER_VERSION, isStaleParserFiling } from './annualParserVersion.js';
 import { presentHoldings } from './holdingsView.js';
 import { heldIndex } from './records.js';
 import {
@@ -506,7 +507,7 @@ export const memoryMethods = {
     const id = filing.id;
     const existing = this.db.politicianAnnualFilings[id];
     const reopen = existing && (existing.parseStatus === 'pending_ocr' || existing.parseStatus === 'ocr_running'
-      || (replace && existing.parseStatus === 'needs_manual_review'));
+      || (replace && (existing.parseStatus === 'needs_manual_review' || existing.parseStatus === 'partial')));
     if (existing && !reopen) {
       return { created: false, holdings: 0 };
     }
@@ -563,11 +564,24 @@ export const memoryMethods = {
       .sort((a, b) => String(b.filedDate || '').localeCompare(String(a.filedDate || '')))
       .slice(0, limit);
   },
-  async listRevisitableAnnualFilings({ source, limit = 10 } = {}) {
+  async listRevisitableAnnualFilings({ source, limit = 10, parserVersion = ANNUAL_PARSER_VERSION } = {}) {
     return Object.values(this.db.politicianAnnualFilings || {})
-      .filter((row) => row.source === source && row.parseStatus === 'needs_manual_review')
+      .filter((row) => row.source === source
+        && row.parseStatus === 'needs_manual_review'
+        && row.ocrDone !== true
+        && isStaleParserFiling(row, parserVersion))
       .sort((a, b) => String(b.filedDate || '').localeCompare(String(a.filedDate || '')))
       .slice(0, limit);
+  },
+  async listStaleParserAnnualFilings({ parserVersion = ANNUAL_PARSER_VERSION, limit = 80 } = {}) {
+    return Object.values(this.db.politicianAnnualFilings || {})
+      .filter((row) => isStaleParserFiling(row, parserVersion))
+      .sort((a, b) => String(b.filedDate || '').localeCompare(String(a.filedDate || '')))
+      .slice(0, limit);
+  },
+  async countStaleParserAnnualFilings({ parserVersion = ANNUAL_PARSER_VERSION } = {}) {
+    return Object.values(this.db.politicianAnnualFilings || {})
+      .filter((row) => isStaleParserFiling(row, parserVersion)).length;
   },
   async listHeldPoliticianSymbols() {
     return heldSymbolsFromDb(this.db);

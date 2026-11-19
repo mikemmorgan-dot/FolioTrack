@@ -48,8 +48,9 @@ describe('House annual OCR queue and revisits', () => {
     const filing = buildAnnualFiling({
       source: 'house', filingKey: '2025:1', first: 'Clay', last: 'Higgins', office: 'house',
       reportYear: 2025, filedDate: '2026-05-06', sourceUrl: 'https://example.test/higgins.pdf',
-      parsed: { status: 'needs_manual_review', note: 'No Schedule A text layer. The annual report looks scanned, so no holdings were guessed.' },
+      parsed: { status: 'needs_manual_review', note: 'No Schedule A text layer. The annual report looks scanned, so no holdings were guessed.', parserVersion: 0 },
     });
+    filing.parserVersion = 0;
     await store.insertAnnualBundle(filing, []);
     expect((await store.listRevisitableAnnualFilings({ source: 'house', limit: 5 }))).toHaveLength(1);
     const updated = {

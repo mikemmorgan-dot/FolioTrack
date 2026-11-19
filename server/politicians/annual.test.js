@@ -435,6 +435,7 @@ describe('versioning and the chart', () => {
     expect(sent).not.toContain('$5,000,001 - $25,000,000');
     expect(ANNUAL_HOLDINGS_SCHEMA).toContain('politician_holdings');
     expect(ANNUAL_HOLDINGS_SCHEMA).toContain('politician_annual_filings');
+    expect(ANNUAL_HOLDINGS_SCHEMA).toContain('parser_version');
   });
 });
 

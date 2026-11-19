@@ -26,6 +26,7 @@ import {
 } from './senateFetch.js';
 import { readZipEntries, zipText } from './zip.js';
 import { buildAnnualFiling, buildHoldingRows, selectCurrentAnnual } from './annualRecords.js';
+import { ANNUAL_PARSER_VERSION } from './annualParserVersion.js';
 import { classifyHouseFiler, matchHouseParty, matchSenateParty } from './roster.js';
 import { personKey } from './normalize.js';
 import { splitStateDst } from './records.js';
@@ -333,7 +334,7 @@ async function saveAnnual(store, filing, parsed, catalog, { replace = false } = 
   return store.insertAnnualBundle(record, rows, { replace });
 }
 
-async function replaceAnnualParse(store, filing, parsed, catalog) {
+export async function replaceAnnualParse(store, filing, parsed, catalog) {
   const record = {
     ...filing,
     parseStatus: parsed?.status || 'needs_manual_review',
@@ -343,6 +344,9 @@ async function replaceAnnualParse(store, filing, parsed, catalog) {
     ocrDone: parsed?.ocrDone === true,
     ocrPage: parsed?.ocrPage ?? filing.ocrPage ?? null,
     pageCount: parsed?.pageCount ?? filing.pageCount ?? null,
+    parserVersion: Number.isFinite(Number(parsed?.parserVersion))
+      ? Number(parsed.parserVersion)
+      : ANNUAL_PARSER_VERSION,
   };
   const rows = buildHoldingRows(record, parsed, catalog);
   return store.insertAnnualBundle(record, rows, { replace: true });

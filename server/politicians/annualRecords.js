@@ -5,6 +5,7 @@
 import { annotateTrade } from './nameMatch.js';
 import { canonicalTicker, displayName, personKey } from './normalize.js';
 import { classifyHolding, mapMatchedClass } from './holdingClass.js';
+import { ANNUAL_PARSER_VERSION } from './annualParserVersion.js';
 
 export function annualFilingId(source, filingKey) {
   return `annual:${source}:${filingKey}`;
@@ -48,6 +49,9 @@ export function buildAnnualFiling({
     ocrDone: parsed?.ocrDone === true,
     ocrPage: parsed?.ocrPage ?? null,
     pageCount: parsed?.pageCount ?? null,
+    parserVersion: Number.isFinite(Number(parsed?.parserVersion))
+      ? Number(parsed.parserVersion)
+      : ANNUAL_PARSER_VERSION,
   };
 }
 
