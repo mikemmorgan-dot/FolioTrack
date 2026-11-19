@@ -3,6 +3,7 @@
 
 import { canonicalTicker } from './normalize.js';
 import { isReadableAnnual, selectCurrentAnnual } from './annualRecords.js';
+import { ANNUAL_PARSER_VERSION } from './annualParserVersion.js';
 import { presentHoldings } from './holdingsView.js';
 import { heldIndex } from './records.js';
 import { OCR_CLAIM_MS, OCR_FAILED_NOTE, PENDING_OCR_NOTE } from './ocrPending.js';
@@ -803,6 +804,7 @@ export function installPgPolitician(Store) {
       ocrPage: r.ocr_page,
       pageCount: r.page_count,
       ocrClaimedAt: isoTs(r.ocr_claimed_at),
+      parserVersion: r.parser_version == null ? null : Number(r.parser_version),
     };
   }
 
@@ -877,7 +879,7 @@ export function installPgPolitician(Store) {
     );
     const existing = found.rows[0];
     const reopen = existing && (existing.parse_status === 'pending_ocr' || existing.parse_status === 'ocr_running'
-      || (replace && existing.parse_status === 'needs_manual_review'));
+      || (replace && (existing.parse_status === 'needs_manual_review' || existing.parse_status === 'partial')));
     if (existing && !reopen) {
       return { created: false, holdings: 0 };
     }
@@ -891,7 +893,8 @@ export function installPgPolitician(Store) {
              person_key = $2, person_name = $3, office = $4, party = $5, filer_status = $6,
              state = $7, district = $8, report_year = $9, filed_date = $10, filing_kind = $11,
              source_url = $12, parse_status = $13, parse_note = $14, excluded_count = $15,
-             unreadable_count = $16, ocr_done = $17, ocr_page = $18, page_count = $19, ocr_claimed_at = NULL
+             unreadable_count = $16, ocr_done = $17, ocr_page = $18, page_count = $19, ocr_claimed_at = NULL,
+             parser_version = $20
            WHERE id = $1`,
           [
             existing.id, filing.personKey, filing.personName, filing.office, filing.party,
@@ -899,6 +902,7 @@ export function installPgPolitician(Store) {
             filing.filingKind, filing.sourceUrl, filing.parseStatus, filing.parseNote,
             filing.excludedCount || 0, filing.unreadableCount || 0, filing.ocrDone === true,
             filing.ocrPage, filing.pageCount,
+            filing.parserVersion == null ? null : Number(filing.parserVersion),
           ],
         );
       } else {
@@ -906,9 +910,10 @@ export function installPgPolitician(Store) {
           `INSERT INTO politician_annual_filings (
              id, source, filing_key, person_key, person_name, office, party, filer_status,
              state, district, report_year, filed_date, filing_kind, source_url, parse_status,
-             parse_note, excluded_count, unreadable_count, ocr_done, ocr_page, page_count
+             parse_note, excluded_count, unreadable_count, ocr_done, ocr_page, page_count,
+             parser_version
            ) VALUES (
-             $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
+             $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
            )`,
           [
             filing.id, filing.source, filing.filingKey, filing.personKey, filing.personName,
@@ -916,6 +921,7 @@ export function installPgPolitician(Store) {
             filing.reportYear, filing.filedDate, filing.filingKind, filing.sourceUrl,
             filing.parseStatus, filing.parseNote, filing.excludedCount || 0,
             filing.unreadableCount || 0, filing.ocrDone === true, filing.ocrPage, filing.pageCount,
+            filing.parserVersion == null ? null : Number(filing.parserVersion),
           ],
         );
       }
@@ -965,7 +971,7 @@ export function installPgPolitician(Store) {
       `SELECT id, source, filing_key, person_key, person_name, office, party, filer_status,
               state, district, report_year, filed_date, filing_kind, source_url, parse_status,
               parse_note, excluded_count, unreadable_count, ocr_done, ocr_page, page_count,
-              ocr_claimed_at
+              ocr_claimed_at, parser_version
        FROM politician_annual_filings`,
     );
     return rows.map(annualFilingFromRow);
@@ -992,6 +998,7 @@ export function installPgPolitician(Store) {
     const col = {
       parseStatus: 'parse_status',
       parseNote: 'parse_note',
+      parserVersion: 'parser_version',
       ocrDone: 'ocr_done',
       ocrPage: 'ocr_page',
       pageCount: 'page_count',
@@ -1063,14 +1070,42 @@ export function installPgPolitician(Store) {
     );
     return rows.map(annualFilingFromRow);
   };
-  Store.prototype.listRevisitableAnnualFilings = async function listRevisitableAnnualFilings({ source, limit = 10 } = {}) {
+  Store.prototype.listRevisitableAnnualFilings = async function listRevisitableAnnualFilings({
+    source, limit = 10, parserVersion = ANNUAL_PARSER_VERSION,
+  } = {}) {
     const { rows } = await this.q(
       `SELECT * FROM politician_annual_filings
        WHERE source = $1 AND parse_status = 'needs_manual_review'
+         AND ocr_done IS NOT TRUE
+         AND (parser_version IS NULL OR parser_version < $3)
        ORDER BY filed_date DESC NULLS LAST
        LIMIT $2`,
-      [source, limit],
+      [source, limit, parserVersion],
     );
     return rows.map(annualFilingFromRow);
+  };
+  Store.prototype.listStaleParserAnnualFilings = async function listStaleParserAnnualFilings({
+    parserVersion = ANNUAL_PARSER_VERSION, limit = 80,
+  } = {}) {
+    const { rows } = await this.q(
+      `SELECT * FROM politician_annual_filings
+       WHERE parse_status IN ('needs_manual_review', 'partial')
+         AND (parser_version IS NULL OR parser_version < $1)
+       ORDER BY filed_date DESC NULLS LAST
+       LIMIT $2`,
+      [parserVersion, limit],
+    );
+    return rows.map(annualFilingFromRow);
+  };
+  Store.prototype.countStaleParserAnnualFilings = async function countStaleParserAnnualFilings({
+    parserVersion = ANNUAL_PARSER_VERSION,
+  } = {}) {
+    const { rows } = await this.q(
+      `SELECT count(*)::int AS n FROM politician_annual_filings
+       WHERE parse_status IN ('needs_manual_review', 'partial')
+         AND (parser_version IS NULL OR parser_version < $1)`,
+      [parserVersion],
+    );
+    return Number(rows[0]?.n) || 0;
   };
 }

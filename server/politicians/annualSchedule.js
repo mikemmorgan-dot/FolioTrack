@@ -1,20 +1,26 @@
 // Backlog of annual disclosures. Runs once shortly after boot, then every
-// 30 minutes, until the queue is covered. After that it stops. The daily
-// politician poll keeps looking for a new or amended filing.
+// 30 minutes, until the queue is covered. After that it still runs, on a
+// shorter interval, while filings from an older parser version need a
+// bounded re-read. The daily politician poll keeps looking for a new or
+// amended filing.
 
 import {
   ANNUAL_BACKFILL_INITIAL_DELAY_MS,
   ANNUAL_BACKFILL_INTERVAL_MS,
 } from './annualIngest.js';
+import { ANNUAL_PARSER_REVISIT_INTERVAL_MS } from './annualParserVersion.js';
 
 export function nextAnnualIngestDelay({
   backfillComplete = false,
+  parserRevisitPending = false,
   boot = false,
   intervalMs = ANNUAL_BACKFILL_INTERVAL_MS,
   initialDelayMs = ANNUAL_BACKFILL_INITIAL_DELAY_MS,
+  parserIntervalMs = ANNUAL_PARSER_REVISIT_INTERVAL_MS,
 } = {}) {
-  if (backfillComplete) return null;
-  return boot ? initialDelayMs : intervalMs;
+  if (!backfillComplete) return boot ? initialDelayMs : intervalMs;
+  if (parserRevisitPending) return boot ? initialDelayMs : parserIntervalMs;
+  return null;
 }
 
 export function startAnnualIngest({
@@ -54,6 +60,7 @@ export function startAnnualIngest({
         if (stopped || state == null) return;
         const delay = nextAnnualIngestDelay({
           backfillComplete: state.backfillComplete === true,
+          parserRevisitPending: state.parserRevisitPending === true,
           boot: false,
           intervalMs,
           initialDelayMs,
@@ -74,6 +81,7 @@ export function startAnnualIngest({
       if (stopped) return;
       const delay = nextAnnualIngestDelay({
         backfillComplete: state?.backfillComplete === true,
+        parserRevisitPending: state?.parserRevisitPending === true,
         boot: true,
         intervalMs,
         initialDelayMs,

@@ -6,6 +6,7 @@ import { matchableAssetClass } from './normalize.js';
 import { badgesBySymbol, heldIndex } from './records.js';
 import { applyPoliticianAlertPatch } from './settings.js';
 import { attachHeldModels } from './summary.js';
+import { withParserRevisitStatus } from './annualParserRevisit.js';
 
 function asyncRoute(fn) {
   return (req, res, next) => {
@@ -46,7 +47,9 @@ export function createPoliticianRouter({ store, startPoll, pollRunning } = {}) {
       lastError: state.lastError || null,
       summary: state.lastSummary || null,
       sources: state.sources || {},
-      annual: typeof store.getAnnualState === 'function' ? await store.getAnnualState() : null,
+      annual: typeof store.getAnnualState === 'function'
+        ? await withParserRevisitStatus(store, await store.getAnnualState())
+        : null,
     });
   }));
 

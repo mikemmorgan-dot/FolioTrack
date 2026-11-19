@@ -52,6 +52,11 @@ import {
   ANNUAL_BACKFILL_INTERVAL_MS,
   runAnnualSlice,
 } from './politicians/annualIngest.js';
+import { runParserRevisitSlice } from './politicians/annualParserRevisit.js';
+import {
+  ANNUAL_PARSER_REVISIT_BUDGET_MS,
+  ANNUAL_PARSER_VERSION,
+} from './politicians/annualParserVersion.js';
 import { listenThenStart } from './boot.js';
 import { egressMiddleware, logEgress, openEgressScope } from './egress.js';
 import { createHistoryBackfill, startHistoryBackfill } from './historyBackfill.js';
@@ -818,15 +823,40 @@ void (async () => {
     logger: console,
   });
   startAnnualIngest({
-    run: () => openEgressScope('scheduler annual-ingest', () => runAnnualSlice({
-      store,
-      delayMs: politicianCfg.delayMs,
-      deadline: Date.now() + ANNUAL_BACKFILL_BUDGET_MS,
-      maxPdfBytes: politicianCfg.maxPdfBytes,
-      pace: 'backfill',
-      logger: console,
-    })),
-    getState: () => store.getAnnualState().catch(() => ({})),
+    run: async () => {
+      const state = await store.getAnnualState().catch(() => ({}));
+      if (state.backfillComplete === true) {
+        return openEgressScope('scheduler annual-parser-revisit', () => runParserRevisitSlice({
+          store,
+          delayMs: politicianCfg.delayMs,
+          deadline: Date.now() + ANNUAL_PARSER_REVISIT_BUDGET_MS,
+          maxPdfBytes: politicianCfg.maxPdfBytes,
+          logger: console,
+        }));
+      }
+      return openEgressScope('scheduler annual-ingest', () => runAnnualSlice({
+        store,
+        delayMs: politicianCfg.delayMs,
+        deadline: Date.now() + ANNUAL_BACKFILL_BUDGET_MS,
+        maxPdfBytes: politicianCfg.maxPdfBytes,
+        pace: 'backfill',
+        logger: console,
+      }));
+    },
+    getState: async () => {
+      const state = await store.getAnnualState().catch(() => ({}));
+      let parserRevisitPending = false;
+      if (typeof store.countStaleParserAnnualFilings === 'function') {
+        try {
+          parserRevisitPending = (await store.countStaleParserAnnualFilings({
+            parserVersion: ANNUAL_PARSER_VERSION,
+          })) > 0;
+        } catch (err) {
+          console.warn(`[annual] could not count stale parser filings: ${err.message}`);
+        }
+      }
+      return { ...state, parserRevisitPending };
+    },
     intervalMs: ANNUAL_BACKFILL_INTERVAL_MS,
     initialDelayMs: ANNUAL_BACKFILL_INITIAL_DELAY_MS,
     logger: console,
