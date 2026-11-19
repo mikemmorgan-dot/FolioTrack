@@ -5,10 +5,12 @@
 
 import { downloadOgePdf } from './ingest.js';
 import { consumeOgeAnnualPage, createOgeAnnualParse, ogeAnnualResult } from './parseOgeAnnual.js';
+import { consumeHouseAnnualOcrPage, createHouseAnnualOcrParse, houseAnnualOcrResult } from './parseHouseAnnualOcr.js';
 import { ocrPdfWords, writePdfTemp } from './ocr.js';
 import { buildHoldingRows } from './annualRecords.js';
 
 const PAGES_PER_RUN = 25;
+export const HOUSE_OCR_PAGES_PER_RUN = 20;
 
 function wordsToItems(words) {
   return (words || []).map((word) => ({
@@ -41,18 +43,51 @@ export async function ocrAnnualPdf(pdfPath, { startPage = 1, maxPages = PAGES_PE
   };
 }
 
+export async function ocrHouseAnnualPdf(pdfPath, { startPage = 1, maxPages = HOUSE_OCR_PAGES_PER_RUN } = {}) {
+  const state = createHouseAnnualOcrParse();
+  const read = await ocrPdfWords(pdfPath, {
+    startPage,
+    maxPages,
+    orient: true,
+    deskew: false,
+    onPage: ({ words }) => {
+      consumeHouseAnnualOcrPage(state, words);
+    },
+  });
+  const parsed = houseAnnualOcrResult(state);
+  const finished = read.finished === true;
+  let status = finished ? parsed.status : (parsed.holdings.length ? 'partial' : 'pending_ocr');
+  let note = finished
+    ? parsed.note
+    : `OCR read pages ${startPage}–${startPage + read.pagesRead - 1} of ${read.pageCount || '?'}. Later pages were not guessed.`;
+  if (finished && !parsed.holdings.length && !/none disclosed/i.test(parsed.note || '')) {
+    status = 'needs_manual_review';
+    note = 'OCR finished but no statutory House value range could be read. Those rows were not guessed.';
+  }
+  return {
+    ...parsed,
+    status,
+    ocrDone: finished,
+    ocrPage: startPage + read.pagesRead - 1,
+    pageCount: read.pageCount,
+    note,
+  };
+}
+
 export async function runPendingAnnualOcr({
   store,
   fetchImpl = globalThis.fetch,
   download = downloadOgePdf,
   readPdf = null,
+  readHousePdf = null,
   now = new Date(),
   logger = console,
   maxPdfBytes = 32 * 1024 * 1024,
   limit = 2,
+  sources = ['oge'],
 } = {}) {
   if (typeof store.listPendingAnnualOcr !== 'function') return { filings: [] };
-  const pending = await store.listPendingAnnualOcr({ limit, now });
+  const pending = await store.listPendingAnnualOcr({ limit, now, sources });
   const filings = [];
   for (const filing of pending) {
     const started = Date.now();
@@ -76,9 +111,10 @@ export async function runPendingAnnualOcr({
       const temp = await writePdfTemp(pdf.bytes);
       try {
         const startPage = (Number(filing.ocrPage) || 0) + 1;
-        const parsed = readPdf
-          ? await readPdf(temp.pdfPath, { startPage })
-          : await ocrAnnualPdf(temp.pdfPath, { startPage });
+        const reader = filing.source === 'house'
+          ? (readHousePdf || ocrHouseAnnualPdf)
+          : (readPdf || ocrAnnualPdf);
+        const parsed = await reader(temp.pdfPath, { startPage });
         const rows = buildHoldingRows(filing, parsed, null).map((row) => ({ ...row, ocr: true }));
         if (startPage > 1 && typeof store.appendAnnualHoldings === 'function') {
           await store.appendAnnualHoldings(filing.id, rows);

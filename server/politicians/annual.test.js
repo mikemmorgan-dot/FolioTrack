@@ -38,7 +38,7 @@ describe('annual value ranges', () => {
     const open = parseAssetValue('Over $50,000,000');
     expect(open).toMatchObject({ kind: 'at_least', min: 50000000, max: null, mid: 50000000 });
     expect(parseAssetValue('None').kind).toBe('excluded');
-    expect(parseAssetValue('Undetermined').kind).toBe('excluded');
+    expect(parseAssetValue('Undetermined')).toMatchObject({ kind: 'undetermined', label: 'Undetermined' });
     expect(parseAssetValue('--').kind).toBe('excluded');
     expect(parseAssetValue('$1 - $1,000')).toMatchObject({ kind: 'range', min: 1, max: 1000 });
     expect(parseAssetValue('$2 - $9').kind).toBe('unreadable');
@@ -104,8 +104,10 @@ describe('House annual Schedule A', () => {
     const parsed = await parseHouseAnnualPdf(readFileSync(join(dir, 'fixtures/pelosi-2025-annual.pdf')));
     expect(parsed.status).toBe('parsed');
     expect(parsed.unreadableCount).toBe(0);
-    expect(parsed.excludedCount).toBe(8);
-    expect(parsed.holdings.length).toBe(60);
+    expect(parsed.excludedCount).toBe(7);
+    expect(parsed.holdings.length).toBe(61);
+    const book = parsed.holdings.find((row) => /Art of Power/.test(row.asset));
+    expect(book).toMatchObject({ valueBound: 'undetermined', valueRange: 'Undetermined', valueMid: null });
     const apple = parsed.holdings.find((row) => row.ticker === 'AAPL' && row.assetClass === 'stock');
     expect(apple).toMatchObject({
       owner: 'spouse',
@@ -433,5 +435,73 @@ describe('versioning and the chart', () => {
     expect(sent).not.toContain('$5,000,001 - $25,000,000');
     expect(ANNUAL_HOLDINGS_SCHEMA).toContain('politician_holdings');
     expect(ANNUAL_HOLDINGS_SCHEMA).toContain('politician_annual_filings');
+  });
+});
+
+
+describe('House letter-size Schedule A and empty reports', () => {
+  it('treats a text-layer None disclosed Schedule A as parsed with zero holdings', () => {
+    const state = createHouseAnnualParse();
+    consumeHouseAnnualPage(state, [
+      item('S A: Assets and "Unearned" Income', 22, 40),
+      item('None disclosed.', 22, 60),
+      item('S B: Transactions', 22, 90),
+      item('None disclosed.', 22, 110),
+      item('S C: Earned Income', 22, 140),
+      item('Source', 25, 160), item('Type', 200, 160), item('Amount', 400, 160),
+      item('Valadao Dairy Farm', 25, 180), item('Labor', 200, 180), item('$28,800.00', 400, 180),
+    ]);
+    const parsed = houseAnnualResult(state);
+    expect(parsed).toMatchObject({ status: 'parsed', holdings: [], excludedCount: 0, unreadableCount: 0 });
+    expect(parsed.note).toMatch(/none disclosed/i);
+  });
+
+  it('locates the value column from the header and stores Undetermined pensions outside the totals', () => {
+    const state = createHouseAnnualParse();
+    consumeHouseAnnualPage(state, [
+      item('S A: Assets', 22, 10),
+      item('Asset', 25, 30), item('Owner', 207, 30), item('Value of Asset', 246, 30),
+      item('Income Type(s)', 328, 30), item('Income', 411, 30),
+      item('USAA - Bank Accounts', 25, 60), item('[BA]', 140, 60), item('$1,001 - $15,000', 246, 60),
+      item('Interest', 328, 60), item('$1 - $200', 411, 60),
+      item('Investment Property', 25, 90), item('[RP]', 140, 90), item('$1,000,001 -', 246, 90),
+      item('Rent', 328, 90), item('$15,001 - $50,000', 411, 90),
+      item('$5,000,000', 246, 102),
+      item('State Employees Retirement System', 25, 140), item('Undetermined', 246, 140),
+      item('Pension Benefit', 328, 140),
+      item('S B: Transactions', 22, 180),
+    ]);
+    const parsed = houseAnnualResult(state);
+    expect(parsed.status).toBe('parsed');
+    expect(parsed.unreadableCount).toBe(0);
+    const usaa = parsed.holdings.find((row) => /USAA/.test(row.asset));
+    const property = parsed.holdings.find((row) => /Investment Property/.test(row.asset));
+    const pension = parsed.holdings.find((row) => /Retirement/.test(row.asset));
+    expect(usaa).toMatchObject({ valueRange: '$1,001 - $15,000', assetClass: 'cash' });
+    expect(property).toMatchObject({ valueRange: '$1,000,001 - $5,000,000', assetClass: 'real_estate' });
+    expect(pension).toMatchObject({ valueBound: 'undetermined', valueRange: 'Undetermined', valueMid: null });
+    const view = presentHoldings({
+      filings: [buildAnnualFiling({
+        source: 'house', filingKey: '2025:1', first: 'Brian', last: 'Fitzpatrick', office: 'house',
+        reportYear: 2025, filedDate: '2026-05-15', sourceUrl: 'https://example.test/fitz', parsed,
+      })],
+      holdings: buildHoldingRows(buildAnnualFiling({
+        source: 'house', filingKey: '2025:1', first: 'Brian', last: 'Fitzpatrick', office: 'house',
+        reportYear: 2025, filedDate: '2026-05-15', sourceUrl: 'https://example.test/fitz', parsed,
+      }), parsed),
+    });
+    expect(view.totals.count).toBe(2);
+    expect(view.undetermined).toHaveLength(1);
+    expect(view.undetermined[0].asset).toMatch(/Retirement/);
+  });
+
+  it('marks an image-only House annual as pending OCR instead of a final failure', () => {
+    const state = createHouseAnnualParse();
+    consumeHouseAnnualPage(state, [item('1', 10, 10)]);
+    const parsed = houseAnnualResult(state);
+    expect(parsed.status).toBe('pending_ocr');
+    expect(parsed.ocrDone).toBe(false);
+    expect(parsed.holdings).toEqual([]);
+    expect(parsed.note).toMatch(/House OCR job/i);
   });
 });

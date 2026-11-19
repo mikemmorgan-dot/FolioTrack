@@ -60,4 +60,33 @@ describe('holdings chart', () => {
     expect(screen.getByText('Trump Tower Commercial LLC')).toBeTruthy();
     expect(screen.queryByText('No ticker')).toBeNull();
   });
+
+  it('labels OCR-derived holdings and lists undetermined values outside the totals', () => {
+    render(<HoldingsChart holdings={{
+      ...holdings,
+      ocrCount: 1,
+      positions: [{
+        id: 'p-ocr',
+        kind: 'position',
+        label: 'TIAA CREF',
+        asset: 'TIAA CREF Total Global Stock',
+        pct: 100,
+        midpoint: 125000,
+        count: 1,
+        min: 100001,
+        max: 250000,
+        valueRange: '$100,001 - $250,000',
+        valueBound: 'range',
+        owner: 'self',
+        ocr: true,
+        ocrConfidence: 82,
+      }],
+      undetermined: [{ id: 'u1', asset: 'State pension', valueBound: 'undetermined', valueRange: 'Undetermined' }],
+    }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Positions' }));
+    expect(screen.getByText('OCR 82')).toBeTruthy();
+    expect(screen.getByText(/1 holding was read by OCR/)).toBeTruthy();
+    expect(screen.getByText('State pension')).toBeTruthy();
+    expect(screen.getByText(/left out of the totals/)).toBeTruthy();
+  });
 });

@@ -870,13 +870,15 @@ export function installPgPolitician(Store) {
     );
     return rows.map((r) => r.filing_key);
   };
-  Store.prototype.insertAnnualBundle = async function insertAnnualBundle(filing, holdings = []) {
+  Store.prototype.insertAnnualBundle = async function insertAnnualBundle(filing, holdings = [], { replace = false } = {}) {
     const found = await this.q(
       `SELECT id, parse_status FROM politician_annual_filings WHERE source = $1 AND filing_key = $2`,
       [filing.source, filing.filingKey],
     );
     const existing = found.rows[0];
-    if (existing && existing.parse_status !== 'pending_ocr' && existing.parse_status !== 'ocr_running') {
+    const reopen = existing && (existing.parse_status === 'pending_ocr' || existing.parse_status === 'ocr_running'
+      || (replace && existing.parse_status === 'needs_manual_review'));
+    if (existing && !reopen) {
       return { created: false, holdings: 0 };
     }
     const client = await this.pool.connect();
@@ -1045,18 +1047,29 @@ export function installPgPolitician(Store) {
     }
     return { inserted: numbered.length };
   };
-  Store.prototype.listPendingAnnualOcr = async function listPendingAnnualOcr({ limit = 5, now = new Date() } = {}) {
+  Store.prototype.listPendingAnnualOcr = async function listPendingAnnualOcr({ limit = 5, now = new Date(), sources = ['oge'] } = {}) {
     const nowMs = now instanceof Date ? now.getTime() : Date.parse(now);
+    const allowed = sources?.length ? sources : ['oge'];
     const { rows } = await this.q(
       `SELECT * FROM politician_annual_filings
-       WHERE source = 'oge'
+       WHERE source = ANY($3::text[])
          AND (
            parse_status = 'pending_ocr'
            OR (parse_status = 'ocr_running' AND (ocr_claimed_at IS NULL OR ocr_claimed_at < $2::timestamptz))
          )
        ORDER BY filed_date DESC NULLS LAST
        LIMIT $1`,
-      [limit, new Date(nowMs - OCR_CLAIM_MS).toISOString()],
+      [limit, new Date(nowMs - OCR_CLAIM_MS).toISOString(), allowed],
+    );
+    return rows.map(annualFilingFromRow);
+  };
+  Store.prototype.listRevisitableAnnualFilings = async function listRevisitableAnnualFilings({ source, limit = 10 } = {}) {
+    const { rows } = await this.q(
+      `SELECT * FROM politician_annual_filings
+       WHERE source = $1 AND parse_status = 'needs_manual_review'
+       ORDER BY filed_date DESC NULLS LAST
+       LIMIT $2`,
+      [source, limit],
     );
     return rows.map(annualFilingFromRow);
   };

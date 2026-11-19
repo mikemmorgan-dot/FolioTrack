@@ -53,7 +53,15 @@ function positionSlice(row, index) {
     midpoint: row.valueMid,
     count: 1,
     heldModels: row.heldModels || [],
+    ocr: row.ocr === true,
+    ocrConfidence: Number.isFinite(Number(row.ocrConfidence)) ? Math.round(Number(row.ocrConfidence)) : null,
   };
+}
+
+export function isValuedHolding(row) {
+  if (!row) return false;
+  if (row.valueBound === 'undetermined') return false;
+  return Number.isFinite(Number(row.valueMid ?? row.mid));
 }
 
 function compactUsd(value) {
@@ -295,7 +303,9 @@ export function presentHoldings({ filings = [], holdings = [], held = null } = {
   }
   const source = current.source || '';
   const rows = withHeld(classifyRows(holdings.filter((row) => row.filingId === current.id), source), held);
-  const totals = sumHoldingValues(rows);
+  const valued = rows.filter(isValuedHolding);
+  const undetermined = rows.filter((row) => row.valueBound === 'undetermined');
+  const totals = sumHoldingValues(valued);
   const noteBits = [];
   if (current.parseNote) noteBits.push(current.parseNote);
   if (newer) {
@@ -311,7 +321,9 @@ export function presentHoldings({ filings = [], holdings = [], held = null } = {
       label: totalValueLabel(totals),
       midpointLabel: formatUsd(totals.midpoint),
     },
-    positions: positionSlices(rows),
-    classes: groupByClass(rows),
+    positions: positionSlices(valued),
+    classes: groupByClass(valued),
+    undetermined,
+    ocrCount: rows.filter((row) => row.ocr === true).length,
   };
 }

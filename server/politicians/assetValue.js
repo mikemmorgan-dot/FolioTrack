@@ -15,7 +15,12 @@ function dollars(token) {
 export function parseAssetValue(raw) {
   const text = String(raw ?? '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
   if (!text) return { kind: 'unreadable' };
-  if (/^(none|n\/?a|not disclosed|undisclosed|undetermined|exempt|spouse exempt|value not reported)\b/i.test(text) || text === '--' || text === '-' || text === '—') {
+  // "Undetermined" is a printed House value (often a pension). It is stored
+  // as a holding with no dollar estimate and is left out of totals.
+  if (/^undetermined\b/i.test(text)) {
+    return { kind: 'undetermined', label: 'Undetermined', min: null, max: null, mid: null };
+  }
+  if (/^(none|n\/?a|not disclosed|undisclosed|exempt|spouse exempt|value not reported)\b/i.test(text) || text === '--' || text === '-' || text === '—') {
     return { kind: 'excluded', reason: /^none/i.test(text) ? 'none' : 'not_disclosed' };
   }
   // Some House annuals print the below-threshold bucket as $1 - $1,000
