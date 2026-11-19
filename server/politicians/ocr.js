@@ -13,7 +13,8 @@ import { spawn } from 'node:child_process';
 import { access, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { rowsFromOcrWords } from './ocrRows.js';
 
 async function commandExists(name) {
@@ -110,6 +111,39 @@ async function renderPage(pdfPath, page, dir) {
   return join(dir, png);
 }
 
+
+const ORIENT_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'orientPage.py');
+
+export function parseTesseractOsd(text) {
+  const out = String(text || '');
+  const rotate = Number((out.match(/Rotate:\s+(\d+)/) || [])[1] || 0);
+  const confidence = Number((out.match(/Orientation confidence:\s+([\d.]+)/) || [])[1] || 0);
+  return { rotate: Number.isFinite(rotate) ? rotate % 360 : 0, confidence: Number.isFinite(confidence) ? confidence : 0 };
+}
+
+async function detectRotation(png) {
+  try {
+    const out = await run('tesseract', [png, 'stdout', '--psm', '0'], { timeoutMs: 30_000 });
+    const osd = parseTesseractOsd(out);
+    // Low-confidence OSD is often wrong on dense House forms.
+    if (osd.confidence >= 5 && osd.rotate) return osd.rotate;
+  } catch { /* fall through */ }
+  return 0;
+}
+
+export async function preparePageImage(png, { rotate = 0, deskew = false } = {}) {
+  if (!rotate && !deskew) return png;
+  const dest = png.replace(/(\.[a-z]+)$/i, '.prep$1');
+  const args = [ORIENT_SCRIPT, png, dest, '--rotate', String(rotate || 0)];
+  if (deskew) args.push('--deskew');
+  try {
+    await run('python3', args, { timeoutMs: 60_000 });
+    return dest;
+  } catch {
+    return png;
+  }
+}
+
 /**
  * OCR one PDF from disk, one page at a time. `onPage` runs after each page
  * so the caller can checkpoint and drop the page image.
@@ -169,23 +203,33 @@ export async function ocrPdfWords(pdfPath, {
   startPage = 1,
   maxPages = 25,
   onPage,
+  orient = false,
+  deskew = false,
+  rotation = null,
 } = {}) {
   const total = await pageCount(pdfPath);
   const last = Math.min(total || startPage, startPage + maxPages - 1);
   let pagesRead = 0;
+  let sticky = rotation;
   const dir = await mkdtemp(join(tmpdir(), 'folio-ocr-'));
   try {
     for (let page = startPage; page <= last; page += 1) {
       const png = await renderPage(pdfPath, page, dir);
       let words = [];
+      let prepared = png;
       try {
-        const tsv = await run('tesseract', [png, 'stdout', 'tsv'], { timeoutMs: 90_000 });
+        if (orient && sticky == null) sticky = await detectRotation(png);
+        if ((sticky && sticky % 360) || deskew) {
+          prepared = await preparePageImage(png, { rotate: sticky || 0, deskew });
+        }
+        const tsv = await run('tesseract', [prepared, 'stdout', 'tsv'], { timeoutMs: 90_000 });
         words = wordsFromTsv(tsv);
       } finally {
         await rm(png, { force: true });
+        if (prepared !== png) await rm(prepared, { force: true });
       }
       pagesRead += 1;
-      if (onPage) await onPage({ page, pageCount: total, words });
+      if (onPage) await onPage({ page, pageCount: total, words, rotation: sticky || 0 });
     }
   } finally {
     await rm(dir, { recursive: true, force: true });

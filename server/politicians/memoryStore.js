@@ -501,11 +501,13 @@ export const memoryMethods = {
     }
     return found;
   },
-  async insertAnnualBundle(filing, holdings = []) {
+  async insertAnnualBundle(filing, holdings = [], { replace = false } = {}) {
     politicianBucket(this.db);
     const id = filing.id;
     const existing = this.db.politicianAnnualFilings[id];
-    if (existing && existing.parseStatus !== 'pending_ocr' && existing.parseStatus !== 'ocr_running') {
+    const reopen = existing && (existing.parseStatus === 'pending_ocr' || existing.parseStatus === 'ocr_running'
+      || (replace && existing.parseStatus === 'needs_manual_review'));
+    if (existing && !reopen) {
       return { created: false, holdings: 0 };
     }
     if (existing) {
@@ -550,13 +552,20 @@ export const memoryMethods = {
     if (rows.length) this.persist();
     return { inserted: rows.length };
   },
-  async listPendingAnnualOcr({ limit = 5, now = new Date() } = {}) {
+  async listPendingAnnualOcr({ limit = 5, now = new Date(), sources = ['oge'] } = {}) {
     const nowMs = now instanceof Date ? now.getTime() : Date.parse(now);
+    const allowed = new Set(sources || ['oge']);
     return Object.values(this.db.politicianAnnualFilings || {})
-      .filter((row) => row.source === 'oge' && (
+      .filter((row) => allowed.has(row.source) && (
         row.parseStatus === 'pending_ocr'
         || (row.parseStatus === 'ocr_running' && !claimFresh(row, nowMs))
       ))
+      .sort((a, b) => String(b.filedDate || '').localeCompare(String(a.filedDate || '')))
+      .slice(0, limit);
+  },
+  async listRevisitableAnnualFilings({ source, limit = 10 } = {}) {
+    return Object.values(this.db.politicianAnnualFilings || {})
+      .filter((row) => row.source === source && row.parseStatus === 'needs_manual_review')
       .sort((a, b) => String(b.filedDate || '').localeCompare(String(a.filedDate || '')))
       .slice(0, limit);
   },

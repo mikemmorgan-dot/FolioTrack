@@ -327,10 +327,94 @@ function annualYears(now) {
   return [year, year - 1, year - 2];
 }
 
-async function saveAnnual(store, filing, parsed, catalog) {
+async function saveAnnual(store, filing, parsed, catalog, { replace = false } = {}) {
   const record = buildAnnualFiling({ ...filing, parsed });
   const rows = buildHoldingRows(record, parsed, catalog);
-  return store.insertAnnualBundle(record, rows);
+  return store.insertAnnualBundle(record, rows, { replace });
+}
+
+async function replaceAnnualParse(store, filing, parsed, catalog) {
+  const record = {
+    ...filing,
+    parseStatus: parsed?.status || 'needs_manual_review',
+    parseNote: parsed?.note || null,
+    excludedCount: Number(parsed?.excludedCount) || 0,
+    unreadableCount: Number(parsed?.unreadableCount) || 0,
+    ocrDone: parsed?.ocrDone === true,
+    ocrPage: parsed?.ocrPage ?? filing.ocrPage ?? null,
+    pageCount: parsed?.pageCount ?? filing.pageCount ?? null,
+  };
+  const rows = buildHoldingRows(record, parsed, catalog);
+  return store.insertAnnualBundle(record, rows, { replace: true });
+}
+
+// Re-download House filings that were marked unreadable under the old
+// parser. Text-layer "None disclosed" and letter-size value columns are
+// parsed here. Image-only scans are stored as pending_ocr for Actions.
+export async function revisitUnreadableHouseAnnuals({
+  fetchImpl,
+  store,
+  cap = 10,
+  delayMs = 0,
+  sleep = async () => {},
+  deadline = Infinity,
+  logger = console,
+  catalog = null,
+  maxPdfBytes = 32 * 1024 * 1024,
+  state,
+} = {}) {
+  if (typeof store.listRevisitableAnnualFilings !== 'function') {
+    return { downloaded: 0, failed: 0, revisited: 0 };
+  }
+  const queue = await store.listRevisitableAnnualFilings({ source: 'house', limit: cap });
+  let downloaded = 0;
+  let failed = 0;
+  let revisited = 0;
+  for (const filing of queue) {
+    if (downloaded >= cap || past(deadline)) break;
+    if (!filing.sourceUrl) continue;
+    let res;
+    try {
+      await sleep(delayMs);
+      res = await http(fetchImpl, filing.sourceUrl, { timeoutMs: 60_000 });
+    } catch (err) {
+      failed += 1;
+      logger.warn(`[annual] house revisit ${filing.filingKey} failed: ${err.message}`);
+      continue;
+    }
+    if (res.status !== 200) {
+      failed += 1;
+      logger.warn(`[annual] house revisit ${filing.filingKey} HTTP ${res.status}`);
+      continue;
+    }
+    downloaded += 1;
+    const bytes = await readBytes(res);
+    let parsed;
+    if (bytes.length > maxPdfBytes) {
+      parsed = {
+        status: 'needs_manual_review',
+        holdings: [],
+        excludedCount: 0,
+        note: `The annual PDF is over the ${Math.round(maxPdfBytes / 1e6)} MB cap, so it was not read.`,
+      };
+    } else {
+      try {
+        parsed = await parseHouseAnnualPdf(bytes);
+      } catch (err) {
+        parsed = {
+          status: 'needs_manual_review',
+          holdings: [],
+          excludedCount: 0,
+          note: 'The annual PDF could not be read as text, so no holdings were guessed.',
+        };
+        logger.warn(`[annual] house revisit ${filing.filingKey} pdf: ${err.message}`);
+      }
+    }
+    await replaceAnnualParse(store, filing, parsed, catalog);
+    revisited += 1;
+    logger.log(`[annual] house revisit ${filing.filingKey} status=${parsed.status} kept=${parsed.holdings?.length || 0}`);
+  }
+  return { downloaded, failed, revisited };
 }
 
 function houseMember(candidate, roster) {
@@ -916,10 +1000,14 @@ async function runAnnualSliceBody({
       });
       state.house = house;
       queueTouched.house = true;
-      const result = await downloadHouse({
-        fetchImpl, store, queue: house.queue || [], cap, delayMs, sleep, deadline, logger, catalog, maxPdfBytes, state,
+      const revisited = await revisitUnreadableHouseAnnuals({
+        fetchImpl, store, cap, delayMs, sleep, deadline, logger, catalog, maxPdfBytes, state,
       });
-      return { queued: (house.queue || []).length, ...result };
+      const remaining = Math.max(0, cap - (revisited.downloaded || 0));
+      const result = await downloadHouse({
+        fetchImpl, store, queue: house.queue || [], cap: remaining, delayMs, sleep, deadline, logger, catalog, maxPdfBytes, state,
+      });
+      return { queued: (house.queue || []).length, ...result, revisited: revisited.revisited || 0 };
     }],
     ['senate', async (cap) => {
       const senate = await ensureSenateQueue({

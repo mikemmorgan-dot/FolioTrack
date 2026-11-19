@@ -115,6 +115,11 @@ function Detail({ slice, color }) {
         </div>
       )}
       {slice.owner && <div className="ptr-meta">{ownerName(slice.owner)}</div>}
+      {slice.ocr && (
+        <div className="ptr-tags">
+          <span className="pill neutral">OCR{slice.ocrConfidence != null ? ` ${slice.ocrConfidence}` : ''}</span>
+        </div>
+      )}
       <div className="ptr-meta">{range} · about {slice.pct}% of the estimate</div>
       {slice.count > 1 && slice.kind !== 'bucket' && slice.kind !== 'other' && (
         <div className="ptr-meta">{slice.count} positions in this slice</div>
@@ -181,6 +186,12 @@ export default function HoldingsChart({ holdings }) {
         {filing?.kind === 'amendment' ? ' This chart is the latest amendment.' : ''}
       </p>
       {holdings.note && <p className="ptr-note">{holdings.note}</p>}
+      {holdings.ocrCount > 0 && (
+        <p className="ptr-note">
+          {holdings.ocrCount} holding{holdings.ocrCount === 1 ? ' was' : 's were'} read by OCR.
+          {' '}Low-confidence rows were dropped, and values were not guessed.
+        </p>
+      )}
       {totals?.count > 0 && (
         <div className="hold-totals">
           <div>
@@ -221,6 +232,23 @@ export default function HoldingsChart({ holdings }) {
             ))}
           </ul>
         </>
+      )}
+      {(holdings.undetermined || []).length > 0 && (
+        <div className="hold-undetermined">
+          <p className="ptr-note">
+            {holdings.undetermined.length} holding{holdings.undetermined.length === 1 ? '' : 's'} with an undetermined value
+            {' '}{holdings.undetermined.length === 1 ? 'is' : 'are'} listed and left out of the totals.
+          </p>
+          <ul className="hold-members">
+            {holdings.undetermined.map((row) => (
+              <li key={row.id || row.asset}>
+                {row.asset}
+                {row.ocr ? ' · OCR' : ''}
+                {row.ocr && row.ocrConfidence != null ? ` ${row.ocrConfidence}` : ''}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       {filing?.sourceUrl && (
         <a className="ptr-link" href={filing.sourceUrl} target="_blank" rel="noreferrer">Source filing</a>
