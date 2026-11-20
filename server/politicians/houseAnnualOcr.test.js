@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { annualCoverage } from './annualIngest.js';
 import { buildAnnualFiling, buildHoldingRows } from './annualRecords.js';
@@ -119,5 +122,17 @@ describe('House annual OCR queue and revisits', () => {
     expect(await store.listRevisitableAnnualFilings({ source: 'house' })).toEqual([]);
     expect(await store.listPendingAnnualOcr({ sources: ['house'] })).toEqual([]);
     expect(annualCoverage(await store.listAnnualFilingSummaries()).unreadable).toBe(1);
+  });
+
+  it('keeps the Actions default at 8 filings every 4 hours', () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
+    const yml = readFileSync(join(root, '.github/workflows/house-annual-ocr.yml'), 'utf8');
+    const js = readFileSync(join(root, 'server/politicians/houseAnnualOcr.js'), 'utf8');
+    expect(yml).toContain("cron: '45 */4 * * *'");
+    expect(yml).toContain('Blank uses 8.');
+    expect(yml).toContain('timeout-minutes: 60');
+    expect(yml).toContain('group: house-annual-ocr');
+    expect(yml).toContain('cancel-in-progress: false');
+    expect(js).toMatch(/Number\(env\.HOUSE_OCR_LIMIT\) \|\| 8/);
   });
 });

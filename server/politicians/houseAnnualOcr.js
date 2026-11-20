@@ -43,7 +43,7 @@ export async function runHouseAnnualOcr({
   logger = console,
   env = process.env,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  limit = Number(env.HOUSE_OCR_LIMIT) || 3,
+  limit = Number(env.HOUSE_OCR_LIMIT) || 8,
   revisitCap = Number(env.HOUSE_REVISIT_CAP) || 15,
   delayMs = Number(env.POLITICIAN_FETCH_DELAY_MS) || 1200,
 } = {}) {
