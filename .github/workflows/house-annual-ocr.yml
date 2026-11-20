@@ -5,17 +5,19 @@
 # The Render service is Node and has no tesseract, so this job is
 # the only place House annual OCR runs.
 #
+# Default is 8 filings per run, every 4 hours, with a 20-page cap
+# and resume. A concurrency group keeps runs from overlapping.
 # GitHub may start the cron a few minutes late, and it turns scheduled
 # workflows off after 60 days without repository activity.
 name: House annual OCR
 
 on:
   schedule:
-    - cron: '45 12 * * *'
+    - cron: '45 */4 * * *'
   workflow_dispatch:
     inputs:
       limit:
-        description: 'Pending House filings to OCR this run. Blank uses 3.'
+        description: 'Pending House filings to OCR this run. Blank uses 8.'
         required: false
         type: string
       revisit_cap:
@@ -33,7 +35,7 @@ concurrency:
 jobs:
   ocr:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
